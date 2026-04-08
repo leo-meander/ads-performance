@@ -1,0 +1,74 @@
+{
+  "$schema": "https://schema.zeabur.app/template.json",
+  "services": [
+    {
+      "name": "backend",
+      "template": "PREBUILT",
+      "source": {
+        "context": "backend"
+      },
+      "ports": [8000],
+      "env": {
+        "POSTGRES_CONNECTION_STRING": "${POSTGRESQL_URI}",
+        "REDIS_URL": "${REDIS_URI}",
+        "APP_ENV": "production",
+        "JWT_SECRET_KEY": "${JWT_SECRET_KEY}",
+        "FRONTEND_URL": "${FRONTEND_URL}",
+        "SMTP_HOST": "${SMTP_HOST}",
+        "SMTP_PORT": "${SMTP_PORT}",
+        "SMTP_USER": "${SMTP_USER}",
+        "SMTP_PASSWORD": "${SMTP_PASSWORD}"
+      }
+    },
+    {
+      "name": "celery-worker",
+      "template": "PREBUILT",
+      "source": {
+        "context": "backend"
+      },
+      "command": "celery -A app.tasks.celery_app worker --loglevel=info",
+      "env": {
+        "POSTGRES_CONNECTION_STRING": "${POSTGRESQL_URI}",
+        "REDIS_URL": "${REDIS_URI}",
+        "APP_ENV": "production",
+        "JWT_SECRET_KEY": "${JWT_SECRET_KEY}",
+        "SMTP_HOST": "${SMTP_HOST}",
+        "SMTP_PORT": "${SMTP_PORT}",
+        "SMTP_USER": "${SMTP_USER}",
+        "SMTP_PASSWORD": "${SMTP_PASSWORD}"
+      }
+    },
+    {
+      "name": "celery-beat",
+      "template": "PREBUILT",
+      "source": {
+        "context": "backend"
+      },
+      "command": "celery -A app.tasks.celery_app beat --loglevel=info",
+      "env": {
+        "POSTGRES_CONNECTION_STRING": "${POSTGRESQL_URI}",
+        "REDIS_URL": "${REDIS_URI}",
+        "APP_ENV": "production"
+      }
+    },
+    {
+      "name": "frontend",
+      "template": "PREBUILT",
+      "source": {
+        "context": "frontend"
+      },
+      "ports": [3000],
+      "env": {
+        "NEXT_PUBLIC_API_BASE_URL": "${BACKEND_URL}"
+      }
+    },
+    {
+      "name": "postgresql",
+      "template": "POSTGRESQL"
+    },
+    {
+      "name": "redis",
+      "template": "REDIS"
+    }
+  ]
+}
