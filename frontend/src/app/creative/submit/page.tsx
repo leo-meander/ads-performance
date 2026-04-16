@@ -56,7 +56,7 @@ export default function CreateAndSubmitPage() {
   const [deadline, setDeadline] = useState('')
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/accounts`).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data) }).catch(() => {})
+    fetch(`${API_BASE}/api/accounts`).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
     fetch(`${API_BASE}/api/users/reviewers`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setReviewers(d.data.items || []) }).catch(() => {})
     fetch(`${API_BASE}/api/keypoints`).then(r => r.json()).then(d => { if (d.success) setKeypoints(d.data) }).catch(() => {})
     fetch(`${API_BASE}/api/angles`).then(r => r.json()).then(d => { if (d.success) setAngles(d.data) }).catch(() => {})

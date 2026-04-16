@@ -33,7 +33,7 @@ export default function KeypointsPage() {
   }
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/accounts`).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data) }).catch(() => {})
+    fetch(`${API_BASE}/api/accounts`).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
     fetch_kp()
   }, [])
 

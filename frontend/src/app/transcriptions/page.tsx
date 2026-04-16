@@ -95,7 +95,7 @@ export default function TranscriptionsPage() {
       if (tRes.success) setTranscripts(tRes.data.items)
       if (cRes.success) setCombos(cRes.data.items)
       if (mRes.success) setMaterials(mRes.data.items)
-      if (aRes.success) setAccounts(aRes.data)
+      if (aRes.success) setAccounts(aRes.data.filter((a: any) => a.platform === 'meta'))
     }).catch(() => {})
       .finally(() => setLoading(false))
   }

@@ -15,7 +15,7 @@ interface Angle {
   avg_hook_rate: number | null; avg_thruplay_rate: number | null
   avg_engagement_rate: number | null
 }
-interface Account { id: string; account_name: string }
+interface Account { id: string; account_name: string; platform: string }
 
 const STATUS_COLORS: Record<string, string> = {
   WIN: 'bg-green-50 border-green-200', TEST: 'bg-yellow-50 border-yellow-200', LOSE: 'bg-red-50 border-red-200',
@@ -56,7 +56,7 @@ export default function AnglesPage() {
       .then(r => r.json()).then(d => { if (d.success) setAngles(d.data) }).catch(() => {}).finally(() => setLoading(false))
   }
 
-  useEffect(() => { fetch(`${API_BASE}/api/accounts`).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data) }).catch(() => {}) }, [])
+  useEffect(() => { fetch(`${API_BASE}/api/accounts`).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: Account) => a.platform === 'meta')) }).catch(() => {}) }, [])
   useEffect(() => { fetchAngles() }, [fStatus, fBranch])
 
   const handleCreate = () => {
