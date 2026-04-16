@@ -1,11 +1,12 @@
 import logging
+import threading
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
@@ -13,6 +14,46 @@ from app.services.sync_engine import sync_all_platforms
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Track sync state so client can poll
+_sync_state: dict = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "platform": None,
+    "results": None,
+    "error": None,
+}
+_sync_lock = threading.Lock()
+
+
+def _run_sync_background(platform: str | None):
+    """Run sync_all_platforms in a separate DB session (background thread)."""
+    with _sync_lock:
+        _sync_state["running"] = True
+        _sync_state["started_at"] = datetime.now(timezone.utc).isoformat()
+        _sync_state["finished_at"] = None
+        _sync_state["platform"] = platform
+        _sync_state["results"] = None
+        _sync_state["error"] = None
+
+    db = SessionLocal()
+    try:
+        results = sync_all_platforms(db)
+        if platform:
+            results = [r for r in results if r.get("platform") == platform]
+        logger.info("Background sync completed: %d accounts processed", len(results))
+        with _sync_lock:
+            _sync_state["results"] = {"accounts_processed": len(results), "results": results}
+    except Exception as exc:  # pragma: no cover — logged for ops
+        logger.exception("Background sync failed: %s", exc)
+        with _sync_lock:
+            _sync_state["error"] = str(exc)
+    finally:
+        db.close()
+        with _sync_lock:
+            _sync_state["running"] = False
+            _sync_state["finished_at"] = datetime.now(timezone.utc).isoformat()
 
 
 def _api_response(data=None, error=None):
@@ -30,19 +71,33 @@ class ReparseBody(BaseModel):
 
 
 @router.post("/sync/trigger")
-def trigger_sync(platform: str | None = None, db: Session = Depends(get_db)):
-    """Manually trigger a data sync for one or all platforms."""
-    try:
-        results = sync_all_platforms(db)
-        if platform:
-            results = [r for r in results if r["platform"] == platform]
-        return _api_response(data={
-            "message": "Sync completed",
-            "accounts_processed": len(results),
-            "results": results,
-        })
-    except Exception as e:
-        return _api_response(error=str(e))
+def trigger_sync(background_tasks: BackgroundTasks, platform: str | None = None):
+    """Manually trigger a data sync for one or all platforms.
+
+    Runs in a background thread so the HTTP request returns immediately
+    (previously synchronous execution hit Zeabur's 225s ingress timeout).
+    Client should poll GET /sync/status for progress.
+    """
+    with _sync_lock:
+        if _sync_state["running"]:
+            return _api_response(
+                error="Sync already running",
+                data={"started_at": _sync_state["started_at"]},
+            )
+
+    background_tasks.add_task(_run_sync_background, platform)
+    return _api_response(data={
+        "message": "Sync started in background",
+        "platform": platform or "all",
+        "poll_url": "/api/sync/status",
+    })
+
+
+@router.get("/sync/status")
+def sync_status():
+    """Return the state of the most recent /sync/trigger call."""
+    with _sync_lock:
+        return _api_response(data=dict(_sync_state))
 
 
 @router.post("/sync/reparse")
