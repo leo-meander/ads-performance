@@ -4,11 +4,14 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.permissions import permission_dict
 from app.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.user import User
 from app.services.auth_service import create_access_token, hash_password, verify_password
+
+_is_production = settings.APP_ENV == "production"
 
 router = APIRouter()
 
@@ -48,12 +51,14 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
         token = create_access_token(user.id, user.roles or [])
 
         # Set httpOnly cookie
+        # Production (cross-origin): SameSite=None + Secure required for cross-site cookies
+        # Development (same origin): SameSite=Lax + Secure=False
         response.set_cookie(
             key="access_token",
             value=token,
             httponly=True,
-            samesite="lax",
-            secure=False,  # Set True in production with HTTPS
+            samesite="none" if _is_production else "lax",
+            secure=_is_production,
             max_age=86400,  # 24 hours
         )
 
