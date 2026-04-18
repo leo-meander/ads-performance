@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.core.permissions import scoped_account_ids
@@ -103,18 +103,13 @@ def list_recommendations(
 
         total = q.count()
         # Severity ordering: critical > warning > info, then newest first.
-        severity_order = (
-            func.case(
-                {"critical": 0, "warning": 1, "info": 2},
-                value=GoogleRecommendation.severity,
-                else_=3,
-            )
-            if hasattr(func, "case") else None
+        severity_order = case(
+            (GoogleRecommendation.severity == "critical", 0),
+            (GoogleRecommendation.severity == "warning", 1),
+            (GoogleRecommendation.severity == "info", 2),
+            else_=3,
         )
-        if severity_order is not None:
-            q = q.order_by(severity_order, GoogleRecommendation.created_at.desc())
-        else:
-            q = q.order_by(GoogleRecommendation.created_at.desc())
+        q = q.order_by(severity_order, GoogleRecommendation.created_at.desc())
         rows = q.offset(offset).limit(limit).all()
         return _api_response(data={
             "total": total,
