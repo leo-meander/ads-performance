@@ -117,6 +117,11 @@ function getDateRange(preset: string): { from: string; to: string } {
     return dt.toISOString().split('T')[0]
   }
   switch (preset) {
+    case 'today': return { from: to, to }
+    case 'yesterday': {
+      const y = daysBack(1)
+      return { from: y, to: y }
+    }
     case '7d': return { from: daysBack(6), to }
     case '14d': return { from: daysBack(13), to }
     case '30d': return { from: daysBack(29), to }
@@ -251,6 +256,8 @@ export default function DashboardPage() {
             onChange={(e) => setDatePreset(e.target.value)}
             className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
             <option value="7d">Last 7 days</option>
             <option value="14d">Last 14 days</option>
             <option value="30d">Last 30 days</option>

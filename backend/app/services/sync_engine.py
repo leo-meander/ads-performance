@@ -1,7 +1,12 @@
 """Sync engine: orchestrates fetching data from ad platforms and upserting into DB."""
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+
+# Sync window: always pull last 10 days including today. Meta conversions
+# (esp. pixel/CRM-matched bookings) can arrive a few days late, so a shorter
+# window drops late attribution and under-reports revenue/ROAS.
+SYNC_LOOKBACK_DAYS = 10
 
 from sqlalchemy.orm import Session
 
@@ -263,9 +268,14 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
 
     db.flush()  # ensure ad IDs are available
 
+    # Always pull last 14 days including today — conversions arrive late.
+    today = date.today()
+    date_from = today - timedelta(days=SYNC_LOOKBACK_DAYS - 1)
+    date_to = today
+
     # --- 4. Fetch and upsert campaign-level metrics ---
     try:
-        raw_insights = fetch_campaign_insights(meta_account_id, access_token)
+        raw_insights = fetch_campaign_insights(meta_account_id, access_token, date_from, date_to)
     except Exception as e:
         summary["errors"].append(f"Failed to fetch campaign insights: {e}")
         raw_insights = []
@@ -289,7 +299,7 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
 
     # --- 5. Fetch and upsert ad-set-level metrics ---
     try:
-        adset_insights = fetch_ad_set_insights(meta_account_id, access_token)
+        adset_insights = fetch_ad_set_insights(meta_account_id, access_token, date_from, date_to)
     except Exception as e:
         summary["errors"].append(f"Failed to fetch ad-set insights: {e}")
         adset_insights = []
@@ -313,7 +323,7 @@ def sync_meta_account(db: Session, account: AdAccount) -> dict:
 
     # --- 6. Fetch and upsert ad-level metrics ---
     try:
-        ad_insights = fetch_ad_insights(meta_account_id, access_token)
+        ad_insights = fetch_ad_insights(meta_account_id, access_token, date_from, date_to)
     except Exception as e:
         summary["errors"].append(f"Failed to fetch ad insights: {e}")
         ad_insights = []
