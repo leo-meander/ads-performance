@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { Plus } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
 import ApprovalStatusBadge from '@/components/ApprovalStatusBadge'
 
@@ -45,7 +46,12 @@ export default function ApprovalsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Approvals</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Approvals</h1>
+        <Link href="/creative/submit" className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">
+          <Plus className="w-4 h-4" /> New Approval
+        </Link>
+      </div>
 
       <div className="flex items-center gap-4 mb-4">
         <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
