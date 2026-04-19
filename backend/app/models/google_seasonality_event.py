@@ -1,18 +1,24 @@
-from sqlalchemy import Column, Integer, Numeric, SmallInteger, String, Text
+from sqlalchemy import Column, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint
 
 from app.models.base import Base, TimestampMixin
 
 
 class GoogleSeasonalityEvent(TimestampMixin, Base):
-    """Static Vietnam-hotel seasonality calendar used by SEASONALITY_* detectors.
+    """Per-country hotel seasonality calendar used by SEASONALITY_* detectors.
 
-    Seeded in migration 011. Rows describe recurring annual events (Tet, summer
-    peak, low season) along with SOP-recommended budget/tCPA adjustments.
+    Seeded in migrations 011 (VN) + 012 (JP/TW + inbound source markets).
+    Detectors evaluate each campaign against the union of the branch's home
+    country and the campaign's currently targeted countries — a Vietnam Tet
+    event must NOT fire for an Osaka PMax campaign, etc.
     """
 
     __tablename__ = "google_seasonality_events"
+    __table_args__ = (
+        UniqueConstraint("country_code", "event_key", name="uq_google_seasonality_country_event"),
+    )
 
-    event_key = Column(String(40), nullable=False, unique=True)
+    country_code = Column(String(2), nullable=False, index=True)  # ISO-2: VN / JP / TW / KR / HK / SG / US / AU
+    event_key = Column(String(40), nullable=False)
     name = Column(String(120), nullable=False)
     start_month = Column(SmallInteger, nullable=False)
     start_day = Column(SmallInteger, nullable=False)

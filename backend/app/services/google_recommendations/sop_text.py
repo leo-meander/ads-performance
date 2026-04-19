@@ -111,10 +111,18 @@ SOP_EXCERPTS: dict[str, str] = {
         "New account (0–6 months): Branded 10-15% / Non-branded 30-40% / PMax 40-50% / Demand Gen 10-15%. "
         "Stable (6+ months): Branded 5-10% / Non-branded 25-35% / PMax 40-50% / Demand Gen 15-20%.",
     "PART_6.SEASONALITY":
-        "Vietnam hotel seasonality: Tet (Jan-Feb, lead 3 weeks, budget +30-50%, tCPA +20-30%); "
-        "30/4-1/5 (lead 2 weeks, +20-30%/+15-20%); Summer Jun-Aug (lead from early May, +40-60%); "
-        "2/9 (lead 2 weeks, +20-30%); Christmas (lead from early Nov, +20-40%); "
-        "Low season Mar & Sep-Oct (tCPA -10-15%, shift to Demand Gen). "
+        "Seasonality is per-branch AND per-targeted-country. Each event carries a country_code; "
+        "detectors only fire when the event country is in (branch home country ∪ campaign's targeted countries). "
+        "Branch home countries: Saigon=VN, Osaka=JP, Taipei/1948/Oani/Bread=TW. "
+        "VN: Tet (Jan-Feb, lead 3 weeks, +30-50% / tCPA +20-30%); 30/4-1/5 (lead 2w, +20-30%/+15-20%); "
+        "Summer Jun-Aug (lead from early May, +40-60%); 2/9 (lead 2w, +20-30%); "
+        "Christmas (lead from early Nov, +20-40%); Low season Mar & Sep-Oct (-10-15% tCPA, shift to Demand Gen). "
+        "JP: Shogatsu (biggest peak, lead 4w, +30-50%); Golden Week (lead 4w, +40-60%); Obon (lead 3w, +30-50%); "
+        "Sakura (lead 4w, inbound-driven +30-50%); Momiji (lead 4w, +20-40%); Low season: post-Shogatsu Jan-Feb and rainy June. "
+        "TW: Lunar NY (lead 3w, +30-50%); Qingming, Dragon Boat, Mid-Autumn, Double Ten (each lead 2w, +15-30%); "
+        "Summer peak Jun-Aug (+30-50%); Christmas/NYE (lead 4w, +20-40%); Low spring Mar, low late-autumn. "
+        "Inbound source markets (KR Seollal/Chuseok, HK/SG CNY, US Thanksgiving/Xmas, AU summer/April holidays) "
+        "fire only when the branch actually targets those geos. "
         "NEVER wait until peak — AI needs 1–2 weeks to re-learn.",
     "PART_6.BUDGET_PACING":
         "If PMax daily spend exhausts before 2 pm local on 3 of the last 7 days, budget is too low for the "

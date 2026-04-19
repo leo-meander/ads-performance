@@ -19,6 +19,9 @@ from app.services.google_recommendations.base import (
     DetectorTarget,
 )
 from app.services.google_recommendations.registry import register
+from app.services.google_recommendations.seasonality_scope import (
+    relevant_country_codes_for_account,
+)
 from app.services.google_recommendations.utils import (
     classify_campaign,
     sum_metric_for_campaign,
@@ -43,21 +46,33 @@ class LowSeasonShiftToDemandGenDetector(Detector):
 
     def scope(self, db: Session, account_ids: list[str] | None = None) -> Iterable[DetectorTarget]:
         today = date.today()
-        low_events = [
+        active_low_events = [
             ev for ev in db.query(GoogleSeasonalityEvent).all()
             if ev.event_key.startswith("low_") and _event_active(ev, today)
         ]
-        if not low_events:
+        if not active_low_events:
             return
         q = db.query(Campaign.account_id).filter(Campaign.platform == "google").distinct()
         if account_ids:
             q = q.filter(Campaign.account_id.in_(account_ids))
         for row in q.all():
+            account_id = row[0]
+            relevant_countries = relevant_country_codes_for_account(db, account_id)
+            if not relevant_countries:
+                continue
+            matching = [
+                ev for ev in active_low_events
+                if ev.country_code in relevant_countries
+            ]
+            if not matching:
+                continue
             yield DetectorTarget(
                 entity_level="account",
-                entity_id=f"{row[0]}:low_season",
-                account_id=row[0],
-                context={"event_keys": [ev.event_key for ev in low_events]},
+                entity_id=f"{account_id}:low_season",
+                account_id=account_id,
+                context={
+                    "event_keys": [f"{ev.country_code}:{ev.event_key}" for ev in matching],
+                },
             )
 
     def evaluate(self, db: Session, target: DetectorTarget) -> DetectorFinding | None:

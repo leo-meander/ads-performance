@@ -1,8 +1,9 @@
 """SEASONALITY_LEAD_TIME_APPROACHING — Seasonal event is within lead-time window.
 
-Per SOP Part 6.2 (Vietnam hotel calendar). For each active Google campaign in
-the account, if the current date is within `lead_time_days` of an event and the
-daily budget hasn't been raised above baseline, fire a recommendation.
+Per SOP Part 6.2. For each active Google campaign, if the current date is
+within `lead_time_days` of an event whose country_code applies to that
+campaign (branch home country ∪ targeted countries) and the daily budget
+hasn't been raised above baseline, fire a recommendation.
 
 Fires per (account, campaign, event) target so the applier can bump each
 campaign's daily budget independently.
@@ -24,6 +25,9 @@ from app.services.google_recommendations.base import (
     DetectorTarget,
 )
 from app.services.google_recommendations.registry import register
+from app.services.google_recommendations.seasonality_scope import (
+    relevant_country_codes_for_campaign,
+)
 from app.services.google_recommendations.utils import (
     classify_campaign,
     snapshot_metrics,
@@ -88,16 +92,24 @@ class SeasonalityLeadTimeApproachingDetector(Detector):
             campaign_type = classify_campaign(camp)
             if campaign_type not in ("PMAX", "SEARCH", "DEMAND_GEN"):
                 continue
+            relevant_countries = relevant_country_codes_for_campaign(db, camp)
+            if not relevant_countries:
+                # Unknown branch + no targeted countries → skip rather than
+                # risk firing the wrong country's calendar.
+                continue
             for ev, days_until in upcoming:
+                if ev.country_code not in relevant_countries:
+                    continue
                 yield DetectorTarget(
                     entity_level="campaign",
-                    entity_id=f"{camp.id}:{ev.event_key}",
+                    entity_id=f"{camp.id}:{ev.country_code}:{ev.event_key}",
                     account_id=camp.account_id,
                     campaign_id=camp.id,
                     campaign_type=campaign_type,
                     context={
                         "campaign_name": camp.name,
                         "daily_budget": float(camp.daily_budget) if camp.daily_budget else None,
+                        "country_code": ev.country_code,
                         "event_key": ev.event_key,
                         "event_name": ev.name,
                         "days_until_event": days_until,
@@ -130,6 +142,7 @@ class SeasonalityLeadTimeApproachingDetector(Detector):
         )
 
         evidence: dict[str, Any] = {
+            "country_code": target.context.get("country_code"),
             "event_key": target.context.get("event_key"),
             "event_name": target.context.get("event_name"),
             "days_until_event": target.context.get("days_until_event"),

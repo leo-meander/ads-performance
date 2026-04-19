@@ -21,6 +21,9 @@ from app.services.google_recommendations.base import (
     DetectorTarget,
 )
 from app.services.google_recommendations.registry import register
+from app.services.google_recommendations.seasonality_scope import (
+    relevant_country_codes_for_campaign,
+)
 from app.services.google_recommendations.utils import (
     classify_campaign,
     snapshot_metrics,
@@ -63,15 +66,21 @@ class SeasonalityTcpaAdjustDueDetector(Detector):
         for camp in q.all():
             if classify_campaign(camp) != "PMAX":
                 continue
+            relevant_countries = relevant_country_codes_for_campaign(db, camp)
+            if not relevant_countries:
+                continue
             for ev in active_events:
+                if ev.country_code not in relevant_countries:
+                    continue
                 yield DetectorTarget(
                     entity_level="campaign",
-                    entity_id=f"{camp.id}:{ev.event_key}:tcpa",
+                    entity_id=f"{camp.id}:{ev.country_code}:{ev.event_key}:tcpa",
                     account_id=camp.account_id,
                     campaign_id=camp.id,
                     campaign_type="PMAX",
                     context={
                         "campaign_name": camp.name,
+                        "country_code": ev.country_code,
                         "event_key": ev.event_key,
                         "event_name": ev.name,
                         "tcpa_adjust_pct_min": float(ev.tcpa_adjust_pct_min or 0),
@@ -103,6 +112,7 @@ class SeasonalityTcpaAdjustDueDetector(Detector):
 
         return DetectorFinding(
             evidence={
+                "country_code": target.context.get("country_code"),
                 "event_key": target.context.get("event_key"),
                 "event_name": target.context.get("event_name"),
                 "current_tcpa": current_tcpa,

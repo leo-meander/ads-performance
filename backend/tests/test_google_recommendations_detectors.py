@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.models.account import AdAccount
+from app.models.ad_set import AdSet
 from app.models.base import Base
 from app.models.campaign import Campaign
 from app.models.google_asset import GoogleAsset
@@ -36,17 +37,34 @@ def db():
         Base.metadata.drop_all(bind=engine)
 
 
-def _account(db):
+def _account(db, account_name: str = "Meander Saigon"):
+    """Default to Saigon (VN) so country-scoped detectors resolve a home country."""
     a = AdAccount(
         id=str(uuid.uuid4()),
         platform="google",
         account_id=f"goog_{uuid.uuid4().hex[:8]}",
-        account_name="Test Hotel Branch",
+        account_name=account_name,
         currency="USD",
         is_active=True,
     )
     db.add(a); db.commit()
     return a
+
+
+def _adset(db, campaign, account, country: str):
+    """Create an ad_set with a parsed country code — feeds the targeted-country scope helper."""
+    s = AdSet(
+        id=str(uuid.uuid4()),
+        campaign_id=campaign.id,
+        account_id=account.id,
+        platform="google",
+        platform_adset_id=f"as_{uuid.uuid4().hex[:8]}",
+        name=f"{country}_TestAdGroup",
+        status="ACTIVE",
+        country=country,
+    )
+    db.add(s); db.commit()
+    return s
 
 
 def _campaign(db, account, **kwargs):
@@ -211,29 +229,95 @@ def test_budget_mix_off_target_fires_when_only_pmax(db):
 
 
 # ── SEASONALITY_LEAD_TIME_APPROACHING ───────────────────────
-def test_seasonality_lead_time_fires_when_event_near(db):
-    acc = _account(db)
-    camp = _campaign(db, acc)
-    # Seed one event that starts in 10 days with lead_time = 14 days.
-    start = date.today() + timedelta(days=10)
+def _seed_event(db, *, country_code: str, event_key: str, start: date, lead: int = 14):
     db.add(GoogleSeasonalityEvent(
         id=str(uuid.uuid4()),
-        event_key="test_event",
-        name="Test Peak",
+        country_code=country_code,
+        event_key=event_key,
+        name=f"{country_code} {event_key}",
         start_month=start.month,
         start_day=start.day,
         end_month=start.month,
         end_day=start.day,
-        lead_time_days=14,
+        lead_time_days=lead,
         budget_bump_pct_min=Decimal("20"),
         budget_bump_pct_max=Decimal("30"),
     ))
     db.commit()
 
+
+def test_seasonality_lead_time_fires_when_event_near(db):
+    acc = _account(db, "Meander Saigon")  # VN branch
+    camp = _campaign(db, acc)
+    _seed_event(
+        db, country_code="VN", event_key="test_event",
+        start=date.today() + timedelta(days=10), lead=14,
+    )
+
     det = get_detector("SEASONALITY_LEAD_TIME_APPROACHING")
     hits = [h for h in (det.evaluate(db, t) for t in det.scope(db)) if h]
     assert len(hits) == 1
     assert hits[0].evidence["event_key"] == "test_event"
+    assert hits[0].evidence["country_code"] == "VN"
+
+
+def test_seasonality_skips_event_for_wrong_home_country(db):
+    """Osaka (JP branch) must NOT fire on a Vietnam event."""
+    acc = _account(db, "Meander Osaka")  # JP branch
+    _campaign(db, acc)
+    _seed_event(
+        db, country_code="VN", event_key="tet",
+        start=date.today() + timedelta(days=10),
+    )
+
+    det = get_detector("SEASONALITY_LEAD_TIME_APPROACHING")
+    hits = [h for h in (det.evaluate(db, t) for t in det.scope(db)) if h]
+    assert hits == []
+
+
+def test_seasonality_fires_when_home_country_matches(db):
+    """Osaka fires on a JP event."""
+    acc = _account(db, "Meander Osaka")
+    _campaign(db, acc)
+    _seed_event(
+        db, country_code="JP", event_key="golden_week",
+        start=date.today() + timedelta(days=10),
+    )
+
+    det = get_detector("SEASONALITY_LEAD_TIME_APPROACHING")
+    hits = [h for h in (det.evaluate(db, t) for t in det.scope(db)) if h]
+    assert len(hits) == 1
+    assert hits[0].evidence["country_code"] == "JP"
+
+
+def test_seasonality_fires_when_targeted_country_matches(db):
+    """Saigon campaign targeting KR adgroup fires on a KR event, even though home is VN."""
+    acc = _account(db, "Meander Saigon")
+    camp = _campaign(db, acc)
+    _adset(db, camp, acc, country="KR")
+    _seed_event(
+        db, country_code="KR", event_key="chuseok",
+        start=date.today() + timedelta(days=10),
+    )
+
+    det = get_detector("SEASONALITY_LEAD_TIME_APPROACHING")
+    hits = [h for h in (det.evaluate(db, t) for t in det.scope(db)) if h]
+    assert len(hits) == 1
+    assert hits[0].evidence["country_code"] == "KR"
+
+
+def test_seasonality_skips_when_branch_unknown(db):
+    """Random account_name that doesn't map to a branch → no home country → detector skips."""
+    acc = _account(db, "Random Unknown Account")
+    _campaign(db, acc)
+    _seed_event(
+        db, country_code="VN", event_key="tet",
+        start=date.today() + timedelta(days=10),
+    )
+
+    det = get_detector("SEASONALITY_LEAD_TIME_APPROACHING")
+    hits = [h for h in (det.evaluate(db, t) for t in det.scope(db)) if h]
+    assert hits == []
 
 
 def test_all_detectors_registered():

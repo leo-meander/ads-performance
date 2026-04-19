@@ -96,9 +96,10 @@ def seed(db) -> dict:
     db.commit()
 
     # ── Seasonality event that starts in 10 days with 14d lead
+    # country_code='VN' matches the smoke account (Meander Saigon → VN home country)
     start = date.today() + timedelta(days=10)
     db.add(GoogleSeasonalityEvent(
-        id=_u(), event_key=f"smoke_event_{rand}",
+        id=_u(), country_code="VN", event_key=f"smoke_event_{rand}",
         name="Smoke Test Peak",
         start_month=start.month, start_day=start.day,
         end_month=start.month, end_day=start.day,
