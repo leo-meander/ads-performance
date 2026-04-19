@@ -14,13 +14,19 @@ from app.services.google_client import _get_client
 logger = logging.getLogger(__name__)
 
 
-def _field_mask(paths: list[str]) -> FieldMask:
-    """Return a protobuf FieldMask.
+def _set_update_mask(operation, paths: list[str]) -> None:
+    """Populate an Operation's update_mask without going through client.copy_from().
 
-    google-ads Python SDK v23 dropped the `FieldMask` alias from
-    `client.get_type(...)`. Import it from google.protobuf directly.
+    google-ads Python SDK v23 removed the `FieldMask` alias from `client.get_type()`,
+    AND `client.copy_from()` internally calls `get_type("FieldMask")` to coerce
+    raw protobuf FieldMask sources. Both paths fail with
+    "Specified type 'FieldMask' does not exist in Google Ads API v23".
+
+    Work around by writing to the raw protobuf message directly — `operation._pb`
+    exposes the underlying proto, and update_mask is a plain google.protobuf
+    FieldMask field we can CopyFrom into.
     """
-    return FieldMask(paths=list(paths))
+    operation._pb.update_mask.CopyFrom(FieldMask(paths=list(paths)))
 
 
 def pause_campaign(customer_id: str, platform_campaign_id: str) -> bool:
@@ -33,10 +39,7 @@ def pause_campaign(customer_id: str, platform_campaign_id: str) -> bool:
         campaign = campaign_operation.update
         campaign.resource_name = campaign_service.campaign_path(customer_id, platform_campaign_id)
         campaign.status = client.enums.CampaignStatusEnum.PAUSED
-        client.copy_from(
-            campaign_operation.update_mask,
-            _field_mask(["status"]),
-        )
+        _set_update_mask(campaign_operation, ["status"])
         campaign_service.mutate_campaigns(
             customer_id=customer_id, operations=[campaign_operation]
         )
@@ -60,10 +63,7 @@ def enable_campaign(customer_id: str, platform_campaign_id: str) -> bool:
         campaign = campaign_operation.update
         campaign.resource_name = campaign_service.campaign_path(customer_id, platform_campaign_id)
         campaign.status = client.enums.CampaignStatusEnum.ENABLED
-        client.copy_from(
-            campaign_operation.update_mask,
-            _field_mask(["status"]),
-        )
+        _set_update_mask(campaign_operation, ["status"])
         campaign_service.mutate_campaigns(
             customer_id=customer_id, operations=[campaign_operation]
         )
@@ -87,10 +87,7 @@ def pause_ad_group(customer_id: str, platform_ad_group_id: str) -> bool:
         ad_group = operation.update
         ad_group.resource_name = ad_group_service.ad_group_path(customer_id, platform_ad_group_id)
         ad_group.status = client.enums.AdGroupStatusEnum.PAUSED
-        client.copy_from(
-            operation.update_mask,
-            _field_mask(["status"]),
-        )
+        _set_update_mask(operation, ["status"])
         ad_group_service.mutate_ad_groups(
             customer_id=customer_id, operations=[operation]
         )
@@ -114,10 +111,7 @@ def enable_ad_group(customer_id: str, platform_ad_group_id: str) -> bool:
         ad_group = operation.update
         ad_group.resource_name = ad_group_service.ad_group_path(customer_id, platform_ad_group_id)
         ad_group.status = client.enums.AdGroupStatusEnum.ENABLED
-        client.copy_from(
-            operation.update_mask,
-            _field_mask(["status"]),
-        )
+        _set_update_mask(operation, ["status"])
         ad_group_service.mutate_ad_groups(
             customer_id=customer_id, operations=[operation]
         )
@@ -143,10 +137,7 @@ def pause_ad(customer_id: str, platform_ad_group_id: str, platform_ad_id: str) -
             customer_id, platform_ad_group_id, platform_ad_id
         )
         ad_group_ad.status = client.enums.AdGroupAdStatusEnum.PAUSED
-        client.copy_from(
-            operation.update_mask,
-            _field_mask(["status"]),
-        )
+        _set_update_mask(operation, ["status"])
         ad_group_ad_service.mutate_ad_group_ads(
             customer_id=customer_id, operations=[operation]
         )
@@ -172,10 +163,7 @@ def enable_ad(customer_id: str, platform_ad_group_id: str, platform_ad_id: str) 
             customer_id, platform_ad_group_id, platform_ad_id
         )
         ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
-        client.copy_from(
-            operation.update_mask,
-            _field_mask(["status"]),
-        )
+        _set_update_mask(operation, ["status"])
         ad_group_ad_service.mutate_ad_group_ads(
             customer_id=customer_id, operations=[operation]
         )
@@ -220,10 +208,7 @@ def update_campaign_budget(
         budget = operation.update
         budget.resource_name = budget_resource
         budget.amount_micros = new_budget_micros
-        client.copy_from(
-            operation.update_mask,
-            _field_mask(["amount_micros"]),
-        )
+        _set_update_mask(operation, ["amount_micros"])
         budget_service.mutate_campaign_budgets(
             customer_id=customer_id, operations=[operation]
         )
@@ -268,10 +253,7 @@ def update_tcpa_target(
             customer_id, platform_campaign_id,
         )
         campaign.maximize_conversions.target_cpa_micros = int(new_tcpa_micros)
-        client.copy_from(
-            operation.update_mask,
-            _field_mask(["maximize_conversions.target_cpa_micros"]),
-        )
+        _set_update_mask(operation, ["maximize_conversions.target_cpa_micros"])
         campaign_service.mutate_campaigns(
             customer_id=customer_id, operations=[operation],
         )
