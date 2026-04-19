@@ -64,6 +64,32 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.google_recommendation_tasks.expire_google_recommendations_task",
         "schedule": crontab(minute=15),  # hourly at :15
     },
+    # Meta Ads playbook recommendation engine.
+    # Offset 30 min from the Google schedule so the two engines don't
+    # contend for the same Anthropic rate limit / DB connection pool.
+    "meta-recs-daily": {
+        "task": "app.tasks.meta_recommendation_tasks.daily_meta_recommendations_task",
+        "schedule": crontab(hour=23, minute=0),
+    },
+    "meta-recs-weekly": {
+        "task": "app.tasks.meta_recommendation_tasks.weekly_meta_recommendations_task",
+        # Monday 23:30 UTC = Tuesday 06:30 Asia/Ho_Chi_Minh.
+        "schedule": crontab(hour=23, minute=30, day_of_week=1),
+    },
+    "meta-recs-monthly": {
+        "task": "app.tasks.meta_recommendation_tasks.monthly_meta_recommendations_task",
+        # 1st of month 00:00 UTC = 07:00 local.
+        "schedule": crontab(hour=0, minute=0, day_of_month=1),
+    },
+    "meta-recs-seasonality": {
+        "task": "app.tasks.meta_recommendation_tasks.seasonality_meta_task",
+        # 21:30 UTC = 04:30 local the next day.
+        "schedule": crontab(hour=21, minute=30),
+    },
+    "meta-recs-expire": {
+        "task": "app.tasks.meta_recommendation_tasks.expire_meta_recommendations_task",
+        "schedule": crontab(minute=45),  # hourly at :45
+    },
 }
 
 # Auto-discover tasks

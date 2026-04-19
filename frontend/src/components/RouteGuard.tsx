@@ -15,6 +15,7 @@ const ROUTE_SECTION_MAP: Array<[string, string]> = [
   ['/logs', 'automation'],
   ['/insights', 'ai'],
   ['/transcriptions', 'ai'],
+  ['/meta', 'meta_ads'],
   ['/angles', 'meta_ads'],
   ['/creative', 'meta_ads'],
   ['/approvals', 'meta_ads'],

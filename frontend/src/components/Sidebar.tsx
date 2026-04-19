@@ -32,6 +32,7 @@ const navSections: NavSection[] = [
   {
     label: 'Meta Ads',
     items: [
+      { href: '/meta/recommendations', label: 'Recommendations', section: 'meta_ads' },
       { href: '/angles', label: 'Ad Angles', section: 'meta_ads' },
       { href: '/creative', label: 'Creative Library', section: 'meta_ads' },
       { href: '/approvals', label: 'Approvals', section: 'meta_ads', badge: true },

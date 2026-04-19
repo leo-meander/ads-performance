@@ -18,6 +18,7 @@ from app.models.google_asset import GoogleAsset
 from app.models.google_recommendation import GoogleRecommendation
 from app.models.google_seasonality_event import GoogleSeasonalityEvent
 from app.models.google_search_term_pattern import GoogleSearchTermPattern
+from app.models.meta_recommendation import MetaRecommendation
 from app.models.user import User
 from app.models.user_permission import UserPermission
 
@@ -35,6 +36,7 @@ __all__ = [
     "GoogleRecommendation",
     "GoogleSeasonalityEvent",
     "GoogleSearchTermPattern",
+    "MetaRecommendation",
     "MetricsCache",
     "Reservation",
     "AutomationRule",

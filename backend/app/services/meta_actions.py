@@ -9,6 +9,16 @@ from facebook_business.api import FacebookAdsApi
 
 logger = logging.getLogger(__name__)
 
+# Golden Rule #4 (Meta playbook G.4): never scale a campaign by more than
+# 25% in a single day — Meta will reset learning phase and ROAS collapses.
+# The applier passes force=True only when the recommendation is
+# SCALE_TOO_FAST auto-revert (which brings budget DOWN, never up).
+MAX_DAILY_BUDGET_INCREASE_PCT = 0.25
+
+
+class BudgetGuardError(RuntimeError):
+    """Raised when a budget adjust would violate the 25% daily cap."""
+
 
 def _init_api(access_token: str):
     FacebookAdsApi.init(app_id="", app_secret="", access_token=access_token)
@@ -99,7 +109,11 @@ def enable_ad(access_token: str, platform_ad_id: str) -> bool:
 
 
 def update_budget(access_token: str, platform_campaign_id: str, new_daily_budget: int) -> bool:
-    """Update a Meta campaign's daily budget (in currency minor units)."""
+    """Update a Meta campaign's daily budget (in currency minor units).
+
+    Legacy helper kept for backwards compatibility with older callers. New
+    code should use `update_campaign_budget` which enforces the 25% cap.
+    """
     _init_api(access_token)
     try:
         campaign = Campaign(platform_campaign_id)
@@ -109,4 +123,92 @@ def update_budget(access_token: str, platform_campaign_id: str, new_daily_budget
         return True
     except Exception:
         logger.exception("Failed to update budget for Meta campaign %s", platform_campaign_id)
+        raise
+
+
+def _guard_increase(current: float | None, new_value: float, *, force: bool) -> None:
+    """Enforce the Meta playbook Golden Rule #4 25% daily cap on increases.
+
+    Decreases and force=True (used by SCALE_TOO_FAST revert) bypass the guard.
+    """
+    if force or current is None or current <= 0 or new_value <= current:
+        return
+    max_allowed = float(current) * (1 + MAX_DAILY_BUDGET_INCREASE_PCT)
+    if new_value > max_allowed:
+        raise BudgetGuardError(
+            f"Budget increase {current:.0f} -> {new_value:.0f} exceeds the "
+            f"{int(MAX_DAILY_BUDGET_INCREASE_PCT * 100)}% daily cap "
+            f"(max allowed: {max_allowed:.0f}). Pass force=True to override, "
+            f"or split the raise across multiple days.",
+        )
+
+
+def update_campaign_budget(
+    access_token: str,
+    platform_campaign_id: str,
+    *,
+    current_daily_budget: float | None = None,
+    new_daily_budget: float | None = None,
+    new_lifetime_budget: float | None = None,
+    force: bool = False,
+) -> bool:
+    """Update a Meta campaign's daily or lifetime budget with Golden Rule #4 guard.
+
+    Budgets are sent to Meta in currency minor units (e.g. VND cents) as ints.
+    Callers pass either new_daily_budget or new_lifetime_budget in the account
+    currency's major units and this helper converts.
+    """
+    if new_daily_budget is None and new_lifetime_budget is None:
+        raise ValueError("Either new_daily_budget or new_lifetime_budget must be provided")
+    if new_daily_budget is not None:
+        _guard_increase(current_daily_budget, float(new_daily_budget), force=force)
+
+    _init_api(access_token)
+    try:
+        campaign = Campaign(platform_campaign_id)
+        if new_daily_budget is not None:
+            campaign[Campaign.Field.daily_budget] = int(round(float(new_daily_budget) * 100))
+        if new_lifetime_budget is not None:
+            campaign[Campaign.Field.lifetime_budget] = int(round(float(new_lifetime_budget) * 100))
+        campaign.remote_update()
+        logger.info(
+            "Updated budget for Meta campaign %s: daily=%s lifetime=%s force=%s",
+            platform_campaign_id, new_daily_budget, new_lifetime_budget, force,
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to update budget for Meta campaign %s", platform_campaign_id)
+        raise
+
+
+def update_ad_set_budget(
+    access_token: str,
+    platform_adset_id: str,
+    *,
+    current_daily_budget: float | None = None,
+    new_daily_budget: float | None = None,
+    new_lifetime_budget: float | None = None,
+    force: bool = False,
+) -> bool:
+    """Update a Meta ad set's daily or lifetime budget with Golden Rule #4 guard."""
+    if new_daily_budget is None and new_lifetime_budget is None:
+        raise ValueError("Either new_daily_budget or new_lifetime_budget must be provided")
+    if new_daily_budget is not None:
+        _guard_increase(current_daily_budget, float(new_daily_budget), force=force)
+
+    _init_api(access_token)
+    try:
+        adset = AdSet(platform_adset_id)
+        if new_daily_budget is not None:
+            adset[AdSet.Field.daily_budget] = int(round(float(new_daily_budget) * 100))
+        if new_lifetime_budget is not None:
+            adset[AdSet.Field.lifetime_budget] = int(round(float(new_lifetime_budget) * 100))
+        adset.remote_update()
+        logger.info(
+            "Updated budget for Meta ad set %s: daily=%s lifetime=%s force=%s",
+            platform_adset_id, new_daily_budget, new_lifetime_budget, force,
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to update budget for Meta ad set %s", platform_adset_id)
         raise
