@@ -99,7 +99,10 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
     """Fetch all active/paused campaigns for a Google Ads account.
 
     Pulls PMax-relevant fields (bidding strategy type, tCPA/tROAS targets,
-    start_date, url_expansion opt-out) for the recommendation engine.
+    start_date) for the recommendation engine. Portfolio bid-strategy fields
+    and url_expansion are intentionally omitted — v23 GAQL rejects
+    campaign.url_expansion_opt_out and the portfolio bid fields for our
+    MCC query context.
     Returns list of dicts compatible with the campaigns table schema.
     """
     customer_id = customer_id.replace("-", "")
@@ -116,9 +119,6 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
             campaign.bidding_strategy_type,
             campaign.maximize_conversions.target_cpa_micros,
             campaign.maximize_conversion_value.target_roas,
-            campaign.target_cpa.target_cpa_micros,
-            campaign.target_roas.target_roas,
-            campaign.url_expansion_opt_out,
             campaign_budget.amount_micros
         FROM campaign
         WHERE campaign.status != 'REMOVED'
@@ -132,18 +132,8 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
             campaign_type = _enum_name(c.advertising_channel_type)
             bidding_strategy_type = _enum_name(c.bidding_strategy_type) if c.bidding_strategy_type else None
 
-            # Both campaign.maximize_conversions.target_cpa_micros AND
-            # campaign.target_cpa.target_cpa_micros can appear — use whichever is set.
-            tcpa_micros = (
-                c.maximize_conversions.target_cpa_micros
-                or c.target_cpa.target_cpa_micros
-                or None
-            )
-            troas = (
-                c.maximize_conversion_value.target_roas
-                or c.target_roas.target_roas
-                or None
-            )
+            tcpa_micros = c.maximize_conversions.target_cpa_micros or None
+            troas = c.maximize_conversion_value.target_roas or None
             results.append({
                 "platform_campaign_id": str(c.id),
                 "name": c.name,
@@ -162,7 +152,6 @@ def fetch_campaigns(customer_id: str) -> list[dict]:
                     "bidding_strategy_type": bidding_strategy_type,
                     "target_cpa_micros": int(tcpa_micros) if tcpa_micros else None,
                     "target_roas": float(troas) if troas else None,
-                    "url_expansion_opt_out": bool(c.url_expansion_opt_out),
                 },
             })
         logger.info("Fetched %d campaigns from Google account %s", len(results), customer_id)
