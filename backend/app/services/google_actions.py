@@ -7,10 +7,20 @@ Google uses customer_id (not access_token) — credentials from global .env.
 import logging
 
 from google.ads.googleads.errors import GoogleAdsException
+from google.protobuf.field_mask_pb2 import FieldMask
 
 from app.services.google_client import _get_client
 
 logger = logging.getLogger(__name__)
+
+
+def _field_mask(paths: list[str]) -> FieldMask:
+    """Return a protobuf FieldMask.
+
+    google-ads Python SDK v23 dropped the `FieldMask` alias from
+    `client.get_type(...)`. Import it from google.protobuf directly.
+    """
+    return FieldMask(paths=list(paths))
 
 
 def pause_campaign(customer_id: str, platform_campaign_id: str) -> bool:
@@ -25,7 +35,7 @@ def pause_campaign(customer_id: str, platform_campaign_id: str) -> bool:
         campaign.status = client.enums.CampaignStatusEnum.PAUSED
         client.copy_from(
             campaign_operation.update_mask,
-            client.get_type("FieldMask")(paths=["status"]),
+            _field_mask(["status"]),
         )
         campaign_service.mutate_campaigns(
             customer_id=customer_id, operations=[campaign_operation]
@@ -52,7 +62,7 @@ def enable_campaign(customer_id: str, platform_campaign_id: str) -> bool:
         campaign.status = client.enums.CampaignStatusEnum.ENABLED
         client.copy_from(
             campaign_operation.update_mask,
-            client.get_type("FieldMask")(paths=["status"]),
+            _field_mask(["status"]),
         )
         campaign_service.mutate_campaigns(
             customer_id=customer_id, operations=[campaign_operation]
@@ -79,7 +89,7 @@ def pause_ad_group(customer_id: str, platform_ad_group_id: str) -> bool:
         ad_group.status = client.enums.AdGroupStatusEnum.PAUSED
         client.copy_from(
             operation.update_mask,
-            client.get_type("FieldMask")(paths=["status"]),
+            _field_mask(["status"]),
         )
         ad_group_service.mutate_ad_groups(
             customer_id=customer_id, operations=[operation]
@@ -106,7 +116,7 @@ def enable_ad_group(customer_id: str, platform_ad_group_id: str) -> bool:
         ad_group.status = client.enums.AdGroupStatusEnum.ENABLED
         client.copy_from(
             operation.update_mask,
-            client.get_type("FieldMask")(paths=["status"]),
+            _field_mask(["status"]),
         )
         ad_group_service.mutate_ad_groups(
             customer_id=customer_id, operations=[operation]
@@ -135,7 +145,7 @@ def pause_ad(customer_id: str, platform_ad_group_id: str, platform_ad_id: str) -
         ad_group_ad.status = client.enums.AdGroupAdStatusEnum.PAUSED
         client.copy_from(
             operation.update_mask,
-            client.get_type("FieldMask")(paths=["status"]),
+            _field_mask(["status"]),
         )
         ad_group_ad_service.mutate_ad_group_ads(
             customer_id=customer_id, operations=[operation]
@@ -164,7 +174,7 @@ def enable_ad(customer_id: str, platform_ad_group_id: str, platform_ad_id: str) 
         ad_group_ad.status = client.enums.AdGroupAdStatusEnum.ENABLED
         client.copy_from(
             operation.update_mask,
-            client.get_type("FieldMask")(paths=["status"]),
+            _field_mask(["status"]),
         )
         ad_group_ad_service.mutate_ad_group_ads(
             customer_id=customer_id, operations=[operation]
@@ -212,7 +222,7 @@ def update_campaign_budget(
         budget.amount_micros = new_budget_micros
         client.copy_from(
             operation.update_mask,
-            client.get_type("FieldMask")(paths=["amount_micros"]),
+            _field_mask(["amount_micros"]),
         )
         budget_service.mutate_campaign_budgets(
             customer_id=customer_id, operations=[operation]
@@ -260,7 +270,7 @@ def update_tcpa_target(
         campaign.maximize_conversions.target_cpa_micros = int(new_tcpa_micros)
         client.copy_from(
             operation.update_mask,
-            client.get_type("FieldMask")(paths=["maximize_conversions.target_cpa_micros"]),
+            _field_mask(["maximize_conversions.target_cpa_micros"]),
         )
         campaign_service.mutate_campaigns(
             customer_id=customer_id, operations=[operation],
