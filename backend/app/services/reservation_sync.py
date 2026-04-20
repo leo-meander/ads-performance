@@ -49,30 +49,26 @@ def _parse_int(val) -> int | None:
         return None
 
 
-# PMS feeds differ per property — try the common key variants.
-RATE_PLAN_KEYS = (
-    "rate_plan_name",
-    "rate_plan",
-    "ratePlan",
-    "ratePlanName",
-    "rate_plan_code",
-    "room_rate_plan",
-)
+import re
+
+# Rate plan lives inside the room_type field — "Standard Twin (KOL_whatweieats)"
+# → "KOL_whatweieats". We take the last parenthesised group so room types with
+# nested descriptors still resolve correctly.
+_RATE_PLAN_PAREN_RE = re.compile(r"\(([^()]+)\)\s*$")
+
+
+def extract_rate_plan_from_room_type(room_type: str | None) -> str | None:
+    if not room_type:
+        return None
+    match = _RATE_PLAN_PAREN_RE.search(room_type)
+    if not match:
+        return None
+    val = match.group(1).strip()
+    return val or None
 
 
 def _extract_rate_plan(raw: dict) -> str | None:
-    for key in RATE_PLAN_KEYS:
-        val = raw.get(key)
-        if val:
-            return str(val).strip() or None
-    # Some PMS feeds nest rate plan inside room_type_detail / reservation_lines
-    detail = raw.get("room_type_detail") or raw.get("room_detail")
-    if isinstance(detail, dict):
-        for key in RATE_PLAN_KEYS:
-            val = detail.get(key)
-            if val:
-                return str(val).strip() or None
-    return None
+    return extract_rate_plan_from_room_type(raw.get("room_type"))
 
 
 def sync_reservations(

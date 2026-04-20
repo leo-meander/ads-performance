@@ -11,12 +11,22 @@ from sqlalchemy import or_
 from app.core.permissions import accessible_branches, is_admin
 from app.database import get_db
 from app.dependencies.auth import get_current_user, require_section
+from app.models.account import AdAccount
 from app.models.booking_match import BookingMatch
+from app.models.campaign import Campaign
+from app.models.metrics import MetricsCache
 from app.models.reservation import Reservation
 from app.models.user import User
 from app.routers.accounts import BRANCH_ACCOUNT_MAP, branch_name_patterns
-from app.services.booking_match_service import run_matching
-from app.services.reservation_sync import sync_reservations
+from app.services.booking_match_service import (
+    AMOUNT_TOLERANCE,
+    normalize_branch,
+    run_matching,
+)
+from app.services.reservation_sync import (
+    extract_rate_plan_from_room_type,
+    sync_reservations,
+)
 
 router = APIRouter()
 
@@ -331,6 +341,130 @@ def list_reservations(
             "total": total,
             "limit": limit,
             "offset": offset,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/booking-matches/diagnose")
+def diagnose_reservation(
+    reservation_number: str = Query(..., description="PMS reservation number"),
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Explain why a specific reservation did or didn't match any ads row.
+
+    Returns the reservation, the matched BookingMatch (if any), and every
+    campaign-level ads row on the same day+branch with the revenue delta so
+    we can see whether it's a revenue mismatch, a missing ads row, or a
+    branch-normalisation issue.
+    """
+    try:
+        r = (
+            db.query(Reservation)
+            .filter(Reservation.reservation_number == reservation_number)
+            .first()
+        )
+        if not r:
+            return _api_response(error=f"Reservation {reservation_number} not found")
+
+        branch_key = normalize_branch(r.branch)
+        grand_total = float(r.grand_total) if r.grand_total is not None else None
+
+        # Existing match (if any) — search the ", "-joined reservation_numbers column.
+        existing_match = (
+            db.query(BookingMatch)
+            .filter(BookingMatch.reservation_numbers.ilike(f"%{reservation_number}%"))
+            .order_by(BookingMatch.match_date.desc())
+            .first()
+        )
+
+        # Candidate ads rows: same date, same branch (via AdAccount.account_name).
+        ads_candidates: list[dict] = []
+        if branch_key and r.reservation_date:
+            patterns = BRANCH_ACCOUNT_MAP.get(branch_key, [branch_key])
+            rows = (
+                db.query(
+                    MetricsCache.date.label("date"),
+                    MetricsCache.platform.label("platform"),
+                    Campaign.id.label("campaign_id"),
+                    Campaign.name.label("campaign_name"),
+                    AdAccount.account_name.label("account_name"),
+                    func.sum(MetricsCache.revenue).label("revenue"),
+                    func.sum(MetricsCache.conversions).label("bookings"),
+                )
+                .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+                .join(AdAccount, AdAccount.id == Campaign.account_id)
+                .filter(
+                    MetricsCache.date == r.reservation_date,
+                    MetricsCache.ad_set_id.is_(None),
+                    MetricsCache.ad_id.is_(None),
+                    MetricsCache.revenue > 0,
+                    or_(*[AdAccount.account_name.ilike(f"%{p}%") for p in patterns]),
+                )
+                .group_by(
+                    MetricsCache.date,
+                    MetricsCache.platform,
+                    Campaign.id,
+                    Campaign.name,
+                    AdAccount.account_name,
+                )
+                .all()
+            )
+            for row in rows:
+                revenue = float(row.revenue or 0)
+                delta = (revenue - grand_total) if grand_total is not None else None
+                ads_candidates.append({
+                    "platform": row.platform,
+                    "campaign_id": str(row.campaign_id),
+                    "campaign_name": row.campaign_name,
+                    "account_name": row.account_name,
+                    "ads_revenue": revenue,
+                    "ads_bookings": int(row.bookings or 0),
+                    "revenue_delta_vs_grand_total": delta,
+                    "within_tolerance": (
+                        delta is not None and abs(delta) < AMOUNT_TOLERANCE
+                    ),
+                })
+
+        reasons: list[str] = []
+        if not branch_key:
+            reasons.append(
+                f"branch '{r.branch}' could not be normalised to a hotel key"
+            )
+        if grand_total is None:
+            reasons.append("reservation.grand_total is NULL")
+        if not r.reservation_date:
+            reasons.append("reservation.reservation_date is NULL")
+        if not ads_candidates and branch_key and r.reservation_date:
+            reasons.append(
+                f"no campaign-level ads metrics with revenue>0 on {r.reservation_date} for branch {branch_key}"
+            )
+        if ads_candidates and not any(c["within_tolerance"] for c in ads_candidates):
+            reasons.append(
+                "ads revenue does not equal reservation.grand_total within tolerance "
+                f"(±{AMOUNT_TOLERANCE}) on any candidate row"
+            )
+
+        return _api_response(data={
+            "reservation": {
+                "id": r.id,
+                "reservation_number": r.reservation_number,
+                "reservation_date": r.reservation_date.isoformat() if r.reservation_date else None,
+                "check_in_date": r.check_in_date.isoformat() if r.check_in_date else None,
+                "grand_total": grand_total,
+                "country": r.country,
+                "status": r.status,
+                "source": r.source,
+                "room_type": r.room_type,
+                "rate_plan_name": r.rate_plan_name or extract_rate_plan_from_room_type(r.room_type),
+                "branch": r.branch,
+                "branch_key": branch_key,
+            },
+            "existing_match": _serialize_match(existing_match) if existing_match else None,
+            "ads_candidates": ads_candidates,
+            "likely_reasons": reasons,
+            "amount_tolerance": AMOUNT_TOLERANCE,
         })
     except Exception as e:
         return _api_response(error=str(e))

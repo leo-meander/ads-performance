@@ -16,6 +16,7 @@ from app.models.booking_match import BookingMatch
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
 from app.models.reservation import Reservation
+from app.services.reservation_sync import extract_rate_plan_from_room_type
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +247,10 @@ def run_matching(
             guest_emails=", ".join(r.email or "" for r in matched_reservations),
             reservation_statuses=", ".join(r.status or "" for r in matched_reservations),
             room_types=", ".join(r.room_type or "" for r in matched_reservations),
-            rate_plans=", ".join(r.rate_plan_name or "" for r in matched_reservations),
+            rate_plans=", ".join(
+                (r.rate_plan_name or extract_rate_plan_from_room_type(r.room_type) or "")
+                for r in matched_reservations
+            ),
             reservation_sources=", ".join(r.source or "" for r in matched_reservations),
             matched_country=", ".join(r.country or "" for r in matched_reservations),
             branch=branch_key,
