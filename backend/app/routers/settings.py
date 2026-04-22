@@ -25,7 +25,7 @@ def _api_response(data=None, error=None):
 def _rate_to_dict(r: CurrencyRate) -> dict:
     return {
         "currency": r.currency,
-        "rate_to_usd": float(r.rate_to_usd) if r.rate_to_usd is not None else None,
+        "rate_to_vnd": float(r.rate_to_vnd) if r.rate_to_vnd is not None else None,
         "updated_by": r.updated_by,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     }
@@ -36,7 +36,7 @@ def _rate_to_dict(r: CurrencyRate) -> dict:
 
 class UpsertRateRequest(BaseModel):
     currency: str
-    rate_to_usd: float
+    rate_to_vnd: float
 
 
 class BulkUpsertRequest(BaseModel):
@@ -51,7 +51,7 @@ def list_currency_rates(
     current_user: User = Depends(require_role(["admin", "creator", "reviewer"])),
     db: Session = Depends(get_db),
 ):
-    """List all currency → USD conversion rates. Any authenticated user can read."""
+    """List all currency → VND conversion rates. Any authenticated user can read."""
     try:
         rates = db.query(CurrencyRate).order_by(CurrencyRate.currency).all()
         return _api_response(data={"items": [_rate_to_dict(r) for r in rates]})
@@ -78,7 +78,7 @@ def upsert_currency_rates(
             if len(code) != 3 or not code.isalpha():
                 raise HTTPException(status_code=400, detail=f"Invalid currency code: {item.currency!r}")
             try:
-                rate = Decimal(str(item.rate_to_usd))
+                rate = Decimal(str(item.rate_to_vnd))
             except (InvalidOperation, TypeError):
                 raise HTTPException(status_code=400, detail=f"Invalid rate for {code}")
             if rate <= 0:
@@ -86,10 +86,10 @@ def upsert_currency_rates(
 
             row = db.query(CurrencyRate).filter(CurrencyRate.currency == code).first()
             if row is None:
-                row = CurrencyRate(currency=code, rate_to_usd=rate, updated_by=current_user.email)
+                row = CurrencyRate(currency=code, rate_to_vnd=rate, updated_by=current_user.email)
                 db.add(row)
             else:
-                row.rate_to_usd = rate
+                row.rate_to_vnd = rate
                 row.updated_by = current_user.email
             updated.append(code)
 

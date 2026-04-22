@@ -6,17 +6,18 @@ from app.models.base import Base
 
 
 class CurrencyRate(Base):
-    """Exchange rate from `currency` to USD.
+    """Exchange rate from `currency` to VND (base currency).
 
-    rate_to_usd = how many USD 1 unit of `currency` is worth.
-    e.g. currency=VND, rate_to_usd=0.000039  → 1 VND = 0.000039 USD
-         currency=USD, rate_to_usd=1
+    rate_to_vnd = how many VND 1 unit of `currency` is worth.
+    e.g. currency=USD, rate_to_vnd=25400    → 1 USD = 25,400 VND
+         currency=TWD, rate_to_vnd=780      → 1 TWD = 780 VND
+         currency=VND, rate_to_vnd=1
     """
 
     __tablename__ = "currency_rates"
 
     currency = Column(String(3), primary_key=True)
-    rate_to_usd = Column(Numeric(20, 10), nullable=False)
+    rate_to_vnd = Column(Numeric(20, 10), nullable=False)
     updated_by = Column(String(100), nullable=True)
     created_at = Column(
         DateTime(timezone=True),

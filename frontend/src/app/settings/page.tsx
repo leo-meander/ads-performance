@@ -7,18 +7,18 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
 interface CurrencyRate {
   currency: string
-  rate_to_usd: number
+  rate_to_vnd: number
   updated_by: string | null
   updated_at: string | null
 }
 
 interface DraftRow {
   currency: string
-  rate_to_usd: string
+  rate_to_vnd: string
   isNew?: boolean
 }
 
-const COMMON_CURRENCIES = ['USD', 'VND', 'TWD', 'JPY', 'THB', 'SGD', 'EUR', 'KRW', 'CNY', 'HKD']
+const COMMON_CURRENCIES = ['USD', 'TWD', 'JPY', 'THB', 'SGD', 'EUR', 'KRW', 'CNY', 'HKD']
 
 export default function SettingsPage() {
   const { user } = useAuth()
@@ -56,9 +56,9 @@ export default function SettingsPage() {
   const dirty = useMemo(() => {
     const edited = Object.entries(drafts).some(([code, val]) => {
       const row = rates.find(r => r.currency === code)
-      return row && String(row.rate_to_usd) !== val
+      return row && String(row.rate_to_vnd) !== val
     })
-    const hasNew = newRows.some(r => r.currency.trim() && r.rate_to_usd.trim())
+    const hasNew = newRows.some(r => r.currency.trim() && r.rate_to_vnd.trim())
     return edited || hasNew
   }, [drafts, rates, newRows])
 
@@ -67,13 +67,13 @@ export default function SettingsPage() {
     setFlash('')
   }
 
-  const handleNewRowChange = (idx: number, field: 'currency' | 'rate_to_usd', val: string) => {
+  const handleNewRowChange = (idx: number, field: 'currency' | 'rate_to_vnd', val: string) => {
     setNewRows(rows => rows.map((r, i) => (i === idx ? { ...r, [field]: val } : r)))
     setFlash('')
   }
 
   const addNewRow = () => {
-    setNewRows(rows => [...rows, { currency: '', rate_to_usd: '', isNew: true }])
+    setNewRows(rows => [...rows, { currency: '', rate_to_vnd: '', isNew: true }])
   }
 
   const removeNewRow = (idx: number) => {
@@ -85,36 +85,36 @@ export default function SettingsPage() {
     setFlash('')
     setSaving(true)
     try {
-      const payload: { currency: string; rate_to_usd: number }[] = []
+      const payload: { currency: string; rate_to_vnd: number }[] = []
 
       for (const [code, val] of Object.entries(drafts)) {
         const row = rates.find(r => r.currency === code)
         if (!row) continue
-        if (String(row.rate_to_usd) === val) continue
+        if (String(row.rate_to_vnd) === val) continue
         const num = Number(val)
         if (!Number.isFinite(num) || num <= 0) {
           setError(`Invalid rate for ${code}`)
           setSaving(false)
           return
         }
-        payload.push({ currency: code, rate_to_usd: num })
+        payload.push({ currency: code, rate_to_vnd: num })
       }
 
       for (const r of newRows) {
         const code = r.currency.trim().toUpperCase()
-        if (!code && !r.rate_to_usd.trim()) continue
+        if (!code && !r.rate_to_vnd.trim()) continue
         if (code.length !== 3 || !/^[A-Z]{3}$/.test(code)) {
           setError(`Invalid currency code: ${r.currency}`)
           setSaving(false)
           return
         }
-        const num = Number(r.rate_to_usd)
+        const num = Number(r.rate_to_vnd)
         if (!Number.isFinite(num) || num <= 0) {
           setError(`Invalid rate for ${code}`)
           setSaving(false)
           return
         }
-        payload.push({ currency: code, rate_to_usd: num })
+        payload.push({ currency: code, rate_to_vnd: num })
       }
 
       if (payload.length === 0) {
@@ -175,8 +175,8 @@ export default function SettingsPage() {
           <div>
             <h2 className="font-semibold text-gray-900">Currency Conversion Rates</h2>
             <p className="text-xs text-gray-500 mt-1">
-              Exchange rate from each currency to <span className="font-mono font-semibold">USD</span>.
-              Used to normalise spend and revenue across branches. e.g. <span className="font-mono">VND → 0.0000390</span> means 1 VND = 0.0000390 USD.
+              Exchange rate from each currency to <span className="font-mono font-semibold">VND</span> (base currency).
+              Used to normalise spend and revenue across branches. e.g. <span className="font-mono">USD → 25,400</span> means 1 USD = 25,400 VND.
             </p>
           </div>
           {isAdmin && (
@@ -214,7 +214,7 @@ export default function SettingsPage() {
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-6 py-3 w-32">Currency</th>
-                <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-6 py-3">Rate → USD</th>
+                <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-6 py-3">Rate → VND</th>
                 <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-6 py-3">Preview</th>
                 <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-6 py-3">Last Updated</th>
                 <th className="px-6 py-3 w-20"></th>
@@ -222,9 +222,14 @@ export default function SettingsPage() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {rates.map(r => {
-                const val = displayRate(r.currency, r.rate_to_usd)
+                const val = displayRate(r.currency, r.rate_to_vnd)
                 const numVal = Number(val)
-                const previewInverse = Number.isFinite(numVal) && numVal > 0 ? 1 / numVal : null
+                const isBase = r.currency === 'VND'
+                const preview = isBase
+                  ? 'base currency'
+                  : Number.isFinite(numVal) && numVal > 0
+                    ? `1 ${r.currency} ≈ ${numVal.toLocaleString(undefined, { maximumFractionDigits: 2 })} VND`
+                    : '—'
                 return (
                   <tr key={r.currency}>
                     <td className="px-6 py-3 text-sm font-mono font-semibold text-gray-900">{r.currency}</td>
@@ -235,21 +240,19 @@ export default function SettingsPage() {
                         min="0"
                         value={val}
                         onChange={e => handleEdit(r.currency, e.target.value)}
-                        disabled={!isAdmin}
+                        disabled={!isAdmin || isBase}
                         className="w-48 border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-50 disabled:text-gray-500"
                       />
                     </td>
                     <td className="px-6 py-3 text-xs text-gray-500">
-                      {previewInverse
-                        ? `1 USD ≈ ${previewInverse.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${r.currency}`
-                        : '—'}
+                      {isBase ? <span className="italic text-gray-400">{preview}</span> : preview}
                     </td>
                     <td className="px-6 py-3 text-xs text-gray-500">
                       {r.updated_at ? new Date(r.updated_at).toLocaleString() : '—'}
                       {r.updated_by && <div className="text-[10px] text-gray-400">by {r.updated_by}</div>}
                     </td>
                     <td className="px-6 py-3 text-right">
-                      {isAdmin && r.currency !== 'USD' && (
+                      {isAdmin && !isBase && (
                         <button
                           onClick={() => handleDelete(r.currency)}
                           className="text-xs text-red-600 hover:text-red-800 font-medium"
@@ -278,8 +281,8 @@ export default function SettingsPage() {
                       type="number"
                       step="any"
                       min="0"
-                      value={row.rate_to_usd}
-                      onChange={e => handleNewRowChange(idx, 'rate_to_usd', e.target.value)}
+                      value={row.rate_to_vnd}
+                      onChange={e => handleNewRowChange(idx, 'rate_to_vnd', e.target.value)}
                       placeholder="1.0"
                       className="w-48 border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     />
@@ -309,7 +312,7 @@ export default function SettingsPage() {
                 onClick={() =>
                   setNewRows(rows => {
                     if (rows.some(r => r.currency.toUpperCase() === code)) return rows
-                    return [...rows, { currency: code, rate_to_usd: '', isNew: true }]
+                    return [...rows, { currency: code, rate_to_vnd: '', isNew: true }]
                   })
                 }
                 className="text-xs font-mono px-2 py-0.5 bg-white border border-gray-200 rounded hover:bg-gray-100"
