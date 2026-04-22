@@ -23,6 +23,7 @@ const ROUTE_SECTION_MAP: Array<[string, string]> = [
   ['/ad-research', 'meta_ads'],
   ['/country', 'analytics'],
   ['/booking-matches', 'analytics'],
+  ['/landing-pages', 'landing_pages'],
   ['/accounts', 'settings'],
   ['/users', 'settings'],   // still admin-gated inside the page itself
   ['/api-keys', 'settings'], // admin-gated inside the page itself

@@ -53,6 +53,13 @@ const navSections: NavSection[] = [
     items: [{ href: '/budget', label: 'Budget Planner', section: 'budget' }],
   },
   {
+    label: 'Landing Pages',
+    items: [
+      { href: '/landing-pages', label: 'All Pages', section: 'landing_pages' },
+      { href: '/landing-pages/approvals', label: 'Approvals', section: 'landing_pages', badge: true },
+    ],
+  },
+  {
     label: 'Automation',
     items: [
       { href: '/rules', label: 'Rules', section: 'automation' },
