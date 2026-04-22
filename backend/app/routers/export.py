@@ -1,6 +1,9 @@
-"""Export API endpoints with API key authentication."""
+"""Export API endpoints with API key authentication.
 
-import calendar
+Key management endpoints (/export/keys) require admin JWT (httpOnly cookie).
+Data export endpoints (/export/*) require X-API-Key header.
+"""
+
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
@@ -9,10 +12,22 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies.auth import require_role
+from app.models.account import AdAccount
+from app.models.ad import Ad
+from app.models.ad_angle import AdAngle
+from app.models.ad_combo import AdCombo
+from app.models.ad_copy import AdCopy
+from app.models.ad_country_metric import AdCountryMetric
+from app.models.ad_material import AdMaterial
 from app.models.api_key import ApiKey
 from app.models.booking_match import BookingMatch
 from app.models.budget import BudgetPlan
+from app.models.campaign import Campaign
+from app.models.keypoint import BranchKeypoint
 from app.models.metrics import MetricsCache
+from app.models.spy_saved_ad import SpySavedAd
+from app.models.user import User
 from app.services.export_auth import create_api_key, validate_api_key
 
 router = APIRouter()
@@ -27,22 +42,34 @@ def _api_response(data=None, error=None):
     }
 
 
+# ──────────────────────────────────────────────────────────────────────
+# API KEY MANAGEMENT  (admin JWT, not X-API-Key)
+# ──────────────────────────────────────────────────────────────────────
+
+
 class KeyCreate(BaseModel):
     name: str
     created_by: str | None = None
 
 
 @router.post("/export/keys")
-def create_key(body: KeyCreate, db: Session = Depends(get_db)):
-    """Create a new API key. Returns plaintext ONCE."""
+def create_key(
+    body: KeyCreate,
+    current_user: User = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db),
+):
+    """Create a new API key. Returns plaintext ONCE. Admin only."""
     try:
-        api_key, plaintext = create_api_key(db, body.name, body.created_by)
+        api_key, plaintext = create_api_key(
+            db, body.name, body.created_by or current_user.email
+        )
         db.commit()
         return _api_response(data={
             "id": str(api_key.id),
             "name": api_key.name,
             "key": plaintext,  # Shown once, never again
             "key_prefix": api_key.key_prefix,
+            "created_by": api_key.created_by,
             "created_at": api_key.created_at.isoformat() if api_key.created_at else None,
         })
     except Exception as e:
@@ -51,17 +78,22 @@ def create_key(body: KeyCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/export/keys")
-def list_keys(db: Session = Depends(get_db)):
-    """List API keys (no plaintext shown)."""
+def list_keys(
+    current_user: User = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db),
+):
+    """List API keys (no plaintext shown). Admin only."""
     try:
-        keys = db.query(ApiKey).filter(ApiKey.is_active.is_(True)).all()
+        keys = db.query(ApiKey).order_by(ApiKey.created_at.desc()).all()
         return _api_response(data=[
             {
                 "id": str(k.id),
                 "name": k.name,
                 "key_prefix": k.key_prefix,
+                "is_active": k.is_active,
                 "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
                 "daily_request_count": k.daily_request_count,
+                "created_by": k.created_by,
                 "created_at": k.created_at.isoformat() if k.created_at else None,
             }
             for k in keys
@@ -71,8 +103,12 @@ def list_keys(db: Session = Depends(get_db)):
 
 
 @router.delete("/export/keys/{key_id}")
-def deactivate_key(key_id: str, db: Session = Depends(get_db)):
-    """Deactivate an API key (soft delete)."""
+def deactivate_key(
+    key_id: str,
+    current_user: User = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db),
+):
+    """Deactivate an API key (soft delete). Admin only."""
     try:
         api_key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
         if not api_key:
@@ -85,13 +121,472 @@ def deactivate_key(key_id: str, db: Session = Depends(get_db)):
         return _api_response(error=str(e))
 
 
+# ──────────────────────────────────────────────────────────────────────
+# DATA EXPORTS  (X-API-Key)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.get("/export/accounts")
+def export_accounts(
+    platform: str = Query(None, description="meta | google | tiktok"),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export ad accounts (branches)."""
+    try:
+        q = db.query(AdAccount).filter(AdAccount.is_active.is_(True))
+        if platform:
+            q = q.filter(AdAccount.platform == platform)
+        rows = q.order_by(AdAccount.account_name).all()
+        return _api_response(data=[
+            {
+                "id": str(r.id),
+                "platform": r.platform,
+                "account_id": r.account_id,
+                "account_name": r.account_name,
+                "currency": r.currency,
+                "is_active": r.is_active,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ])
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/angles")
+def export_angles(
+    status: str = Query(None, description="WIN | TEST | LOSE"),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export ad angles (global, branch_id NULL)."""
+    try:
+        q = db.query(AdAngle)
+        if status:
+            q = q.filter(AdAngle.status == status)
+        rows = q.order_by(AdAngle.angle_id).all()
+        return _api_response(data=[
+            {
+                "id": str(r.id),
+                "angle_id": r.angle_id,
+                "branch_id": str(r.branch_id) if r.branch_id else None,
+                "angle_type": r.angle_type,
+                "angle_explain": r.angle_explain,
+                "hook_examples": r.hook_examples,
+                "target_audience": r.target_audience,
+                "angle_text": r.angle_text,
+                "hook": r.hook,
+                "status": r.status,
+                "notes": r.notes,
+                "created_by": r.created_by,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ])
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/keypoints")
+def export_keypoints(
+    branch_id: str = Query(None),
+    category: str = Query(None),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export branch keypoints."""
+    try:
+        q = db.query(BranchKeypoint).filter(BranchKeypoint.is_active.is_(True))
+        if branch_id:
+            q = q.filter(BranchKeypoint.branch_id == branch_id)
+        if category:
+            q = q.filter(BranchKeypoint.category == category)
+        rows = q.order_by(BranchKeypoint.branch_id, BranchKeypoint.category, BranchKeypoint.title).all()
+        return _api_response(data=[
+            {
+                "id": str(r.id),
+                "branch_id": str(r.branch_id),
+                "category": r.category,
+                "title": r.title,
+                "is_active": r.is_active,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ])
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/copies")
+def export_copies(
+    branch_id: str = Query(None),
+    target_audience: str = Query(None),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export ad copies."""
+    try:
+        q = db.query(AdCopy)
+        if branch_id:
+            q = q.filter(AdCopy.branch_id == branch_id)
+        if target_audience:
+            q = q.filter(AdCopy.target_audience == target_audience)
+        rows = q.order_by(AdCopy.copy_id).all()
+        return _api_response(data=[
+            {
+                "id": str(r.id),
+                "copy_id": r.copy_id,
+                "branch_id": str(r.branch_id),
+                "target_audience": r.target_audience,
+                "angle_id": r.angle_id,
+                "headline": r.headline,
+                "body_text": r.body_text,
+                "cta": r.cta,
+                "language": r.language,
+                "derived_verdict": r.derived_verdict,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ])
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/materials")
+def export_materials(
+    branch_id: str = Query(None),
+    material_type: str = Query(None, description="image | video | carousel"),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export ad materials (creative assets)."""
+    try:
+        q = db.query(AdMaterial)
+        if branch_id:
+            q = q.filter(AdMaterial.branch_id == branch_id)
+        if material_type:
+            q = q.filter(AdMaterial.material_type == material_type)
+        rows = q.order_by(AdMaterial.material_id).all()
+        return _api_response(data=[
+            {
+                "id": str(r.id),
+                "material_id": r.material_id,
+                "branch_id": str(r.branch_id),
+                "material_type": r.material_type,
+                "file_url": r.file_url,
+                "description": r.description,
+                "target_audience": r.target_audience,
+                "derived_verdict": r.derived_verdict,
+                "url_source": r.url_source,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ])
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/combos")
+def export_combos(
+    branch_id: str = Query(None),
+    verdict: str = Query(None, description="WIN | TEST | LOSE"),
+    country: str = Query(None),
+    target_audience: str = Query(None),
+    limit: int = Query(500, le=2000),
+    offset: int = Query(0, ge=0),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export ad combos (creative combinations) with cached metrics."""
+    try:
+        q = db.query(AdCombo)
+        if branch_id:
+            q = q.filter(AdCombo.branch_id == branch_id)
+        if verdict:
+            q = q.filter(AdCombo.verdict == verdict)
+        if country:
+            q = q.filter(AdCombo.country == country)
+        if target_audience:
+            q = q.filter(AdCombo.target_audience == target_audience)
+
+        total = q.count()
+        rows = q.order_by(AdCombo.combo_id).offset(offset).limit(limit).all()
+
+        return _api_response(data={
+            "items": [
+                {
+                    "id": str(r.id),
+                    "combo_id": r.combo_id,
+                    "branch_id": str(r.branch_id),
+                    "ad_name": r.ad_name,
+                    "target_audience": r.target_audience,
+                    "country": r.country,
+                    "keypoint_ids": r.keypoint_ids,
+                    "angle_id": r.angle_id,
+                    "copy_id": r.copy_id,
+                    "material_id": r.material_id,
+                    "campaign_id": str(r.campaign_id) if r.campaign_id else None,
+                    "verdict": r.verdict,
+                    "verdict_source": r.verdict_source,
+                    "verdict_notes": r.verdict_notes,
+                    "spend": float(r.spend) if r.spend is not None else None,
+                    "impressions": r.impressions,
+                    "clicks": r.clicks,
+                    "conversions": r.conversions,
+                    "revenue": float(r.revenue) if r.revenue is not None else None,
+                    "roas": float(r.roas) if r.roas is not None else None,
+                    "cost_per_purchase": float(r.cost_per_purchase) if r.cost_per_purchase is not None else None,
+                    "ctr": float(r.ctr) if r.ctr is not None else None,
+                    "engagement": r.engagement,
+                    "engagement_rate": float(r.engagement_rate) if r.engagement_rate is not None else None,
+                    "video_plays": r.video_plays,
+                    "thruplay": r.thruplay,
+                    "video_p100": r.video_p100,
+                    "hook_rate": float(r.hook_rate) if r.hook_rate is not None else None,
+                    "thruplay_rate": float(r.thruplay_rate) if r.thruplay_rate is not None else None,
+                    "video_complete_rate": float(r.video_complete_rate) if r.video_complete_rate is not None else None,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+                for r in rows
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/campaigns")
+def export_campaigns(
+    platform: str = Query(None, description="meta | google | tiktok"),
+    account_id: str = Query(None),
+    status: str = Query(None),
+    ta: str = Query(None),
+    funnel_stage: str = Query(None),
+    limit: int = Query(500, le=2000),
+    offset: int = Query(0, ge=0),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export campaigns (all platforms)."""
+    try:
+        q = db.query(Campaign)
+        if platform:
+            q = q.filter(Campaign.platform == platform)
+        if account_id:
+            q = q.filter(Campaign.account_id == account_id)
+        if status:
+            q = q.filter(Campaign.status == status)
+        if ta:
+            q = q.filter(Campaign.ta == ta)
+        if funnel_stage:
+            q = q.filter(Campaign.funnel_stage == funnel_stage)
+
+        total = q.count()
+        rows = q.order_by(Campaign.name).offset(offset).limit(limit).all()
+
+        return _api_response(data={
+            "items": [
+                {
+                    "id": str(r.id),
+                    "account_id": str(r.account_id),
+                    "platform": r.platform,
+                    "platform_campaign_id": r.platform_campaign_id,
+                    "name": r.name,
+                    "status": r.status,
+                    "objective": r.objective,
+                    "daily_budget": float(r.daily_budget) if r.daily_budget is not None else None,
+                    "lifetime_budget": float(r.lifetime_budget) if r.lifetime_budget is not None else None,
+                    "start_date": r.start_date.isoformat() if r.start_date else None,
+                    "end_date": r.end_date.isoformat() if r.end_date else None,
+                    "ta": r.ta,
+                    "funnel_stage": r.funnel_stage,
+                }
+                for r in rows
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/ads")
+def export_ads(
+    platform: str = Query(None),
+    account_id: str = Query(None),
+    campaign_id: str = Query(None),
+    status: str = Query(None),
+    limit: int = Query(500, le=2000),
+    offset: int = Query(0, ge=0),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export ads."""
+    try:
+        q = db.query(Ad)
+        if platform:
+            q = q.filter(Ad.platform == platform)
+        if account_id:
+            q = q.filter(Ad.account_id == account_id)
+        if campaign_id:
+            q = q.filter(Ad.campaign_id == campaign_id)
+        if status:
+            q = q.filter(Ad.status == status)
+
+        total = q.count()
+        rows = q.order_by(Ad.name).offset(offset).limit(limit).all()
+
+        return _api_response(data={
+            "items": [
+                {
+                    "id": str(r.id),
+                    "account_id": str(r.account_id),
+                    "campaign_id": str(r.campaign_id),
+                    "ad_set_id": str(r.ad_set_id),
+                    "platform": r.platform,
+                    "platform_ad_id": r.platform_ad_id,
+                    "name": r.name,
+                    "status": r.status,
+                    "creative_id": r.creative_id,
+                }
+                for r in rows
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/countries")
+def export_countries(
+    date_from: str = Query(..., description="ISO date"),
+    date_to: str = Query(..., description="ISO date"),
+    platform: str = Query(None),
+    country: str = Query(None),
+    campaign_id: str = Query(None),
+    ad_id: str = Query(None),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export per-country × date metrics (website vs offline revenue)."""
+    try:
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+        q = db.query(AdCountryMetric).filter(
+            AdCountryMetric.date >= df,
+            AdCountryMetric.date <= dt,
+        )
+        if platform:
+            q = q.filter(AdCountryMetric.platform == platform)
+        if country:
+            q = q.filter(AdCountryMetric.country == country)
+        if campaign_id:
+            q = q.filter(AdCountryMetric.campaign_id == campaign_id)
+        if ad_id:
+            q = q.filter(AdCountryMetric.ad_id == ad_id)
+
+        rows = q.order_by(AdCountryMetric.date.desc()).limit(5000).all()
+
+        return _api_response(data=[
+            {
+                "id": str(r.id),
+                "platform": r.platform,
+                "campaign_id": str(r.campaign_id),
+                "ad_id": str(r.ad_id) if r.ad_id else None,
+                "date": r.date.isoformat(),
+                "country": r.country,
+                "spend": float(r.spend or 0),
+                "impressions": r.impressions,
+                "clicks": r.clicks,
+                "revenue_website": float(r.revenue_website or 0),
+                "revenue_offline": float(r.revenue_offline or 0),
+                "conversions_website": r.conversions_website,
+                "conversions_offline": r.conversions_offline,
+            }
+            for r in rows
+        ])
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/spy-ads")
+def export_spy_ads(
+    country: str = Query(None),
+    page_id: str = Query(None),
+    media_type: str = Query(None),
+    collection: str = Query(None),
+    limit: int = Query(500, le=2000),
+    offset: int = Query(0, ge=0),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export spy ads (competitive research library)."""
+    try:
+        q = db.query(SpySavedAd).filter(SpySavedAd.is_active.is_(True))
+        if country:
+            q = q.filter(SpySavedAd.country == country)
+        if page_id:
+            q = q.filter(SpySavedAd.page_id == page_id)
+        if media_type:
+            q = q.filter(SpySavedAd.media_type == media_type)
+        if collection:
+            q = q.filter(SpySavedAd.collection == collection)
+
+        total = q.count()
+        rows = (
+            q.order_by(SpySavedAd.ad_delivery_start_time.desc().nullslast())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        return _api_response(data={
+            "items": [
+                {
+                    "id": str(r.id),
+                    "ad_archive_id": r.ad_archive_id,
+                    "page_id": r.page_id,
+                    "page_name": r.page_name,
+                    "ad_creative_bodies": r.ad_creative_bodies,
+                    "ad_creative_link_titles": r.ad_creative_link_titles,
+                    "ad_creative_link_captions": r.ad_creative_link_captions,
+                    "ad_snapshot_url": r.ad_snapshot_url,
+                    "publisher_platforms": r.publisher_platforms,
+                    "ad_delivery_start_time": r.ad_delivery_start_time.isoformat() if r.ad_delivery_start_time else None,
+                    "ad_delivery_stop_time": r.ad_delivery_stop_time.isoformat() if r.ad_delivery_stop_time else None,
+                    "country": r.country,
+                    "media_type": r.media_type,
+                    "tags": r.tags,
+                    "notes": r.notes,
+                    "collection": r.collection,
+                }
+                for r in rows
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.get("/export/budget/monthly")
 def export_budget_monthly(
     month: str = Query(None, description="YYYY-MM format"),
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
-    """Export monthly budget data. Requires API key."""
+    """Export monthly budget data."""
     try:
         if month:
             month_date = date.fromisoformat(f"{month}-01")
@@ -131,7 +626,7 @@ def export_spend_daily(
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
-    """Export daily spend breakdown. Requires API key."""
+    """Export daily spend breakdown."""
     try:
         q = db.query(
             MetricsCache.date,
@@ -194,11 +689,7 @@ def export_booking_matches(
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
-    """Export Booking from Ads rows for external systems. Requires X-API-Key.
-
-    Returns the same shape as the internal /api/booking-matches endpoint plus
-    rate_plans, so downstream BI tools can break down matched revenue by rate plan.
-    """
+    """Export Booking from Ads rows for external systems. Requires X-API-Key."""
     try:
         df, dt = _resolve_booking_date_range(date_from, date_to)
 
@@ -270,7 +761,7 @@ def export_booking_matches_summary(
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
-    """KPI roll-up for Booking from Ads. Requires X-API-Key."""
+    """KPI roll-up for Booking from Ads."""
     try:
         df, dt = _resolve_booking_date_range(date_from, date_to)
 

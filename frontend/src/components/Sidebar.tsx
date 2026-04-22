@@ -71,6 +71,7 @@ const navSections: NavSection[] = [
     items: [
       { href: '/accounts', label: 'Accounts', section: 'settings' },
       { href: '/users', label: 'Users', section: 'settings', adminOnly: true },
+      { href: '/api-keys', label: 'API Keys', section: 'settings', adminOnly: true },
     ],
   },
 ]

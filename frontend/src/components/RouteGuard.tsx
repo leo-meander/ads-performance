@@ -25,6 +25,7 @@ const ROUTE_SECTION_MAP: Array<[string, string]> = [
   ['/booking-matches', 'analytics'],
   ['/accounts', 'settings'],
   ['/users', 'settings'],   // still admin-gated inside the page itself
+  ['/api-keys', 'settings'], // admin-gated inside the page itself
   ['/', 'analytics'],       // dashboard — matched last via exact check
 ]
 
