@@ -23,6 +23,7 @@ from app.routers import (
     meta_recommendations,
     notifications,
     rules,
+    settings as settings_router,
     sync,
     transcriptions,
     users,
@@ -69,6 +70,7 @@ app.include_router(meta_recommendations.router, prefix="/api", tags=["meta-recom
 app.include_router(transcriptions.router, prefix="/api", tags=["transcriptions"])
 app.include_router(booking_matches.router, prefix="/api", tags=["booking-matches"])
 app.include_router(internal_tasks.router, prefix="/api", tags=["internal-tasks"])
+app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 
 
 @app.get("/health")
