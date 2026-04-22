@@ -133,6 +133,35 @@ def trigger_sync_material_urls(
     return _api_response(data={"status": "started"})
 
 
+# --------------------------------------------------------- cloudbeds probe ---
+
+
+@router.post("/internal/cloudbeds-ping", status_code=200)
+def cloudbeds_ping(
+    branch: str = "Saigon",
+    days_back: int = 7,
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Probe Cloudbeds API for a branch to confirm auth + response shape.
+
+    Runs synchronously (not in a thread) so the caller sees the result. Tries
+    each known auth flavour in sequence; the response records which auth
+    succeeded and a sample reservation payload so we can design the real sync.
+    """
+    _require_secret(x_internal_secret)
+    from app.services.cloudbeds_client import probe
+    try:
+        dt = date.today()
+        df = dt - timedelta(days=days_back)
+        result = probe(branch, df, dt)
+        return _api_response(data=result, status=200)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("cloudbeds-ping failed")
+        return _api_response(error=str(e), status=500)
+
+
 # --------------------------------------------------- recommendation engines --
 
 _VALID_CADENCES = {"daily", "weekly", "monthly", "seasonality"}

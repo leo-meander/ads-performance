@@ -69,9 +69,22 @@ class Settings(BaseSettings):
     FIGMA_ACCESS_TOKEN: str = ""
     FIGMA_TEAM_ID: str = ""
 
-    # PMS (Reservation system)
+    # PMS (Reservation system) — legacy HID Dashboard, superseded by Cloudbeds
     PMS_API_BASE_URL: str = "https://meander-hid-dashboard.zeabur.app"
     PMS_API_KEY: str = ""
+
+    # Cloudbeds PMS — per-branch API keys (Personal API Key) + property IDs
+    CLOUDBEDS_API_BASE_URL: str = "https://hotels.cloudbeds.com/api/v1.2"
+    CB_API_KEY_SAIGON: str = ""
+    CB_PROPERTY_ID_SAIGON: str = ""
+    CB_API_KEY_TAIPEI: str = ""
+    CB_PROPERTY_ID_TAIPEI: str = ""
+    CB_API_KEY_1948: str = ""
+    CB_PROPERTY_ID_1948: str = ""
+    CB_API_KEY_OSAKA: str = ""
+    CB_PROPERTY_ID_OSAKA: str = ""
+    CB_API_KEY_OANI: str = ""
+    CB_PROPERTY_ID_OANI: str = ""
 
     # Export API
     EXPORT_API_RATE_LIMIT_DAILY: int = 1000
