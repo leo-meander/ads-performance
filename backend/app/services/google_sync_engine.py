@@ -63,6 +63,11 @@ def _upsert_google_metrics(
         "spend": insight["spend"],
         "impressions": insight["impressions"],
         "clicks": insight["clicks"],
+        # Google Ads doesn't expose a separate "link clicks" metric — every
+        # click on a Google ad navigates to the destination. Mirror clicks
+        # into link_clicks so the landing-page rollup reads the same column
+        # regardless of source platform.
+        "link_clicks": insight["clicks"],
         "ctr": insight["ctr"],
         "conversions": insight["conversions"],
         "revenue": insight["revenue"],

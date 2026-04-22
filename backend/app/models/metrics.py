@@ -29,6 +29,12 @@ class MetricsCache(TimestampMixin, Base):
     spend = Column(Numeric(15, 2), nullable=False, default=0)
     impressions = Column(Integer, nullable=False, default=0)
     clicks = Column(Integer, nullable=False, default=0)
+    # Meta only: clicks that specifically went to the destination link. Meta
+    # returns this as `inline_link_clicks` in the Insights API. For landing-
+    # page traffic analysis this is the correct denominator (clicks inflates
+    # with video plays, profile taps, likes). Google Ads doesn't distinguish
+    # — we mirror `clicks` into this column during sync so reads are uniform.
+    link_clicks = Column(Integer, nullable=False, default=0)
     ctr = Column(Numeric(8, 6), nullable=True)  # clicks / impressions
     conversions = Column(Integer, nullable=False, default=0)
     revenue = Column(Numeric(15, 2), nullable=False, default=0)

@@ -148,8 +148,9 @@ export default function LandingPagePerformance() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              <tr><td className="py-2">Meta <strong>clicks</strong></td><td className="text-right font-mono">{fmtNum(a?.clicks)}</td><td className="pl-4 text-gray-400">—</td><td className="text-gray-500 text-xs">Counts all ad interactions (likes, video plays, profile taps…)</td></tr>
-              <tr><td className="py-2">Meta <strong>landing page views</strong></td><td className="text-right font-mono">{fmtNum(a?.landing_page_views)}</td><td className="pl-4 font-mono">{fmtPct((a?.landing_page_views || 0) / (a?.clicks || 1), 1)}</td><td className="text-gray-500 text-xs">Meta's own page-load count — 25-30% of clicks is normal</td></tr>
+              <tr className="text-gray-400"><td className="py-2">Meta <strong>all clicks</strong></td><td className="text-right font-mono">{fmtNum(a?.clicks)}</td><td className="pl-4 text-gray-400">—</td><td className="text-xs italic">Includes likes, video plays, profile taps — not used for landing page analysis</td></tr>
+              <tr><td className="py-2">Meta <strong>link clicks</strong></td><td className="text-right font-mono">{fmtNum(a?.link_clicks)}</td><td className="pl-4 font-mono">{(a?.clicks || 0) > 0 ? fmtPct((a?.link_clicks || 0) / (a?.clicks || 1), 1) : '—'}</td><td className="text-gray-500 text-xs">Clicks that went to the landing page — the right denominator</td></tr>
+              <tr><td className="py-2">Meta <strong>landing page views</strong></td><td className="text-right font-mono">{fmtNum(a?.landing_page_views)}</td><td className="pl-4 font-mono">{(a?.link_clicks || 0) > 0 ? fmtPct((a?.landing_page_views || 0) / (a?.link_clicks || 1), 1) : '—'}</td><td className="text-gray-500 text-xs">Meta's own page-load count — 60-80% of link clicks is normal</td></tr>
               <tr className="bg-amber-50/50"><td className="py-2">GA4 <strong>sessions</strong></td><td className="text-right font-mono">{fmtNum(g?.sessions)}</td><td className="pl-4 font-mono">{fmtPct(d?.reconciliation?.ga4_vs_meta_lpv, 1)}</td><td className="text-gray-500 text-xs">Independent count — if &lt;60% of Meta LPV → Meta over-reports</td></tr>
               <tr><td className="py-2">Clarity <strong>sessions</strong></td><td className="text-right font-mono">{fmtNum(c?.sessions)}</td><td className="pl-4 font-mono">{fmtPct(d?.reconciliation?.clarity_vs_ga4, 1)}</td><td className="text-gray-500 text-xs">vs GA4 — 60-80% normal (ad-blockers, slow loads)</td></tr>
               <tr><td className="py-2">Ad <strong>conversions</strong></td><td className="text-right font-mono">{fmtNum(a?.conversions)}</td><td className="pl-4 text-gray-400">—</td><td className="text-gray-500 text-xs">Pixel-attributed purchases</td></tr>
@@ -168,13 +169,14 @@ export default function LandingPagePerformance() {
             <div className="grid grid-cols-6 gap-4 text-sm">
               <Stat label="Spend" value={fmtNum(a?.spend, 0)} />
               <Stat label="Impressions" value={fmtNum(a?.impressions)} />
-              <Stat label="Clicks" value={fmtNum(a?.clicks)} />
+              <Stat label="Link clicks" value={fmtNum(a?.link_clicks)} />
               <Stat label="Landing page views" value={fmtNum(a?.landing_page_views)} />
               <Stat label="Conversions" value={fmtNum(a?.conversions)} />
               <Stat label="Revenue" value={fmtNum(a?.revenue, 0)} />
-              <Stat label="CTR" value={fmtPct(a?.ctr, 2)} />
+              <Stat label="CTR (all clicks)" value={fmtPct(a?.ctr, 2)} />
               <Stat label="CPC" value={fmtNum(a?.cpc, 2)} />
               <Stat label="CPA" value={fmtNum(a?.cpa, 0)} />
+              <Stat label="All clicks" value={fmtNum(a?.clicks)} />
               <Stat label="Campaigns linked" value={fmtNum(metrics?.ads.campaign_count)} />
             </div>
           )}

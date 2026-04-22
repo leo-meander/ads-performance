@@ -59,6 +59,7 @@ INSIGHT_FIELDS = [
     "spend",
     "impressions",
     "clicks",
+    "inline_link_clicks",  # link clicks only (excludes video plays, profile taps, likes)
     "ctr",
     "conversions",
     "purchase_roas",
@@ -382,6 +383,7 @@ def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
         spend = float(row.get("spend", 0))
         impressions = int(row.get("impressions", 0))
         clicks = int(row.get("clicks", 0))
+        link_clicks = int(row.get("inline_link_clicks", 0) or 0)
         revenue = revenue_website  # legacy column tracks website pixel value
 
         result = {
@@ -391,6 +393,7 @@ def _parse_insights_rows(rows, entity_id_key: str) -> list[dict]:
             "spend": spend,
             "impressions": impressions,
             "clicks": clicks,
+            "link_clicks": link_clicks,
             "ctr": float(row.get("ctr", 0)),
             "conversions": conversions,
             "conversions_offline": conversions_offline,

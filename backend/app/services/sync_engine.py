@@ -61,6 +61,7 @@ def _upsert_metrics_row(
         "spend": insight["spend"],
         "impressions": insight["impressions"],
         "clicks": insight["clicks"],
+        "link_clicks": insight.get("link_clicks", 0),
         "ctr": insight["ctr"],
         "conversions": insight["conversions"],
         "revenue": insight["revenue"],

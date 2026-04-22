@@ -138,6 +138,7 @@ export type AdRollup = {
   spend: number
   impressions: number
   clicks: number
+  link_clicks: number
   conversions: number
   revenue: number
   landing_page_views: number
@@ -205,6 +206,7 @@ export type MetricsResponse = {
   }
   derived: {
     click_to_session_ratio: number | null
+    link_click_to_session_ratio: number | null
     lpv_to_session_ratio: number | null
     dbcr: number | null
     dbcr_ga4: number | null
@@ -212,6 +214,7 @@ export type MetricsResponse = {
       ga4_vs_meta_lpv?: number
       clarity_vs_ga4?: number
       ga4_vs_clicks?: number
+      ga4_vs_link_clicks?: number
     }
   }
 }

@@ -352,6 +352,7 @@ def rollup_metrics(
         "spend": 0.0,
         "impressions": 0,
         "clicks": 0,
+        "link_clicks": 0,  # Meta's inline_link_clicks (or mirror of clicks on Google)
         "conversions": 0,
         "revenue": 0.0,
         "landing_page_views": 0,
@@ -369,6 +370,7 @@ def rollup_metrics(
                 func.coalesce(func.sum(MetricsCache.spend), 0).label("spend"),
                 func.coalesce(func.sum(MetricsCache.impressions), 0).label("impressions"),
                 func.coalesce(func.sum(MetricsCache.clicks), 0).label("clicks"),
+                func.coalesce(func.sum(MetricsCache.link_clicks), 0).label("link_clicks"),
                 func.coalesce(func.sum(MetricsCache.conversions), 0).label("conversions"),
                 func.coalesce(func.sum(MetricsCache.revenue), 0).label("revenue"),
                 func.coalesce(func.sum(MetricsCache.landing_page_views), 0).label("lpv"),
@@ -384,6 +386,7 @@ def rollup_metrics(
             spend = float(row.spend or 0)
             impr = int(row.impressions or 0)
             clicks = int(row.clicks or 0)
+            link_clicks = int(row.link_clicks or 0)
             convs = int(row.conversions or 0)
             revenue = float(row.revenue or 0)
             lpv = int(row.lpv or 0)
@@ -391,6 +394,7 @@ def rollup_metrics(
                 "spend": spend,
                 "impressions": impr,
                 "clicks": clicks,
+                "link_clicks": link_clicks,
                 "conversions": convs,
                 "revenue": revenue,
                 "landing_page_views": lpv,
@@ -402,6 +406,7 @@ def rollup_metrics(
             ad_totals["spend"] += spend
             ad_totals["impressions"] += impr
             ad_totals["clicks"] += clicks
+            ad_totals["link_clicks"] += link_clicks
             ad_totals["conversions"] += convs
             ad_totals["revenue"] += revenue
             ad_totals["landing_page_views"] += lpv
@@ -460,15 +465,15 @@ def rollup_metrics(
         "quickback_rate": (int(clarity.qback or 0) / sessions) if sessions else None,
     }
 
-    # --- Cross-signal: clicks & LPV from ads → sessions from Clarity ---
-    # click_to_session inflates because Meta's "clicks" counts ALL ad taps
-    # (video plays, profile clicks, likes, ...). landing_page_views is the
-    # more honest denominator — it's Meta's own count of actual page loads.
-    # Playbook §5.3 / §7.1 discuss the pre-render traffic leak this detects.
-    click_to_session = None
+    # --- Cross-signal: link_clicks & LPV from ads → sessions from Clarity ---
+    # We use `link_clicks` (Meta's inline_link_clicks) as the pre-page count —
+    # that's the click that specifically goes to the landing page, whereas
+    # `clicks` inflates with video plays, profile taps, likes, etc.
+    # Google Ads mirrors clicks→link_clicks so the comparison is uniform.
+    link_click_to_session = None
     lpv_to_session = None
-    if ad_totals["clicks"] and sessions:
-        click_to_session = sessions / ad_totals["clicks"]
+    if ad_totals["link_clicks"] and sessions:
+        link_click_to_session = sessions / ad_totals["link_clicks"]
     if ad_totals["landing_page_views"] and sessions:
         lpv_to_session = sessions / ad_totals["landing_page_views"]
 
@@ -564,11 +569,17 @@ def rollup_metrics(
     # --- Cross-source reconciliation (the key insight for this dashboard) ---
     # GA4 is the independent 3rd party. Comparing what each source reports
     # tells us where tracking / attribution is broken.
+    # We compare against `link_clicks` (not raw `clicks`) because clicks
+    # inflates with non-destination interactions; link_clicks is the direct
+    # comparison against landing page traffic.
     reconciliation: dict[str, Any] = {}
     if ga4_sessions and ad_totals["landing_page_views"]:
         reconciliation["ga4_vs_meta_lpv"] = ga4_sessions / ad_totals["landing_page_views"]
     if ga4_sessions and sessions:
         reconciliation["clarity_vs_ga4"] = sessions / ga4_sessions
+    if ga4_sessions and ad_totals["link_clicks"]:
+        reconciliation["ga4_vs_link_clicks"] = ga4_sessions / ad_totals["link_clicks"]
+    # Legacy key kept for dashboards that still read it
     if ga4_sessions and ad_totals["clicks"]:
         reconciliation["ga4_vs_clicks"] = ga4_sessions / ad_totals["clicks"]
 
@@ -601,7 +612,8 @@ def rollup_metrics(
             "is_complete": int(ga4_distinct_dates) >= requested_days,
         },
         "derived": {
-            "click_to_session_ratio": click_to_session,
+            "click_to_session_ratio": link_click_to_session,  # now uses link_clicks
+            "link_click_to_session_ratio": link_click_to_session,
             "lpv_to_session_ratio": lpv_to_session,
             "dbcr": dbcr,
             "dbcr_ga4": dbcr_ga4,
