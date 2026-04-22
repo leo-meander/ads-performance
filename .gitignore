@@ -2,6 +2,11 @@
 .env
 .env.local
 
+# Credentials — never commit
+backend/_ga4_b64_for_zeabur.txt
+*_service_account*.json
+backend/ga4_sa*.json
+
 # Python
 __pycache__/
 *.py[cod]

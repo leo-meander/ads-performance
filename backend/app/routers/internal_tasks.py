@@ -288,3 +288,29 @@ def trigger_landing_page_import(
     _require_secret(x_internal_secret)
     _run_in_thread(_do_landing_page_import, "landing-page-import")
     return _api_response(data={"status": "started"})
+
+
+# --------------------------------------------------------------- GA4 sync ---
+
+
+def _do_ga4_sync(db, days_back: int = 2, branch_filter: str | None = None):
+    from app.services.ga4_sync import run_ga4_sync
+    run_ga4_sync(db, days_back=days_back, branch_filter=branch_filter)
+
+
+@router.post("/internal/tasks/ga4-sync", status_code=202)
+def trigger_ga4_sync(
+    x_internal_secret: str | None = Header(default=None),
+    days_back: int = 2,
+    branch_filter: str | None = None,
+):
+    """Daily: pull GA4 traffic + Web Vitals for every branch with ga4_property_id set.
+
+    GA4 has ~24-48h data finalization delay — run cron at 04:00 UTC to capture
+    a fully-final day. `days_back=2` re-syncs yesterday + 2 days ago to
+    self-heal missed runs. `branch_filter` (AdAccount.id) restricts to a
+    single branch for ad-hoc testing.
+    """
+    _require_secret(x_internal_secret)
+    _run_in_thread(_do_ga4_sync, "ga4-sync", days_back=days_back, branch_filter=branch_filter)
+    return _api_response(data={"status": "started", "days_back": days_back, "branch_filter": branch_filter})

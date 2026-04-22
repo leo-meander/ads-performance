@@ -12,3 +12,7 @@ class AdAccount(TimestampMixin, Base):
     currency = Column(String(3), nullable=False, default="VND")
     is_active = Column(Boolean, nullable=False, default=True, index=True)
     access_token_enc = Column(Text, nullable=True)  # encrypted OAuth token
+    # GA4 property id for this branch. Format is just the numeric id
+    # (e.g. "514380737") — the GA4 SDK expects "properties/{id}" which we
+    # prefix at query time.
+    ga4_property_id = Column(String(50), nullable=True)

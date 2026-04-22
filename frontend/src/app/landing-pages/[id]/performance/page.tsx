@@ -84,6 +84,7 @@ export default function LandingPagePerformance() {
 
   const a = metrics?.ads.totals
   const c = metrics?.clarity
+  const g = metrics?.ga4
   const d = metrics?.derived
 
   return (
@@ -124,21 +125,38 @@ export default function LandingPagePerformance() {
         </div>
       )}
 
-      {/* DBCR hero row — playbook §1.2 "the one metric that matters" */}
+      {/* DBCR hero row — playbook §1.2 "the one metric that matters".
+          Use GA4 as the independent denominator since it's the 3rd-party count. */}
       <div className="grid grid-cols-4 gap-3 mb-6">
-        <BigStat label="DBCR" value={fmtPct(d?.dbcr, 2)} hint="Conversions ÷ Sessions" tone={dbcrTone(d?.dbcr)} />
-        <BigStat label="LPV → Session" value={fmtPct(d?.lpv_to_session_ratio, 1)} hint="Clarity vs Meta LPV (best apples-to-apples)" tone={lpvToSessionTone(d?.lpv_to_session_ratio)} />
+        <BigStat label="DBCR (GA4)" value={fmtPct(d?.dbcr_ga4, 2)} hint="Conversions ÷ GA4 sessions" tone={dbcrTone(d?.dbcr_ga4)} />
+        <BigStat label="LPV → GA4 Session" value={fmtPct(d?.reconciliation?.ga4_vs_meta_lpv, 1)} hint="Meta LPV honesty check — low = Meta inflates" tone={lpvToSessionTone(d?.reconciliation?.ga4_vs_meta_lpv)} />
         <BigStat label="ROAS" value={a?.roas ? `${a.roas.toFixed(2)}×` : '—'} hint="Revenue ÷ Spend" tone="neutral" />
         <BigStat label="Rage click rate" value={fmtPct(c?.rage_rate, 2)} hint="UX-bug smoke detector" tone={rageTone(c?.rage_rate)} />
       </div>
 
-      {/* Secondary row — keep Click → Session as a reference (Meta-side inflation context) */}
-      <div className="grid grid-cols-4 gap-3 mb-6">
-        <SmallStat label="Click → Session" value={fmtPct(d?.click_to_session_ratio, 1)} hint="Inflates because Meta 'clicks' counts all ad taps (video, profile, likes, ...)" />
-        <SmallStat label="Sessions" value={fmtNum(c?.sessions)} hint="Unique page visits per Clarity" />
-        <SmallStat label="Conversions" value={fmtNum(a?.conversions)} hint="From ad platforms (Meta + Google)" />
-        <SmallStat label="Spend" value={fmtNum(a?.spend, 0)} hint="Total across linked campaigns" />
-      </div>
+      {/* Cross-source reconciliation — the 3-way truth check */}
+      <section className="mb-6">
+        <h2 className="text-sm font-semibold text-gray-900 mb-2">Cross-source reconciliation</h2>
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-500">
+                <th className="text-left font-normal pb-1.5">Source</th>
+                <th className="text-right font-normal pb-1.5">Count</th>
+                <th className="text-left font-normal pb-1.5 pl-4">Ratio</th>
+                <th className="text-left font-normal pb-1.5">Interpretation</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              <tr><td className="py-2">Meta <strong>clicks</strong></td><td className="text-right font-mono">{fmtNum(a?.clicks)}</td><td className="pl-4 text-gray-400">—</td><td className="text-gray-500 text-xs">Counts all ad interactions (likes, video plays, profile taps…)</td></tr>
+              <tr><td className="py-2">Meta <strong>landing page views</strong></td><td className="text-right font-mono">{fmtNum(a?.landing_page_views)}</td><td className="pl-4 font-mono">{fmtPct((a?.landing_page_views || 0) / (a?.clicks || 1), 1)}</td><td className="text-gray-500 text-xs">Meta's own page-load count — 25-30% of clicks is normal</td></tr>
+              <tr className="bg-amber-50/50"><td className="py-2">GA4 <strong>sessions</strong></td><td className="text-right font-mono">{fmtNum(g?.sessions)}</td><td className="pl-4 font-mono">{fmtPct(d?.reconciliation?.ga4_vs_meta_lpv, 1)}</td><td className="text-gray-500 text-xs">Independent count — if &lt;60% of Meta LPV → Meta over-reports</td></tr>
+              <tr><td className="py-2">Clarity <strong>sessions</strong></td><td className="text-right font-mono">{fmtNum(c?.sessions)}</td><td className="pl-4 font-mono">{fmtPct(d?.reconciliation?.clarity_vs_ga4, 1)}</td><td className="text-gray-500 text-xs">vs GA4 — 60-80% normal (ad-blockers, slow loads)</td></tr>
+              <tr><td className="py-2">Ad <strong>conversions</strong></td><td className="text-right font-mono">{fmtNum(a?.conversions)}</td><td className="pl-4 text-gray-400">—</td><td className="text-gray-500 text-xs">Pixel-attributed purchases</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       {/* Ads card */}
       <section className="mb-6">
@@ -188,6 +206,45 @@ export default function LandingPagePerformance() {
             </div>
           )}
         </div>
+      </section>
+
+      {/* GA4 card */}
+      <section className="mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm font-semibold text-gray-900">Google Analytics 4 — independent traffic & engagement</h2>
+          {metrics && !metrics.ga4_coverage.is_complete && (
+            <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-0.5">
+              {metrics.ga4_coverage.days_with_data}/{metrics.ga4_coverage.requested_days} days synced
+            </span>
+          )}
+        </div>
+        <div className="bg-white border border-gray-200 rounded-lg p-4 grid grid-cols-6 gap-4 text-sm">
+          <Stat label="Sessions" value={fmtNum(g?.sessions)} />
+          <Stat label="Engaged sessions" value={fmtNum(g?.engaged_sessions)} />
+          <Stat label="Engagement rate" value={fmtPct(g?.engagement_rate, 1)} tone={engagementTone(g?.engagement_rate)} />
+          <Stat label="Active users" value={fmtNum(g?.active_users)} />
+          <Stat label="New users" value={fmtNum(g?.new_users)} />
+          <Stat label="Page views" value={fmtNum(g?.page_views)} />
+          <Stat label="Avg session duration" value={g?.avg_session_duration_sec ? fmtDur(Math.round(g.avg_session_duration_sec)) : '—'} />
+          <Stat label="Bounce rate" value={fmtPct(g?.bounce_rate, 1)} tone={bounceTone(g?.bounce_rate)} />
+        </div>
+
+        {/* Web Vitals — playbook §5.3 pass/fail gauges */}
+        {(g?.web_vitals?.lcp_p75_ms || g?.web_vitals?.inp_p75_ms || g?.web_vitals?.cls_p75 !== null) ? (
+          <div className="mt-3 bg-white border border-gray-200 rounded-lg p-4">
+            <p className="text-xs font-medium text-gray-700 mb-2">Core Web Vitals (p75) — playbook §5.3 thresholds</p>
+            <div className="grid grid-cols-4 gap-3">
+              <VitalStat label="LCP" value={g?.web_vitals?.lcp_p75_ms ? `${(g.web_vitals.lcp_p75_ms / 1000).toFixed(2)}s` : '—'} pass={g?.web_vitals?.lcp_pass} threshold="<1.8s ideal, <2.5s pass" />
+              <VitalStat label="INP" value={g?.web_vitals?.inp_p75_ms ? `${g.web_vitals.inp_p75_ms}ms` : '—'} pass={g?.web_vitals?.inp_pass} threshold="<100ms ideal, <200ms pass" />
+              <VitalStat label="CLS" value={g?.web_vitals?.cls_p75 != null ? g.web_vitals.cls_p75.toFixed(3) : '—'} pass={g?.web_vitals?.cls_pass} threshold="<0.1 pass" />
+              <VitalStat label="FCP" value={g?.web_vitals?.fcp_p75_ms ? `${(g.web_vitals.fcp_p75_ms / 1000).toFixed(2)}s` : '—'} pass={undefined} threshold="First Contentful Paint" />
+            </div>
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-gray-500 italic">
+            Web Vitals not available — install the <a className="underline" href="https://developers.google.com/tag-platform/gtagjs/reference/web-vitals" target="_blank" rel="noreferrer">web-vitals.js</a> library on the landing page to start collecting LCP/INP/CLS metrics.
+          </p>
+        )}
       </section>
 
       {/* Clarity card */}
@@ -263,6 +320,21 @@ function SmallStat({ label, value, hint }: { label: string; value: string; hint:
   )
 }
 
+function VitalStat({ label, value, pass, threshold }: { label: string; value: string; pass: boolean | undefined; threshold: string }) {
+  const color = pass === true ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : pass === false ? 'text-red-700 bg-red-50 border-red-200' : 'text-gray-700 bg-gray-50 border-gray-200'
+  return (
+    <div className={`rounded border px-3 py-2 ${color}`}>
+      <div className="flex items-baseline gap-2">
+        <p className="text-xs font-semibold">{label}</p>
+        {pass === true && <span className="text-[10px]">✓ pass</span>}
+        {pass === false && <span className="text-[10px]">✗ fail</span>}
+      </div>
+      <p className="text-xl font-bold mt-0.5 tabular-nums">{value}</p>
+      <p className="text-[10px] opacity-75 mt-0.5">{threshold}</p>
+    </div>
+  )
+}
+
 function BigStat({ label, value, hint, tone }: { label: string; value: string; hint: string; tone: 'good' | 'warn' | 'bad' | 'neutral' }) {
   const borders = {
     good: 'border-emerald-300 bg-emerald-50',
@@ -308,6 +380,19 @@ function lpvToSessionTone(v: number | null | undefined): 'good' | 'warn' | 'bad'
   // before the page renders enough to fire the tracking script.
   if (v >= 0.6) return 'good'
   if (v >= 0.4) return 'warn'
+  return 'bad'
+}
+function engagementTone(v: number | null | undefined): 'good' | 'warn' | 'bad' | undefined {
+  if (v === null || v === undefined) return undefined
+  if (v >= 0.5) return 'good'
+  if (v >= 0.3) return 'warn'
+  return 'bad'
+}
+function bounceTone(v: number | null | undefined): 'good' | 'warn' | 'bad' | undefined {
+  if (v === null || v === undefined) return undefined
+  // Inverse of engagement — low bounce = good
+  if (v <= 0.4) return 'good'
+  if (v <= 0.65) return 'warn'
   return 'bad'
 }
 function rageTone(v: number | null | undefined): 'good' | 'warn' | 'bad' | 'neutral' {

@@ -52,6 +52,12 @@ on:
     # utm_campaign values to Campaign.name. Picks up new campaigns/ads within
     # an hour of them being synced from Meta/Google. Idempotent (safe to re-run).
     - cron: "30 * * * *"
+    # Daily 04:00 UTC — pull GA4 traffic + Web Vitals for every branch with
+    # ga4_property_id configured. GA4 has 24-48h data finalization delay so
+    # we wait until 04:00 UTC (= ~11 JST / 10 TW / 11 VN) to capture a fully
+    # final "yesterday". days_back=2 re-syncs day-before-yesterday too for
+    # self-healing against missed runs.
+    - cron: "0 4 * * *"
 
   # Allow manual triggering from the Actions tab for ad-hoc runs / testing.
   workflow_dispatch:
@@ -96,6 +102,7 @@ jobs:
               "45 * * * *")     ENDPOINT="meta-recommendations-expire" ;;
               "0 2 * * *")      ENDPOINT="clarity-sync" ;;
               "30 * * * *")     ENDPOINT="landing-page-import" ;;
+              "0 4 * * *")      ENDPOINT="ga4-sync" ;;
               *)
                 echo "Unknown schedule: ${{ github.event.schedule }}"
                 exit 1

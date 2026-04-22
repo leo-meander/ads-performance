@@ -42,6 +42,7 @@ from app.models.landing_page_approval import (
     REVIEWER_REJECTED,
 )
 from app.models.landing_page_clarity import LandingPageClaritySnapshot
+from app.models.landing_page_ga4 import LandingPageGA4Snapshot
 from app.models.landing_page_version import LandingPageVersion
 from app.models.metrics import MetricsCache
 from app.services.landing_page_url_normalizer import (
@@ -496,6 +497,86 @@ def rollup_metrics(
         .scalar()
     )
 
+    # --- GA4 aggregate (utm-less row) + coverage ---
+    ga4_agg = (
+        db.query(
+            func.coalesce(func.sum(LandingPageGA4Snapshot.sessions), 0).label("sessions"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.engaged_sessions), 0).label("engaged"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.active_users), 0).label("users"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.new_users), 0).label("new_users"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.screen_page_views), 0).label("pv"),
+            func.avg(LandingPageGA4Snapshot.engagement_rate).label("eng_rate"),
+            func.avg(LandingPageGA4Snapshot.avg_session_duration_sec).label("dur"),
+            func.avg(LandingPageGA4Snapshot.bounce_rate).label("bounce"),
+            # Web Vitals — take max (p75) across the window
+            func.max(LandingPageGA4Snapshot.lcp_p75_ms).label("lcp"),
+            func.max(LandingPageGA4Snapshot.inp_p75_ms).label("inp"),
+            func.max(LandingPageGA4Snapshot.cls_p75).label("cls"),
+            func.max(LandingPageGA4Snapshot.fcp_p75_ms).label("fcp"),
+        )
+        .filter(
+            LandingPageGA4Snapshot.landing_page_id == landing_page_id,
+            LandingPageGA4Snapshot.date >= date_from,
+            LandingPageGA4Snapshot.date <= date_to,
+            LandingPageGA4Snapshot.source.is_(None),
+            LandingPageGA4Snapshot.medium.is_(None),
+            LandingPageGA4Snapshot.campaign.is_(None),
+        )
+        .one()
+    )
+    ga4_sessions = int(ga4_agg.sessions or 0)
+    ga4_data = {
+        "sessions": ga4_sessions,
+        "engaged_sessions": int(ga4_agg.engaged or 0),
+        "active_users": int(ga4_agg.users or 0),
+        "new_users": int(ga4_agg.new_users or 0),
+        "page_views": int(ga4_agg.pv or 0),
+        "engagement_rate": float(ga4_agg.eng_rate) if ga4_agg.eng_rate is not None else None,
+        "avg_session_duration_sec": float(ga4_agg.dur) if ga4_agg.dur is not None else None,
+        "bounce_rate": float(ga4_agg.bounce) if ga4_agg.bounce is not None else None,
+        "web_vitals": {
+            "lcp_p75_ms": int(ga4_agg.lcp) if ga4_agg.lcp is not None else None,
+            "inp_p75_ms": int(ga4_agg.inp) if ga4_agg.inp is not None else None,
+            "cls_p75": float(ga4_agg.cls) if ga4_agg.cls is not None else None,
+            "fcp_p75_ms": int(ga4_agg.fcp) if ga4_agg.fcp is not None else None,
+            # Playbook §5.3 pass/fail
+            "lcp_pass": (ga4_agg.lcp is not None and int(ga4_agg.lcp) < 2500),
+            "inp_pass": (ga4_agg.inp is not None and int(ga4_agg.inp) < 200),
+            "cls_pass": (ga4_agg.cls is not None and float(ga4_agg.cls) < 0.1),
+        },
+    }
+    ga4_distinct_dates = (
+        db.query(func.count(func.distinct(LandingPageGA4Snapshot.date)))
+        .filter(
+            LandingPageGA4Snapshot.landing_page_id == landing_page_id,
+            LandingPageGA4Snapshot.date >= date_from,
+            LandingPageGA4Snapshot.date <= date_to,
+        )
+        .scalar()
+        or 0
+    )
+    ga4_latest = (
+        db.query(func.max(LandingPageGA4Snapshot.date))
+        .filter(LandingPageGA4Snapshot.landing_page_id == landing_page_id)
+        .scalar()
+    )
+
+    # --- Cross-source reconciliation (the key insight for this dashboard) ---
+    # GA4 is the independent 3rd party. Comparing what each source reports
+    # tells us where tracking / attribution is broken.
+    reconciliation: dict[str, Any] = {}
+    if ga4_sessions and ad_totals["landing_page_views"]:
+        reconciliation["ga4_vs_meta_lpv"] = ga4_sessions / ad_totals["landing_page_views"]
+    if ga4_sessions and sessions:
+        reconciliation["clarity_vs_ga4"] = sessions / ga4_sessions
+    if ga4_sessions and ad_totals["clicks"]:
+        reconciliation["ga4_vs_clicks"] = ga4_sessions / ad_totals["clicks"]
+
+    # DBCR using GA4's independent session count as denominator (most honest)
+    dbcr_ga4 = None
+    if ga4_sessions:
+        dbcr_ga4 = ad_totals["conversions"] / ga4_sessions if ad_totals["conversions"] else 0.0
+
     return {
         "landing_page_id": landing_page_id,
         "date_from": date_from.isoformat(),
@@ -512,9 +593,18 @@ def rollup_metrics(
             "latest_synced_date": latest_date_row.isoformat() if latest_date_row else None,
             "is_complete": int(distinct_dates) >= requested_days,
         },
+        "ga4": ga4_data,
+        "ga4_coverage": {
+            "requested_days": requested_days,
+            "days_with_data": int(ga4_distinct_dates),
+            "latest_synced_date": ga4_latest.isoformat() if ga4_latest else None,
+            "is_complete": int(ga4_distinct_dates) >= requested_days,
+        },
         "derived": {
             "click_to_session_ratio": click_to_session,
             "lpv_to_session_ratio": lpv_to_session,
             "dbcr": dbcr,
+            "dbcr_ga4": dbcr_ga4,
+            "reconciliation": reconciliation,
         },
     }

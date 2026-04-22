@@ -178,10 +178,41 @@ export type MetricsResponse = {
     latest_synced_date: string | null
     is_complete: boolean
   }
+  ga4: {
+    sessions: number
+    engaged_sessions: number
+    active_users: number
+    new_users: number
+    page_views: number
+    engagement_rate: number | null
+    avg_session_duration_sec: number | null
+    bounce_rate: number | null
+    web_vitals: {
+      lcp_p75_ms: number | null
+      inp_p75_ms: number | null
+      cls_p75: number | null
+      fcp_p75_ms: number | null
+      lcp_pass: boolean
+      inp_pass: boolean
+      cls_pass: boolean
+    }
+  }
+  ga4_coverage: {
+    requested_days: number
+    days_with_data: number
+    latest_synced_date: string | null
+    is_complete: boolean
+  }
   derived: {
     click_to_session_ratio: number | null
     lpv_to_session_ratio: number | null
     dbcr: number | null
+    dbcr_ga4: number | null
+    reconciliation: {
+      ga4_vs_meta_lpv?: number
+      clarity_vs_ga4?: number
+      ga4_vs_clicks?: number
+    }
   }
 }
 

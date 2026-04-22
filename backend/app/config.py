@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     CLARITY_API_TOKEN: str = ""
     CLARITY_PROJECT_ID: str = ""
 
+    # Google Analytics 4 Data API — service account JSON as base64.
+    # Base64 used because the raw JSON contains newlines in private_key which
+    # some deploy targets (Zeabur UI text field) don't preserve correctly.
+    # Also accept raw JSON in GA4_SERVICE_ACCOUNT_JSON as a fallback — the
+    # code decodes whichever is set.
+    GA4_SERVICE_ACCOUNT_JSON_B64: str = ""
+    GA4_SERVICE_ACCOUNT_JSON: str = ""
+
     model_config = {"env_file": str(_env_file), "extra": "ignore"}
 
 

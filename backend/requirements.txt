@@ -18,6 +18,9 @@ facebook-business==21.0.5
 # Google Ads
 google-ads==30.0.0
 
+# GA4 Data API (landing page analytics)
+google-analytics-data==0.18.13
+
 # AI / Transcription
 anthropic>=0.39.0
 openai-whisper>=20240930
