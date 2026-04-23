@@ -80,7 +80,7 @@ def list_accounts(
 BRANCH_ACCOUNT_MAP = {
     "Saigon": ["Meander Saigon", "Saigon"],
     "Osaka": ["Meander Osaka", "Osaka"],
-    "Taipei": ["Meander Taipei", "Taipei"],
+    "Taipei": ["Meander Taipei"],  # bare "Taipei" would also ilike-match "Oani (Taipei)"
     "1948": ["Meander 1948", "1948"],
     "Oani": ["Oani (Taipei)", "Oani"],
     "Bread": ["Bread Espresso", "Bread"],
