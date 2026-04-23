@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, get_db
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
-from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
+from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata, parse_country
 from app.services.sync_engine import sync_all_platforms
 
 logger = logging.getLogger(__name__)
@@ -131,11 +131,17 @@ def reparse_names(body: ReparseBody = ReparseBody(), db: Session = Depends(get_d
                 q = q.filter(AdSet.account_id == body.account_id)
             adsets = q.all()
 
+            # Cache campaign names for Google lookups — adgroup names don't carry country.
+            campaign_names = {c.id: c.name for c in db.query(Campaign).all()}
+
             for a in adsets:
-                parsed = parse_adset_metadata(a.name)
-                a.country = parsed["country"]
+                if a.platform == "google":
+                    country = parse_country(campaign_names.get(a.campaign_id, ""))
+                else:
+                    country = parse_adset_metadata(a.name)["country"]
+                a.country = country
                 reparsed += 1
-                if parsed["country"] == "Unknown":
+                if country == "Unknown":
                     unknown_country += 1
 
         db.commit()

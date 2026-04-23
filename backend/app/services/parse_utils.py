@@ -30,22 +30,30 @@ def parse_campaign_metadata(name: str) -> dict:
     return {"ta": ta, "funnel_stage": funnel_stage}
 
 
-def parse_adset_metadata(name: str) -> dict:
-    """Parse country from adset name.
+def parse_country(name: str) -> str:
+    """Extract country code from the first underscore-segment of a name.
 
-    - First segment "All" (case-insensitive) → "ALL" (multi-country adset).
-    - Otherwise: first 2 chars of first segment, uppercased (ISO code).
+    - First segment "All" (case-insensitive) → "ALL" (multi-country marker).
+    - Otherwise: first 2 chars of first segment, uppercased (ISO 3166-1 alpha-2).
+    - Returns "Unknown" when no valid 2-char prefix can be extracted.
+
+    Used for Meta adset names (which carry the ISO prefix) and Google campaign
+    names (Google adgroups don't carry country — it lives on the campaign).
     """
     if not name:
-        return {"country": "Unknown"}
+        return "Unknown"
 
-    first = name.split("_")[0].strip() if name else ""
+    first = name.split("_")[0].strip()
     if first.upper() == "ALL":
-        return {"country": "ALL"}
+        return "ALL"
 
     country = first.upper()[:2] if first else "Unknown"
     if not country or len(country) < 2:
-        logger.warning("Could not parse country from adset: %s", name)
-        country = "Unknown"
+        logger.warning("Could not parse country from name: %s", name)
+        return "Unknown"
+    return country
 
-    return {"country": country}
+
+def parse_adset_metadata(name: str) -> dict:
+    """Parse country from Meta adset name (ISO prefix convention)."""
+    return {"country": parse_country(name)}

@@ -35,7 +35,7 @@ from app.services.google_client import (
     fetch_conversion_action_metrics,
 )
 from app.config import settings
-from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
+from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata, parse_country
 
 logger = logging.getLogger(__name__)
 
@@ -400,7 +400,8 @@ def sync_google_account(
             )
             continue
 
-        parsed = parse_adset_metadata(raw["name"])
+        # Google adgroups don't carry country; it lives on the parent campaign name.
+        country = parse_country(campaign.name)
 
         existing = (
             db.query(AdSet)
@@ -410,7 +411,7 @@ def sync_google_account(
         if existing:
             existing.name = raw["name"]
             existing.status = raw["status"]
-            existing.country = parsed["country"]
+            existing.country = country
             existing.raw_data = raw["raw_data"]
             existing.updated_at = datetime.now(timezone.utc)
         else:
@@ -421,7 +422,7 @@ def sync_google_account(
                 platform_adset_id=raw["platform_adset_id"],
                 name=raw["name"],
                 status=raw["status"],
-                country=parsed["country"],
+                country=country,
                 raw_data=raw["raw_data"],
             )
             db.add(adset)
