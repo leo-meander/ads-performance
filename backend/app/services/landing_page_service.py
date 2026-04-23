@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.models.ad import Ad
 from app.models.account import AdAccount
 from app.models.campaign import Campaign
+from app.models.currency_rate import CurrencyRate
 from app.models.landing_page import (
     LandingPage,
     SOURCE_EXTERNAL,
@@ -363,10 +364,41 @@ def rollup_metrics(
     }
     by_platform: dict[str, dict[str, float]] = {}
 
+    # Display currency: if all linked campaigns share one ad-account currency
+    # we display in that native currency. Otherwise we normalise to VND
+    # (memory: VND is the base currency, currency_rates.rate_to_vnd).
+    display_currency = "VND"
+    convert_to_vnd = False
+
     if campaign_ids:
+        currency_rows = (
+            db.query(AdAccount.currency)
+            .join(Campaign, Campaign.account_id == AdAccount.id)
+            .filter(Campaign.id.in_(campaign_ids))
+            .distinct()
+            .all()
+        )
+        currencies = {(c[0] or "VND") for c in currency_rows}
+        if len(currencies) == 1:
+            display_currency = currencies.pop()
+            convert_to_vnd = False
+        else:
+            display_currency = "VND"
+            convert_to_vnd = True
+
+        fx_rates: dict[str, float] = {"VND": 1.0}
+        if convert_to_vnd:
+            rate_rows = (
+                db.query(CurrencyRate.currency, CurrencyRate.rate_to_vnd)
+                .filter(CurrencyRate.currency.in_(currencies))
+                .all()
+            )
+            fx_rates.update({r[0]: float(r[1]) for r in rate_rows})
+
         q = (
             db.query(
                 MetricsCache.platform,
+                AdAccount.currency.label("currency"),
                 func.coalesce(func.sum(MetricsCache.spend), 0).label("spend"),
                 func.coalesce(func.sum(MetricsCache.impressions), 0).label("impressions"),
                 func.coalesce(func.sum(MetricsCache.clicks), 0).label("clicks"),
@@ -375,34 +407,42 @@ def rollup_metrics(
                 func.coalesce(func.sum(MetricsCache.revenue), 0).label("revenue"),
                 func.coalesce(func.sum(MetricsCache.landing_page_views), 0).label("lpv"),
             )
+            .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+            .join(AdAccount, AdAccount.id == Campaign.account_id)
             .filter(
                 MetricsCache.campaign_id.in_(campaign_ids),
                 MetricsCache.date >= date_from,
                 MetricsCache.date <= date_to,
             )
-            .group_by(MetricsCache.platform)
+            .group_by(MetricsCache.platform, AdAccount.currency)
         )
         for row in q.all():
-            spend = float(row.spend or 0)
+            row_currency = row.currency or "VND"
+            fx = fx_rates.get(row_currency, 1.0) if convert_to_vnd else 1.0
+            spend = float(row.spend or 0) * fx
+            revenue = float(row.revenue or 0) * fx
             impr = int(row.impressions or 0)
             clicks = int(row.clicks or 0)
             link_clicks = int(row.link_clicks or 0)
             convs = int(row.conversions or 0)
-            revenue = float(row.revenue or 0)
             lpv = int(row.lpv or 0)
-            by_platform[row.platform] = {
-                "spend": spend,
-                "impressions": impr,
-                "clicks": clicks,
-                "link_clicks": link_clicks,
-                "conversions": convs,
-                "revenue": revenue,
-                "landing_page_views": lpv,
-                "ctr": (clicks / impr) if impr else None,
-                "cpc": (spend / clicks) if clicks else None,
-                "cpa": (spend / convs) if convs else None,
-                "roas": (revenue / spend) if spend else None,
-            }
+
+            # Merge into platform bucket (multiple currency rows under same
+            # platform get summed in display currency).
+            plat = by_platform.setdefault(row.platform, {
+                "spend": 0.0, "impressions": 0, "clicks": 0,
+                "link_clicks": 0, "conversions": 0, "revenue": 0.0,
+                "landing_page_views": 0,
+                "ctr": None, "cpc": None, "cpa": None, "roas": None,
+            })
+            plat["spend"] += spend
+            plat["impressions"] += impr
+            plat["clicks"] += clicks
+            plat["link_clicks"] += link_clicks
+            plat["conversions"] += convs
+            plat["revenue"] += revenue
+            plat["landing_page_views"] += lpv
+
             ad_totals["spend"] += spend
             ad_totals["impressions"] += impr
             ad_totals["clicks"] += clicks
@@ -410,6 +450,16 @@ def rollup_metrics(
             ad_totals["conversions"] += convs
             ad_totals["revenue"] += revenue
             ad_totals["landing_page_views"] += lpv
+
+        for plat in by_platform.values():
+            if plat["impressions"]:
+                plat["ctr"] = plat["clicks"] / plat["impressions"]
+            if plat["clicks"]:
+                plat["cpc"] = plat["spend"] / plat["clicks"]
+            if plat["conversions"]:
+                plat["cpa"] = plat["spend"] / plat["conversions"]
+            if plat["spend"]:
+                plat["roas"] = plat["revenue"] / plat["spend"]
 
         if ad_totals["impressions"]:
             ad_totals["ctr"] = ad_totals["clicks"] / ad_totals["impressions"]
@@ -596,6 +646,8 @@ def rollup_metrics(
             "totals": ad_totals,
             "by_platform": by_platform,
             "campaign_count": len(campaign_ids),
+            "currency": display_currency,
+            "currency_normalized": convert_to_vnd,
         },
         "clarity": clarity_data,
         "clarity_coverage": {

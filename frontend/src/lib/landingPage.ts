@@ -156,6 +156,8 @@ export type MetricsResponse = {
     totals: AdRollup
     by_platform: Record<string, AdRollup>
     campaign_count: number
+    currency: string
+    currency_normalized: boolean
   }
   clarity: {
     sessions: number

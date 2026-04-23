@@ -27,6 +27,16 @@ function fmtNum(n: number | null | undefined, d = 0): string {
   return Number(n).toLocaleString('en-US', { maximumFractionDigits: d })
 }
 
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  VND: '₫', TWD: 'NT$', JPY: '¥', USD: '$',
+}
+
+function fmtMoney(n: number | null | undefined, currency: string, d = 0): string {
+  if (n === null || n === undefined) return '—'
+  const symbol = CURRENCY_SYMBOLS[currency] || currency
+  return `${Number(n).toLocaleString('en-US', { maximumFractionDigits: d })} ${symbol}`
+}
+
 function fmtPct(n: number | null | undefined, d = 2): string {
   if (n === null || n === undefined) return '—'
   return `${(Number(n) * 100).toFixed(d)}%`
@@ -161,21 +171,34 @@ export default function LandingPagePerformance() {
 
       {/* Ads card */}
       <section className="mb-6">
-        <h2 className="text-sm font-semibold text-gray-900 mb-2">Ad Performance (all linked campaigns)</h2>
+        <div className="flex items-baseline justify-between mb-2">
+          <h2 className="text-sm font-semibold text-gray-900">Ad Performance (all linked campaigns)</h2>
+          {metrics && metrics.ads.campaign_count > 0 && (
+            <span className="text-xs text-gray-500">
+              Currency:&nbsp;
+              <span className="font-mono font-semibold text-gray-700">{metrics.ads.currency}</span>
+              {metrics.ads.currency_normalized && (
+                <span className="ml-1 text-amber-700" title="Linked campaigns use multiple currencies — values converted to VND via stored FX rates">
+                  · normalised from mixed currencies
+                </span>
+              )}
+            </span>
+          )}
+        </div>
         <div className="bg-white border border-gray-200 rounded-lg p-4">
           {metrics && metrics.ads.campaign_count === 0 ? (
             <p className="text-sm text-gray-500">No linked campaigns yet. Run <strong>Import from Ads</strong> on the list page, or link campaigns manually via the editor.</p>
           ) : (
             <div className="grid grid-cols-6 gap-4 text-sm">
-              <Stat label="Spend" value={fmtNum(a?.spend, 0)} />
+              <Stat label={`Spend (${metrics?.ads.currency})`} value={fmtMoney(a?.spend, metrics?.ads.currency || 'VND', 0)} />
               <Stat label="Impressions" value={fmtNum(a?.impressions)} />
               <Stat label="Link clicks" value={fmtNum(a?.link_clicks)} />
               <Stat label="Landing page views" value={fmtNum(a?.landing_page_views)} />
               <Stat label="Conversions" value={fmtNum(a?.conversions)} />
-              <Stat label="Revenue" value={fmtNum(a?.revenue, 0)} />
+              <Stat label={`Revenue (${metrics?.ads.currency})`} value={fmtMoney(a?.revenue, metrics?.ads.currency || 'VND', 0)} />
               <Stat label="CTR (all clicks)" value={fmtPct(a?.ctr, 2)} />
-              <Stat label="CPC" value={fmtNum(a?.cpc, 2)} />
-              <Stat label="CPA" value={fmtNum(a?.cpa, 0)} />
+              <Stat label={`CPC (${metrics?.ads.currency})`} value={fmtMoney(a?.cpc, metrics?.ads.currency || 'VND', 2)} />
+              <Stat label={`CPA (${metrics?.ads.currency})`} value={fmtMoney(a?.cpa, metrics?.ads.currency || 'VND', 0)} />
               <Stat label="All clicks" value={fmtNum(a?.clicks)} />
               <Stat label="Campaigns linked" value={fmtNum(metrics?.ads.campaign_count)} />
             </div>
@@ -187,9 +210,10 @@ export default function LandingPagePerformance() {
                 <thead>
                   <tr className="text-xs text-gray-500">
                     <th className="text-left font-normal pb-1">Platform</th>
-                    <th className="text-right font-normal pb-1">Spend</th>
+                    <th className="text-right font-normal pb-1">Spend ({metrics.ads.currency})</th>
                     <th className="text-right font-normal pb-1">Clicks</th>
                     <th className="text-right font-normal pb-1">Conv</th>
+                    <th className="text-right font-normal pb-1">Revenue ({metrics.ads.currency})</th>
                     <th className="text-right font-normal pb-1">ROAS</th>
                   </tr>
                 </thead>
@@ -197,9 +221,10 @@ export default function LandingPagePerformance() {
                   {Object.entries(metrics.ads.by_platform).map(([plat, row]) => (
                     <tr key={plat}>
                       <td className="capitalize">{plat}</td>
-                      <td className="text-right">{fmtNum(row.spend, 0)}</td>
+                      <td className="text-right">{fmtMoney(row.spend, metrics.ads.currency, 0)}</td>
                       <td className="text-right">{fmtNum(row.clicks)}</td>
                       <td className="text-right">{fmtNum(row.conversions)}</td>
+                      <td className="text-right">{fmtMoney(row.revenue, metrics.ads.currency, 0)}</td>
                       <td className="text-right">{row.roas ? `${row.roas.toFixed(2)}×` : '—'}</td>
                     </tr>
                   ))}
