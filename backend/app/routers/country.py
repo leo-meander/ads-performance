@@ -91,8 +91,13 @@ def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage
     elif account_ids is not None:
         # empty list => return no rows
         q = q.filter(Campaign.account_id.in_(account_ids or ["__no_match__"]))
-    # Only valid 2-letter country codes
-    q = q.filter(AdSet.country.isnot(None), func.length(AdSet.country) == 2)
+    # Valid country codes: 2-letter ISO, or the "ALL" multi-country marker.
+    # Excludes NULL and the "Unknown" sentinel from failed parses.
+    q = q.filter(
+        AdSet.country.isnot(None),
+        AdSet.country != "Unknown",
+        (func.length(AdSet.country) == 2) | (AdSet.country == "ALL"),
+    )
     return q
 
 

@@ -113,3 +113,15 @@ class TestParseAdsetMetadata:
     def test_single_char(self):
         result = parse_adset_metadata("A_something")
         assert result["country"] == "Unknown"  # Only 1 char, not valid
+
+    def test_all_uppercase(self):
+        result = parse_adset_metadata("ALL_25-44_M&F_ENG")
+        assert result["country"] == "ALL"
+
+    def test_all_capitalized(self):
+        result = parse_adset_metadata("All_25-44_M&F_ENG")
+        assert result["country"] == "ALL"
+
+    def test_all_lowercase(self):
+        result = parse_adset_metadata("all_broad")
+        assert result["country"] == "ALL"

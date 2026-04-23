@@ -2,8 +2,10 @@
 
 from datetime import date, timedelta
 
-# ISO 3166-1 alpha-2 → display name (only countries relevant to MEANDER Group campaigns)
+# ISO 3166-1 alpha-2 → display name (only countries relevant to MEANDER Group campaigns).
+# "ALL" is a special multi-country adset marker (e.g. adset name "All_25-44_M&F_ENG").
 COUNTRY_NAMES = {
+    "ALL": "All Countries",
     "AU": "Australia",
     "CA": "Canada",
     "CN": "China",
@@ -26,13 +28,18 @@ COUNTRY_NAMES = {
 
 def country_name(code: str) -> str:
     """Return display name for country code, or the code itself if unknown."""
-    if not code or len(code) != 2 or not code.isalpha():
+    if not code:
+        return None
+    upper = code.upper()
+    if upper == "ALL":
+        return COUNTRY_NAMES["ALL"]
+    if len(code) != 2 or not code.isalpha():
         return None  # Invalid code — filter out
-    return COUNTRY_NAMES.get(code.upper(), code.upper())
+    return COUNTRY_NAMES.get(upper, upper)
 
 
 def is_valid_country(code: str) -> bool:
-    """Check if a country code is a known 2-letter alpha code."""
+    """Check if a country code is a known code (incl. the 'ALL' multi-country marker)."""
     return bool(code) and code.upper() in COUNTRY_NAMES
 
 

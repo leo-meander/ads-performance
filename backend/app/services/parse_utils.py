@@ -33,14 +33,17 @@ def parse_campaign_metadata(name: str) -> dict:
 def parse_adset_metadata(name: str) -> dict:
     """Parse country from adset name.
 
-    Country: first segment before underscore, uppercased, 2 chars max.
+    - First segment "All" (case-insensitive) → "ALL" (multi-country adset).
+    - Otherwise: first 2 chars of first segment, uppercased (ISO code).
     """
     if not name:
         return {"country": "Unknown"}
 
-    parts = name.split("_")
-    country = parts[0].upper()[:2] if parts and parts[0] else "Unknown"
+    first = name.split("_")[0].strip() if name else ""
+    if first.upper() == "ALL":
+        return {"country": "ALL"}
 
+    country = first.upper()[:2] if first else "Unknown"
     if not country or len(country) < 2:
         logger.warning("Could not parse country from adset: %s", name)
         country = "Unknown"
