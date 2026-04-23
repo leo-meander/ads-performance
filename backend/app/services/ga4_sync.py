@@ -368,10 +368,16 @@ def run_ga4_sync(
                     campaign=camp,
                     metrics=full,
                 )
+                # Force SQLAlchemy to SELECT-then-UPDATE-or-INSERT per row
+                # rather than batching INSERTs at commit time — otherwise
+                # multiple GA4 properties reporting the same (page, date,
+                # source, medium, campaign) tuple collide on the unique key.
+                db.flush()
                 b_summary["rows"] += 1
                 per_page_day[(page.id, dt)].append(full)
             except Exception:
                 logger.exception("[ga4-sync] upsert failed page=%s date=%s", page.id, dt)
+                db.rollback()
                 summary["errors"] += 1
 
         # Aggregate rows (source/medium/campaign = NULL) per (page, day)
@@ -404,9 +410,11 @@ def run_ga4_sync(
                     campaign=None,
                     metrics=agg,
                 )
+                db.flush()
                 b_summary["pages_touched"] += 1
             except Exception:
                 logger.exception("[ga4-sync] agg upsert failed page=%s date=%s", page_id, day)
+                db.rollback()
                 summary["errors"] += 1
 
         summary["branches"][acc.account_name] = b_summary
