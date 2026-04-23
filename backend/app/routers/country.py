@@ -229,12 +229,14 @@ def country_kpi_summary(
                 kpi["revenue_change"] = calc_change(kpi["total_revenue"], prev_kpi["total_revenue"])
                 kpi["roas_change"] = calc_change(kpi["roas"], prev_kpi["roas"])
                 kpi["ctr_change"] = calc_change(kpi["ctr"], prev_kpi["ctr"])
+                kpi["cpa_change"] = calc_change(kpi["cpa"], prev_kpi["cpa"])
                 kpi["conversions_change"] = calc_change(kpi["conversions"], prev_kpi["conversions"])
             else:
                 kpi["spend_change"] = None
                 kpi["revenue_change"] = None
                 kpi["roas_change"] = None
                 kpi["ctr_change"] = None
+                kpi["cpa_change"] = None
                 kpi["conversions_change"] = None
             items.append(kpi)
 
@@ -430,15 +432,36 @@ def country_funnel(
         labels = ["Impression", "Click", "Search", "Add to Cart", "Checkout", "Booking"]
 
         stages = []
-        for i, (field, label) in enumerate(zip(fields, labels)):
-            val = int(getattr(row, field) or 0)
+        for i, field in enumerate(fields):
+            cur_val = int(getattr(row, field) or 0)
             prev_val = int(getattr(prev_row, field) or 0) if prev_row else 0
 
-            stage = {"name": label, "value": val, "change": calc_change(val, prev_val)}
-            if i > 0:
-                prev = stages[i - 1]["value"]
-                stage["drop_off_rate"] = round((val / prev) * 100, 1) if prev > 0 else 0
-            stages.append(stage)
+            # Period-over-period change for the stage count
+            change = calc_change(cur_val, prev_val)
+
+            # Drop-off: fraction lost from the previous stage (1 - conv_rate)
+            if i == 0:
+                drop_off = None
+                drop_off_change = None
+            else:
+                prev_step_cur = int(getattr(row, fields[i - 1]) or 0)
+                prev_step_prev = int(getattr(prev_row, fields[i - 1]) or 0) if prev_row else 0
+
+                drop_off = 1 - (cur_val / prev_step_cur) if prev_step_cur > 0 else None
+                drop_off_prev = 1 - (prev_val / prev_step_prev) if prev_step_prev > 0 else None
+
+                if drop_off is not None and drop_off_prev is not None and drop_off_prev != 0:
+                    drop_off_change = (drop_off - drop_off_prev) / abs(drop_off_prev)
+                else:
+                    drop_off_change = None
+
+            stages.append({
+                "name": labels[i],
+                "value": cur_val,
+                "change": change,
+                "drop_off": drop_off,
+                "drop_off_change": drop_off_change,
+            })
 
         return _api_response(data={
             "country": country,

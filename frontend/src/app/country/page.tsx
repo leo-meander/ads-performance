@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
+import { TrendingUp, TrendingDown, ArrowUp, ArrowDown, ArrowUpDown, ChevronRight } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { useSortableRows } from '@/lib/useSortableRows'
 
@@ -35,6 +35,7 @@ type CountryKpi = {
   revenue_change: number | null
   roas_change: number | null
   ctr_change: number | null
+  cpa_change: number | null
   conversions_change: number | null
 }
 
@@ -57,7 +58,8 @@ type FunnelStage = {
   name: string
   value: number
   change: number | null
-  drop_off_rate?: number
+  drop_off: number | null
+  drop_off_change: number | null
 }
 
 function ChangeTag({ change, inverseColor = false }: { change: number | null; inverseColor?: boolean }) {
@@ -321,8 +323,8 @@ export default function CountryDashboard() {
                 { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.spend_change : null, inverse: true },
                 { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: country ? kpiData.find(k => k.country_code === country)?.revenue_change : null, inverse: false },
                 { label: 'ROAS', value: selectedKpi.total_spend ? (selectedKpi.total_revenue / selectedKpi.total_spend).toFixed(2) + 'x' : '0', change: country ? kpiData.find(k => k.country_code === country)?.roas_change : null, inverse: false },
-                { label: 'CTR', value: selectedKpi.impressions ? ((selectedKpi.clicks / selectedKpi.impressions) * 100).toFixed(1) + '%' : '0%', change: country ? kpiData.find(k => k.country_code === country)?.ctr_change : null, inverse: false },
-                { label: `CPA (${responseCurrency})`, value: selectedKpi.conversions ? fmtMoney(Math.round(selectedKpi.total_spend / selectedKpi.conversions), responseCurrency) : '--', change: null, inverse: true },
+                { label: 'CTR', value: selectedKpi.impressions ? ((selectedKpi.clicks / selectedKpi.impressions) * 100).toFixed(1) + '%' : '0%', change: country ? kpiData.find(k => k.country_code === country)?.ctr_change ?? null : null, inverse: false },
+                { label: `CPA (${responseCurrency})`, value: selectedKpi.conversions ? fmtMoney(Math.round(selectedKpi.total_spend / selectedKpi.conversions), responseCurrency) : '--', change: country ? kpiData.find(k => k.country_code === country)?.cpa_change ?? null : null, inverse: true },
                 { label: 'Campaigns', value: String(selectedKpi.campaign_count), change: null, inverse: false },
               ].map(kpi => (
                 <div key={kpi.label} className="bg-white rounded-xl border border-gray-200 p-5">
@@ -355,12 +357,17 @@ export default function CountryDashboard() {
                   const widthPct = Math.max((stage.value / maxVal) * 100, 4)
                   return (
                     <div key={stage.name}>
-                      {i > 0 && stage.drop_off_rate !== undefined && (
+                      {i > 0 && (
                         <div className="flex items-center gap-2 ml-4 mb-1">
-                          <span className={`text-xs font-medium ${
-                            stage.drop_off_rate > 35 ? 'text-green-600' :
-                            stage.drop_off_rate > 15 ? 'text-yellow-600' : 'text-red-600'
-                          }`}>{stage.drop_off_rate}%</span>
+                          <ChevronRight className="w-3 h-3 text-gray-300" />
+                          {stage.drop_off !== null && (
+                            <span className="text-xs text-gray-400">
+                              {(stage.drop_off * 100).toFixed(1)}% drop-off
+                            </span>
+                          )}
+                          {stage.drop_off_change !== null && (
+                            <ChangeTag change={stage.drop_off_change} inverseColor />
+                          )}
                         </div>
                       )}
                       <div className="flex items-center gap-4">
