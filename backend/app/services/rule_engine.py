@@ -24,6 +24,7 @@ from app.services.meta_actions import (
     pause_campaign,
     update_budget,
 )
+from app.services.metrics_snapshot import get_metrics_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -119,41 +120,6 @@ def _get_hours_since_creation(entity) -> float | None:
         delta = datetime.now(timezone.utc) - start_dt
         return delta.total_seconds() / 3600
     return None
-
-
-def _get_metrics_snapshot(
-    db: Session, entity_id: str, entity_level: str, days: int = 7,
-) -> dict:
-    """Get a snapshot of recent metrics for audit logging."""
-    date_from = date.today() - timedelta(days=days)
-    filters = _metric_base_filter(entity_id, entity_level) + [MetricsCache.date >= date_from]
-
-    row = db.query(
-        func.sum(MetricsCache.spend).label("spend"),
-        func.sum(MetricsCache.impressions).label("impressions"),
-        func.sum(MetricsCache.clicks).label("clicks"),
-        func.sum(MetricsCache.conversions).label("conversions"),
-        func.sum(MetricsCache.revenue).label("revenue"),
-    ).filter(*filters).one()
-
-    spend = float(row.spend or 0)
-    impressions = int(row.impressions or 0)
-    clicks = int(row.clicks or 0)
-    conversions = int(row.conversions or 0)
-    revenue = float(row.revenue or 0)
-
-    return {
-        "days": days,
-        "spend": spend,
-        "impressions": impressions,
-        "clicks": clicks,
-        "conversions": conversions,
-        "revenue": revenue,
-        "roas": revenue / spend if spend > 0 else 0,
-        "ctr": clicks / impressions if impressions > 0 else 0,
-        "cpc": spend / clicks if clicks > 0 else 0,
-        "cpa": spend / conversions if conversions > 0 else 0,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +301,7 @@ def execute_action(
 
     # Get metrics snapshot for audit
     max_days = max((c.get("days", 7) for c in rule.conditions), default=7)
-    snapshot = _get_metrics_snapshot(db, entity.id, entity_level, max_days)
+    snapshot = get_metrics_snapshot(db, entity.id, entity_level, days=max_days)
 
     success = False
     error_message = None

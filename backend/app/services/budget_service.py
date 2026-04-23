@@ -8,22 +8,13 @@ from decimal import Decimal
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.branches import BRANCH_ACCOUNT_MAP
 from app.models.account import AdAccount
 from app.models.budget import BudgetAllocation, BudgetPlan
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
 
 logger = logging.getLogger(__name__)
-
-# Branch name → account_name patterns for matching
-BRANCH_ACCOUNT_MAP = {
-    "Saigon": ["Meander Saigon", "Saigon"],
-    "Osaka": ["Meander Osaka", "Osaka"],
-    "Taipei": ["Meander Taipei", "Taipei"],
-    "1948": ["Meander 1948", "1948"],
-    "Oani": ["Oani (Taipei)", "Oani"],
-    "Bread": ["Bread Espresso", "Bread"],
-}
 
 
 def _get_account_ids_for_branch(db: Session, branch: str) -> list[str]:

@@ -11,6 +11,7 @@ from app.models.metrics import MetricsCache
 from app.models.reservation import Reservation
 from app.models.rule import AutomationRule
 from app.models.action_log import ActionLog
+from app.models.change_log_entry import ChangeLogEntry
 from app.models.ai_conversation import AIConversation
 from app.models.spy_tracked_page import SpyTrackedPage
 from app.models.spy_saved_ad import SpySavedAd
@@ -58,6 +59,7 @@ __all__ = [
     "Reservation",
     "AutomationRule",
     "ActionLog",
+    "ChangeLogEntry",
     "AIConversation",
     "SpyTrackedPage",
     "SpySavedAd",

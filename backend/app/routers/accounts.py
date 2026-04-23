@@ -4,6 +4,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.branches import (
+    BRANCH_ACCOUNT_MAP,
+    BRANCH_CURRENCY,
+    branch_name_patterns,
+    get_account_ids_for_branches,
+)
 from app.core.permissions import BRANCHES, SECTIONS, is_admin
 from app.database import get_db
 from app.dependencies.auth import get_current_user
@@ -74,50 +80,6 @@ def list_accounts(
         ])
     except Exception as e:
         return _api_response(error=str(e))
-
-
-# Branch name → account_name patterns for matching
-BRANCH_ACCOUNT_MAP = {
-    "Saigon": ["Meander Saigon", "Saigon"],
-    "Osaka": ["Meander Osaka", "Osaka"],
-    "Taipei": ["Meander Taipei"],  # bare "Taipei" would also ilike-match "Oani (Taipei)"
-    "1948": ["Meander 1948", "1948"],
-    "Oani": ["Oani (Taipei)", "Oani"],
-    "Bread": ["Bread Espresso", "Bread"],
-}
-
-BRANCH_CURRENCY = {
-    "Saigon": "VND",
-    "Osaka": "JPY",
-    "Taipei": "TWD",
-    "1948": "TWD",
-    "Oani": "TWD",
-    "Bread": "TWD",
-}
-
-
-def get_account_ids_for_branches(db: Session, branches: list[str]) -> list[str]:
-    """Get all account IDs that belong to the given branches."""
-    account_ids = []
-    for branch in branches:
-        patterns = BRANCH_ACCOUNT_MAP.get(branch, [branch])
-        for pattern in patterns:
-            accs = db.query(AdAccount.id).filter(
-                AdAccount.account_name.ilike(f"%{pattern}%"),
-                AdAccount.is_active.is_(True),
-            ).all()
-            account_ids.extend([str(a.id) for a in accs])
-    return list(set(account_ids))
-
-
-def branch_name_patterns(branches: list[str]) -> list[str]:
-    """Flatten canonical branch names to the ilike-ready substring patterns used
-    by BookingMatch / Reservation / BudgetPlan rows (which may store variants like
-    'MEANDER Saigon')."""
-    out: list[str] = []
-    for b in branches:
-        out.extend(BRANCH_ACCOUNT_MAP.get(b, [b]))
-    return out
 
 
 @router.get("/branches")
