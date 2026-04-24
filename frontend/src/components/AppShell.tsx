@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
 import HeaderBar from '@/components/HeaderBar'
 import RouteGuard from '@/components/RouteGuard'
+import FloatingChatWidget from '@/components/FloatingChatWidget'
 
 /**
  * Decides whether to render admin chrome (Sidebar + HeaderBar + RouteGuard)
@@ -24,6 +25,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
     return <>{children}</>
   }
 
+  const isLogin = pathname === '/login'
+
   return (
     <div className="flex h-screen bg-gray-50">
       <Sidebar />
@@ -33,6 +36,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <RouteGuard>{children}</RouteGuard>
         </main>
       </div>
+      {!isLogin && <FloatingChatWidget />}
     </div>
   )
 }

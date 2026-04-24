@@ -1,5 +1,7 @@
 """AI Chat endpoints: streaming Claude responses with hotel marketing context."""
 
+import json
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -13,6 +15,8 @@ from app.dependencies.auth import require_section
 from app.models.ai_conversation import AIConversation
 from app.models.user import User
 from app.services.ai_client import build_context, chat_stream
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -61,20 +65,31 @@ def chat(
     response_parts: list[str] = []
 
     def stream_and_save():
-        for chunk in chat_stream(db, messages, context):
-            response_parts.append(chunk)
-            # SSE format
-            yield f"data: {chunk}\n\n"
+        errored = False
+        try:
+            for chunk in chat_stream(db, messages, context):
+                response_parts.append(chunk)
+                # SSE format — JSON-encode so embedded newlines survive transport
+                yield f"data: {json.dumps(chunk)}\n\n"
+        except Exception as e:
+            errored = True
+            logger.exception("AI chat stream failed")
+            err_text = f"⚠️ AI service error: {type(e).__name__}: {e}"
+            response_parts.append(err_text)
+            yield f"event: error\ndata: {json.dumps(err_text)}\n\n"
 
-        # Save assistant response after streaming completes
+        # Persist whatever we managed to collect (including error note)
         full_response = "".join(response_parts)
-        assistant_msg = AIConversation(session_id=session_id, role="assistant", content=full_response)
-        db_save = next(get_db_for_save())
-        db_save.add(assistant_msg)
-        db_save.commit()
-        db_save.close()
+        if full_response:
+            try:
+                db_save = next(get_db_for_save())
+                db_save.add(AIConversation(session_id=session_id, role="assistant", content=full_response))
+                db_save.commit()
+                db_save.close()
+            except Exception:
+                logger.exception("Failed to persist assistant message")
 
-        yield f"data: [DONE]\n\n"
+        yield "data: [DONE]\n\n" if not errored else "event: done\ndata: [DONE]\n\n"
 
     # We need a separate db session for saving after stream (original may be closed)
     def get_db_for_save():

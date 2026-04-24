@@ -60,34 +60,46 @@ export default function InsightsPage() {
       const sid = res.headers.get('X-Session-Id')
       if (sid && !activeSession) setActiveSession(sid)
 
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '')
+        throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200) || res.statusText}`)
+      }
+
       const reader = res.body?.getReader()
       const decoder = new TextDecoder()
       let assistantContent = ''
+      let buffer = ''
 
       setMessages(prev => [...prev, { role: 'assistant', content: '' }])
 
       while (reader) {
         const { done, value } = await reader.read()
         if (done) break
-        const chunk = decoder.decode(value, { stream: true })
-        const lines = chunk.split('\n')
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6)
-            if (data === '[DONE]') continue
-            assistantContent += data
-            setMessages(prev => {
-              const updated = [...prev]
-              updated[updated.length - 1] = { role: 'assistant', content: assistantContent }
-              return updated
-            })
-          }
+        buffer += decoder.decode(value, { stream: true })
+        const frames = buffer.split('\n\n')
+        buffer = frames.pop() || ''
+        for (const frame of frames) {
+          const dataLines = frame.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6))
+          if (dataLines.length === 0) continue
+          const raw = dataLines.join('\n')
+          if (raw === '[DONE]') continue
+          let chunk: string
+          try { chunk = JSON.parse(raw) } catch { chunk = raw }
+          assistantContent += chunk
+          setMessages(prev => {
+            const updated = [...prev]
+            updated[updated.length - 1] = { role: 'assistant', content: assistantContent }
+            return updated
+          })
         }
       }
 
       fetchSessions()
-    } catch {
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Error: Could not connect to AI service.' }])
+    } catch (err: any) {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `⚠️ Could not reach AI service: ${err?.message || 'network error'}`,
+      }])
     } finally {
       setStreaming(false)
     }
