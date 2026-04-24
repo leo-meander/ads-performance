@@ -285,15 +285,30 @@ function ResetPasswordModal({
           new_password: mode === 'manual' ? manualPassword : null,
         }),
       })
-      const data = await res.json()
-      if (data.success) {
+      let data: any = null
+      try {
+        data = await res.json()
+      } catch {
+        setError(`HTTP ${res.status}: server did not return JSON. Endpoint may not exist yet — check backend deploy.`)
+        setSubmitting(false)
+        return
+      }
+      if (data?.success) {
         setTempPassword(data.data?.temporary_password || null)
         onSuccess()
       } else {
-        setError(data.error || 'Failed to reset password')
+        const msg =
+          data?.error ||
+          data?.detail ||
+          (res.status === 404
+            ? 'Endpoint not found — backend needs to be redeployed with the new reset-password route.'
+            : res.status === 403
+            ? 'Permission denied — admin role required.'
+            : `HTTP ${res.status}`)
+        setError(typeof msg === 'string' ? msg : JSON.stringify(msg))
       }
-    } catch {
-      setError('Network error')
+    } catch (e) {
+      setError(`Network error: ${e instanceof Error ? e.message : 'unknown'}`)
     }
     setSubmitting(false)
   }
