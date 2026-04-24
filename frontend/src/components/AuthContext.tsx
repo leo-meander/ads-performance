@@ -32,6 +32,7 @@ export interface User {
   roles: string[]
   is_active: boolean
   notification_email: boolean
+  must_change_password?: boolean
   is_admin?: boolean
   permissions?: Permission[]
   accessible_sections?: Record<string, string[]>

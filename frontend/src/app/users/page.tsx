@@ -12,6 +12,7 @@ interface UserItem {
   full_name: string
   roles: string[]
   is_active: boolean
+  must_change_password?: boolean
   created_at: string | null
 }
 
@@ -26,6 +27,7 @@ export default function UsersPage() {
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [permsTarget, setPermsTarget] = useState<UserItem | null>(null)
+  const [resetTarget, setResetTarget] = useState<UserItem | null>(null)
 
   const isAdmin = user?.is_admin || user?.roles?.includes('admin')
 
@@ -212,6 +214,12 @@ export default function UsersPage() {
                         Permissions
                       </button>
                       <button
+                        onClick={() => setResetTarget(u)}
+                        className="text-xs px-2 py-1 rounded-md bg-amber-50 text-amber-700 hover:bg-amber-100 font-medium"
+                      >
+                        Reset Password
+                      </button>
+                      <button
                         onClick={() => toggleActive(u.id, u.is_active)}
                         className="text-xs text-gray-500 hover:text-gray-700"
                       >
@@ -233,6 +241,185 @@ export default function UsersPage() {
           onClose={() => setPermsTarget(null)}
         />
       )}
+
+      {resetTarget && (
+        <ResetPasswordModal
+          user={resetTarget}
+          onClose={() => setResetTarget(null)}
+          onSuccess={fetchUsers}
+        />
+      )}
+    </div>
+  )
+}
+
+function ResetPasswordModal({
+  user,
+  onClose,
+  onSuccess,
+}: {
+  user: UserItem
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const [mode, setMode] = useState<'auto' | 'manual'>('auto')
+  const [manualPassword, setManualPassword] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [tempPassword, setTempPassword] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  const submit = async () => {
+    setError('')
+    if (mode === 'manual' && manualPassword.length < 8) {
+      setError('Password must be at least 8 characters')
+      return
+    }
+    setSubmitting(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/users/${user.id}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          new_password: mode === 'manual' ? manualPassword : null,
+        }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setTempPassword(data.data?.temporary_password || null)
+        onSuccess()
+      } else {
+        setError(data.error || 'Failed to reset password')
+      }
+    } catch {
+      setError('Network error')
+    }
+    setSubmitting(false)
+  }
+
+  const copyToClipboard = async () => {
+    if (!tempPassword) return
+    try {
+      await navigator.clipboard.writeText(tempPassword)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // noop — clipboard may be unavailable
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-900">Reset Password</h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 text-xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="p-6">
+          {tempPassword ? (
+            <div>
+              <p className="text-sm text-gray-700 mb-3">
+                Password reset for <strong>{user.email}</strong>. Share this
+                temporary password with the user — they'll be required to change
+                it on next login.
+              </p>
+              <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 font-mono text-sm break-all mb-3">
+                {tempPassword}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={copyToClipboard}
+                  className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700"
+                >
+                  {copied ? 'Copied!' : 'Copy'}
+                </button>
+                <button
+                  onClick={onClose}
+                  className="text-sm text-gray-500 hover:text-gray-700"
+                >
+                  Done
+                </button>
+              </div>
+              <p className="text-xs text-gray-500 mt-3">
+                This password will not be shown again.
+              </p>
+            </div>
+          ) : (
+            <div>
+              <p className="text-sm text-gray-600 mb-4">
+                Reset password for <strong>{user.email}</strong>. The user will
+                be forced to set a new password at next login.
+              </p>
+
+              {error && (
+                <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-sm mb-3">
+                  {error}
+                </div>
+              )}
+
+              <div className="space-y-3">
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="radio"
+                    checked={mode === 'auto'}
+                    onChange={() => setMode('auto')}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <span className="font-medium text-gray-800">Generate random password</span>
+                    <span className="block text-xs text-gray-500">
+                      A 12-character temporary password will be generated.
+                    </span>
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="radio"
+                    checked={mode === 'manual'}
+                    onChange={() => setMode('manual')}
+                    className="mt-0.5"
+                  />
+                  <span className="flex-1">
+                    <span className="font-medium text-gray-800">Choose password</span>
+                    <input
+                      type="text"
+                      value={manualPassword}
+                      onChange={e => setManualPassword(e.target.value)}
+                      onFocus={() => setMode('manual')}
+                      placeholder="At least 8 characters"
+                      className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono"
+                    />
+                  </span>
+                </label>
+              </div>
+
+              <div className="flex items-center gap-2 mt-5">
+                <button
+                  onClick={submit}
+                  disabled={submitting}
+                  className="bg-amber-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {submitting ? 'Resetting...' : 'Reset Password'}
+                </button>
+                <button
+                  onClick={onClose}
+                  className="text-sm text-gray-500 hover:text-gray-700"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

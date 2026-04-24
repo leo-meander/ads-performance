@@ -75,6 +75,7 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
                     "email": user.email,
                     "full_name": user.full_name,
                     "roles": user.roles,
+                    "must_change_password": bool(user.must_change_password),
                 },
             }
         )
@@ -100,6 +101,7 @@ def get_me(current_user: User = Depends(get_current_user)):
             "roles": current_user.roles,
             "is_active": current_user.is_active,
             "notification_email": current_user.notification_email,
+            "must_change_password": bool(current_user.must_change_password),
             "last_login_at": current_user.last_login_at.isoformat() if current_user.last_login_at else None,
             **perms_payload,
         }
@@ -122,8 +124,13 @@ def change_password(
     try:
         if not verify_password(body.current_password, current_user.password_hash):
             return _api_response(error="Current password is incorrect")
+        if len(body.new_password or "") < 8:
+            return _api_response(error="New password must be at least 8 characters")
+        if body.new_password == body.current_password:
+            return _api_response(error="New password must be different from the current one")
 
         current_user.password_hash = hash_password(body.new_password)
+        current_user.must_change_password = False
         db.commit()
         return _api_response(data={"message": "Password updated"})
     except Exception as e:

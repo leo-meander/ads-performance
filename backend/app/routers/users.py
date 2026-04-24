@@ -1,3 +1,5 @@
+import secrets
+import string
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
@@ -31,9 +33,17 @@ def _user_to_dict(u: User) -> dict:
         "roles": u.roles,
         "is_active": u.is_active,
         "notification_email": u.notification_email,
+        "must_change_password": bool(u.must_change_password),
         "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
         "created_at": u.created_at.isoformat() if u.created_at else None,
     }
+
+
+def _generate_temp_password(length: int = 12) -> str:
+    # Avoid ambiguous characters (0/O, 1/l/I) so temp passwords are easy to dictate.
+    alphabet = string.ascii_letters + string.digits
+    alphabet = "".join(c for c in alphabet if c not in "0O1lI")
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 # ── Schemas ──────────────────────────────────────────────────
@@ -61,6 +71,10 @@ class PermissionItem(BaseModel):
 
 class ReplacePermissionsRequest(BaseModel):
     items: list[PermissionItem]
+
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str | None = None  # if empty/missing, server generates one
 
 
 # ── Endpoints ────────────────────────────────────────────────
@@ -154,6 +168,50 @@ def update_user(
         db.commit()
         db.refresh(user)
         return _api_response(data=_user_to_dict(user))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.post("/users/{user_id}/reset-password")
+def reset_user_password(
+    user_id: str,
+    body: ResetPasswordRequest,
+    current_user: User = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db),
+):
+    """Admin-triggered password reset.
+
+    If new_password is supplied, it's used verbatim (must be >= 8 chars).
+    Otherwise the server generates a temp password.
+    Either way, must_change_password is set so the user is forced to pick
+    a new one at next login. The plaintext password is returned ONCE —
+    the admin is responsible for relaying it to the user via a secure channel.
+    """
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return _api_response(error="User not found")
+
+        supplied = (body.new_password or "").strip()
+        if supplied:
+            if len(supplied) < 8:
+                return _api_response(error="Password must be at least 8 characters")
+            new_password = supplied
+        else:
+            new_password = _generate_temp_password()
+
+        user.password_hash = hash_password(new_password)
+        user.must_change_password = True
+        db.commit()
+        db.refresh(user)
+        return _api_response(
+            data={
+                "user": _user_to_dict(user),
+                "temporary_password": new_password,
+                "message": "Password reset. Share the temporary password with the user — they'll be required to change it on next login.",
+            }
+        )
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))

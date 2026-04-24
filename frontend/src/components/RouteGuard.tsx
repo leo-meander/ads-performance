@@ -1,7 +1,7 @@
 'use client'
 
-import { ReactNode } from 'react'
-import { usePathname } from 'next/navigation'
+import { ReactNode, useEffect } from 'react'
+import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/components/AuthContext'
 import SectionGuard from '@/components/SectionGuard'
 
@@ -44,7 +44,22 @@ function sectionForPath(pathname: string): string | null {
 
 export default function RouteGuard({ children }: { children: ReactNode }) {
   const pathname = usePathname()
+  const router = useRouter()
   const { user, loading } = useAuth()
+
+  // Force password change before allowing access to anything except /login and
+  // /change-password. Admin reset sets must_change_password = true.
+  const mustChange = !!user?.must_change_password
+  useEffect(() => {
+    if (
+      !loading &&
+      mustChange &&
+      pathname !== '/change-password' &&
+      pathname !== '/login'
+    ) {
+      router.replace('/change-password')
+    }
+  }, [loading, mustChange, pathname, router])
 
   // Login page: no guard
   if (pathname === '/login') return <>{children}</>
@@ -54,6 +69,13 @@ export default function RouteGuard({ children }: { children: ReactNode }) {
 
   // Not logged in: don't gate (pages typically redirect to /login themselves)
   if (!user) return <>{children}</>
+
+  // While the forced-redirect above is in-flight, render nothing to avoid a
+  // flash of a gated page the user shouldn't see yet.
+  if (mustChange && pathname !== '/change-password') return null
+
+  // Allow access to /change-password for logged-in users regardless of section.
+  if (pathname === '/change-password') return <>{children}</>
 
   const section = sectionForPath(pathname)
   if (!section) return <>{children}</>

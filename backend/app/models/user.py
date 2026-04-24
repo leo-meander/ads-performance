@@ -14,6 +14,7 @@ class User(Base, TimestampMixin):
     is_active = Column(Boolean, nullable=False, default=True)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     notification_email = Column(Boolean, nullable=False, default=True)
+    must_change_password = Column(Boolean, nullable=False, default=False)
 
     permissions = relationship(
         "UserPermission",
