@@ -15,8 +15,11 @@ name: Scheduled tasks
 
 on:
   schedule:
-    # 15-min sync — main dashboard refresh
-    - cron: "*/15 * * * *"
+    # Twice-daily sync — main dashboard refresh
+    # 03:00 UTC = 10:00 VN / 11:00 TW / 12:00 JP (morning)
+    # 13:00 UTC = 20:00 VN / 21:00 TW / 22:00 JP (evening)
+    - cron: "0 3 * * *"
+    - cron: "0 13 * * *"
     # Daily 23:00 UTC — re-enable paused ads + sync + rule eval
     - cron: "0 23 * * *"
     # Daily 00:00 UTC — PMS reservations + booking match
@@ -86,7 +89,8 @@ jobs:
             ENDPOINT="${{ github.event.inputs.endpoint }}"
           else
             case "${{ github.event.schedule }}" in
-              "*/15 * * * *")   ENDPOINT="sync-all-platforms" ;;
+              "0 3 * * *")      ENDPOINT="sync-all-platforms" ;;
+              "0 13 * * *")     ENDPOINT="sync-all-platforms" ;;
               "0 23 * * *")     ENDPOINT="daily-rule-cycle" ;;
               "0 0 * * *")      ENDPOINT="sync-reservations-match" ;;
               "30 22 * * *")    ENDPOINT="google-recommendations/daily" ;;
