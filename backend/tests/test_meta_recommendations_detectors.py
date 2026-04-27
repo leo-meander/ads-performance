@@ -29,6 +29,7 @@ from app.services.meta_recommendations.detectors.creative_fatigue import (
 from app.services.meta_recommendations.detectors.performance import (
     BadROASDetector,
     FrequencyAboveCeilingDetector,
+    HighCTRLowCVRDetector,
     LowCTRDetector,
 )
 from app.services.meta_recommendations.detectors.seasonal import (
@@ -154,6 +155,76 @@ def test_low_ctr_detector_fires_when_ctr_below_floor(db):
     finding = det.evaluate(db, target)
     assert finding is not None
     assert finding.evidence["actual_ctr_7d"] < 0.008
+
+
+# ── High CTR / Low CVR ───────────────────────────────────────────────────
+
+def _seed_campaign_metrics(
+    db, camp, *, days_back, days, impressions, clicks, conversions,
+):
+    """Seed N days of campaign-level MetricsCache rows ending `days_back` ago."""
+    for offset in range(days_back, days_back + days):
+        db.add(MetricsCache(
+            id=str(uuid.uuid4()), campaign_id=camp.id,
+            platform="meta", date=date.today() - timedelta(days=offset),
+            spend=Decimal("100"), impressions=impressions, clicks=clicks,
+            conversions=conversions, revenue=Decimal("0"),
+        ))
+    db.commit()
+
+
+def test_high_ctr_low_cvr_fires_when_7d_drops_below_half_of_30d(db):
+    acc = _make_account(db)
+    camp = _make_campaign(db, acc)
+    # Days 8-30: healthy baseline. 23 days * 1500 clicks = 34,500 clicks,
+    # 23 * 30 = 690 conversions -> CVR_30d ≈ 2.0%.
+    _seed_campaign_metrics(
+        db, camp, days_back=8, days=23,
+        impressions=10000, clicks=1500, conversions=30,
+    )
+    # Days 1-7: CTR still healthy (15%) but CVR collapsed to ~0.2%
+    # — well below 50% of the 2% baseline.
+    _seed_campaign_metrics(
+        db, camp, days_back=1, days=7,
+        impressions=10000, clicks=1500, conversions=3,
+    )
+
+    det = HighCTRLowCVRDetector()
+    target = next(iter(det.scope(db)))
+    finding = det.evaluate(db, target)
+    assert finding is not None
+    assert finding.evidence["cvr_7d"] < finding.evidence["alert_threshold"]
+    assert finding.evidence["cvr_30d_baseline"] > finding.evidence["cvr_7d"]
+    assert finding.evidence["drop_ratio"] < 0.5
+
+
+def test_high_ctr_low_cvr_silent_when_7d_close_to_baseline(db):
+    acc = _make_account(db)
+    camp = _make_campaign(db, acc)
+    # Steady CVR ~2% across both windows -> 7d not materially worse than 30d.
+    _seed_campaign_metrics(
+        db, camp, days_back=1, days=30,
+        impressions=10000, clicks=1500, conversions=30,
+    )
+    det = HighCTRLowCVRDetector()
+    target = next(iter(det.scope(db)))
+    assert det.evaluate(db, target) is None
+
+
+def test_high_ctr_low_cvr_silent_when_baseline_volume_too_low(db):
+    """New campaign with healthy 7d CTR but insufficient 30d clicks must
+    not fire — the baseline is too noisy to call a regression."""
+    acc = _make_account(db)
+    camp = _make_campaign(db, acc)
+    # 7 days of data only — passes 7d gate (impr≥20k, clicks≥200) but the
+    # 30d total clicks (7 * 35 = 245) falls below CVR_BASELINE_MIN_CLICKS=500.
+    _seed_campaign_metrics(
+        db, camp, days_back=1, days=7,
+        impressions=3000, clicks=35, conversions=0,
+    )
+    det = HighCTRLowCVRDetector()
+    target = next(iter(det.scope(db)))
+    assert det.evaluate(db, target) is None
 
 
 # ── Bad ROAS ─────────────────────────────────────────────────────────────

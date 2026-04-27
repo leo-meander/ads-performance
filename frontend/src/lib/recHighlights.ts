@@ -113,9 +113,13 @@ export function pickHighlights(ctx: PickContext): MetricHighlight[] {
   if (t === 'HIGH_CTR_LOW_CVR') {
     const ctr = num(f, 'ctr_7d') ?? num(m, 'ctr_7d') ?? 0
     const cvr = num(f, 'cvr_7d') ?? num(m, 'cvr_7d') ?? 0
+    const baseline = num(f, 'cvr_30d_baseline') ?? num(m, 'cvr_30d')
+    const caption = baseline !== null && baseline > 0
+      ? `vs ${fmtPct(baseline)} 30-day baseline`
+      : 'LP / offer leak'
     return [
       { label: '7-day CTR', value: fmtPct(ctr), tone: 'green', caption: 'Hook works' },
-      { label: '7-day CVR', value: fmtPct(cvr), tone: 'red', caption: 'LP / offer leak' },
+      { label: '7-day CVR', value: fmtPct(cvr), tone: 'red', caption },
     ]
   }
   if (t === 'FREQ_ABOVE_CEILING' || t === 'FREQUENCY_HIGH') {

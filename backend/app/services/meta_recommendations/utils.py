@@ -24,7 +24,14 @@ from app.models.metrics import MetricsCache
 # be inferred, we fall back to the moderate cold/warm band.
 CTR_COLD_MIN = 0.008  # 0.8%
 CTR_WARM_MIN = 0.015  # 1.5%
-CVR_MIN = 0.01  # 1% — Tree 3 in G.3 says below this is a landing-page problem
+# CVR is benchmarked per-campaign against its own trailing 30-day rate
+# rather than a fixed floor — hospitality CVR varies too much by branch,
+# funnel stage, and offer mix for a single absolute number to be meaningful.
+# We fire when the 7d CVR drops to less than half the 30d baseline.
+CVR_ALERT_RATIO = 0.5
+# Minimum 30d clicks before the baseline is treated as stable enough to
+# compare against. Below this, the campaign is too noisy to call a regression.
+CVR_BASELINE_MIN_CLICKS = 500
 
 FUNNEL_STAGE_RE = re.compile(r"\[(TOF|MOF|BOF)\]", re.IGNORECASE)
 

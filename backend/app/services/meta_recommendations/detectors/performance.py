@@ -2,7 +2,7 @@
 
 - META_BAD_ROAS_7D        — campaign 7d ROAS < 50% of tier benchmark
 - META_LOW_CTR_7D         — ad 7d CTR < cold/warm floor
-- META_HIGH_CTR_LOW_CVR   — campaign CTR healthy, CVR < 1%
+- META_HIGH_CTR_LOW_CVR   — campaign CTR healthy, 7d CVR < 50% of own 30d CVR
 - META_FREQ_ABOVE_CEILING — ad 7d frequency > 2.5 (auto-pause)
 
 Benchmarks come from playbook G.2 benchmark table; we pick conservative
@@ -30,7 +30,8 @@ from app.services.meta_recommendations.base import (
 from app.services.meta_recommendations.registry import register
 from app.services.meta_recommendations.utils import (
     CTR_COLD_MIN,
-    CVR_MIN,
+    CVR_ALERT_RATIO,
+    CVR_BASELINE_MIN_CLICKS,
     ad_age_days,
     ad_set_targeted_country,
     avg_ad,
@@ -226,19 +227,37 @@ class HighCTRLowCVRDetector(Detector):
             return None
 
         ctr = float(clicks / impr) if impr > 0 else 0.0
-        cvr = float(conv / clicks) if clicks > 0 else 0.0
-        # Healthy CTR but poor CVR -> landing-page problem.
-        if ctr < CTR_COLD_MIN or cvr >= CVR_MIN:
+        cvr_7d = float(conv / clicks) if clicks > 0 else 0.0
+        if ctr < CTR_COLD_MIN:
+            return None
+
+        # Benchmark against the campaign's own trailing 30-day CVR rather
+        # than a fixed floor. A 1% absolute floor mis-fires for hostels
+        # whose normal CVR sits well below 1%, and under-fires for premium
+        # campaigns whose normal CVR is several percent.
+        clicks_30d = sum_campaign(db, target.campaign_id, "clicks", 30, today)
+        conv_30d = sum_campaign(db, target.campaign_id, "conversions", 30, today)
+        if clicks_30d < CVR_BASELINE_MIN_CLICKS:
+            return None
+        cvr_30d = float(conv_30d / clicks_30d) if clicks_30d > 0 else 0.0
+        if cvr_30d <= 0:
+            return None
+        alert_threshold = cvr_30d * CVR_ALERT_RATIO
+        if cvr_7d >= alert_threshold:
             return None
 
         return DetectorFinding(
             evidence={
                 "ctr_7d": ctr,
-                "cvr_7d": cvr,
-                "cvr_floor": CVR_MIN,
+                "cvr_7d": cvr_7d,
+                "cvr_30d_baseline": cvr_30d,
+                "alert_threshold": alert_threshold,
+                "drop_ratio": (cvr_7d / cvr_30d) if cvr_30d > 0 else 0.0,
                 "impressions_7d": float(impr),
                 "clicks_7d": float(clicks),
                 "conversions_7d": float(conv),
+                "clicks_30d": float(clicks_30d),
+                "conversions_30d": float(conv_30d),
                 "funnel_stage": target.funnel_stage,
                 "campaign_name": target.context.get("campaign_name"),
             },

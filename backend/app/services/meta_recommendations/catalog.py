@@ -53,9 +53,11 @@ CATALOG: dict[str, RecTypeSpec] = {spec.rec_type: spec for spec in [
     RecTypeSpec(
         "META_HIGH_CTR_LOW_CVR", _WARN, _WEEKLY, "PLAYBOOK.G.3.CVR", False,
         "Clicks arrive but do not convert",
-        "CTR is healthy but booking conversion rate is below 1%. Tree 3 points to "
-        "landing-page mismatch, page load > 3s on mobile, booking friction, or missing "
-        "trust signals. Audit the funnel as a first-time visitor.",
+        "CTR is healthy but the campaign's 7-day booking conversion rate has "
+        "dropped to less than half of its own trailing 30-day baseline. Tree 3 "
+        "points to landing-page mismatch, page load > 3s on mobile, booking "
+        "friction, or missing trust signals. Audit the funnel as a first-time "
+        "visitor.",
     ),
     RecTypeSpec(
         "META_FREQ_ABOVE_CEILING", _WARN, _DAILY, "PLAYBOOK.F.6.FREQUENCY", True,

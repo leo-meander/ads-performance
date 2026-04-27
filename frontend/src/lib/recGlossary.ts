@@ -114,7 +114,7 @@ export const REC_TYPE_GLOSSARY: Record<string, string> = {
   META_LOW_CTR_7D:
     "CTR is below the benchmark for this audience temperature. Tree 2: check frequency > 2.5, placement mix (Audience Network leak), hook strength, and language match before killing the creative.",
   META_HIGH_CTR_LOW_CVR:
-    "Clicks are healthy but booking conversion rate is below 1%. Tree 3: landing-page mismatch, slow mobile load, booking friction, or missing trust signals.",
+    "Clicks are healthy but the 7-day booking conversion rate has dropped to less than half of the campaign's own trailing 30-day baseline. Tree 3: landing-page mismatch, slow mobile load, booking friction, or missing trust signals.",
   META_FREQ_ABOVE_CEILING:
     "Ad frequency exceeds 2.5 per week — creative fatigue threshold. System will pause the ad so the audience can cool down.",
 
