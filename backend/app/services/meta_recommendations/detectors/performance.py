@@ -3,7 +3,6 @@
 - META_BAD_ROAS_7D        — campaign 7d ROAS < 50% of tier benchmark
 - META_LOW_CTR_7D         — ad 7d CTR < cold/warm floor
 - META_HIGH_CTR_LOW_CVR   — campaign CTR healthy, CVR < 1%
-- META_SCALE_TOO_FAST     — campaign daily_budget rose > 25% in 24h (auto-revert)
 - META_FREQ_ABOVE_CEILING — ad 7d frequency > 2.5 (auto-pause)
 
 Benchmarks come from playbook G.2 benchmark table; we pick conservative
@@ -12,7 +11,7 @@ defaults so the detectors under-fire rather than over-fire.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 from typing import Iterable
 
@@ -245,84 +244,6 @@ class HighCTRLowCVRDetector(Detector):
             },
             metrics_snapshot=snapshot_campaign(db, target.campaign_id, today),
         )
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# META_SCALE_TOO_FAST — campaign level, auto-revert via update_campaign_budget
-# ─────────────────────────────────────────────────────────────────────────
-@register
-class ScaleTooFastDetector(Detector):
-    rec_type = "META_SCALE_TOO_FAST"
-
-    def scope(
-        self, db: Session, account_ids: list[str] | None = None,
-    ) -> Iterable[DetectorTarget]:
-        q = (
-            db.query(Campaign)
-            .filter(Campaign.platform == "meta")
-            .filter(Campaign.status == "ACTIVE")
-            .filter(Campaign.daily_budget.isnot(None))
-        )
-        if account_ids:
-            q = q.filter(Campaign.account_id.in_(account_ids))
-        for camp in q.all():
-            yield DetectorTarget(
-                entity_level="campaign",
-                entity_id=camp.id,
-                account_id=camp.account_id,
-                campaign_id=camp.id,
-                funnel_stage=campaign_funnel_stage(camp),
-                context={
-                    "campaign_name": camp.name,
-                    "current_daily_budget": float(camp.daily_budget) if camp.daily_budget else None,
-                },
-            )
-
-    def evaluate(
-        self, db: Session, target: DetectorTarget,
-    ) -> DetectorFinding | None:
-        today = date.today()
-        current_budget = target.context.get("current_daily_budget")
-        if not current_budget:
-            return None
-
-        # Use the last 3-day spend average as a stand-in for yesterday's budget.
-        spend_yesterday = sum_campaign(db, target.campaign_id, "spend", 1, today - timedelta(days=1))
-        spend_day_before = sum_campaign(db, target.campaign_id, "spend", 1, today - timedelta(days=2))
-        if spend_day_before <= 0:
-            return None
-        # If the current budget exceeds yesterday's spend by > 25%, flag.
-        ratio = float(current_budget) / float(spend_day_before)
-        if ratio <= 1.25:
-            return None
-
-        capped = float(spend_day_before) * 1.25
-        return DetectorFinding(
-            evidence={
-                "current_daily_budget": float(current_budget),
-                "spend_yesterday": float(spend_yesterday),
-                "spend_day_before": float(spend_day_before),
-                "ratio_over_day_before": ratio,
-                "proposed_capped_budget": capped,
-                "campaign_name": target.context.get("campaign_name"),
-            },
-            metrics_snapshot=snapshot_campaign(db, target.campaign_id, today),
-            action_kwargs={
-                "new_daily_budget": capped,
-                # force=True because the revert is a decrease disguised as a
-                # scale-down; the guard wouldn't reject it but being explicit
-                # keeps audit logs clean.
-                "force": True,
-            },
-        )
-
-    def build_action(
-        self, target: DetectorTarget, finding: DetectorFinding,
-    ) -> dict:
-        return {
-            "function": "update_campaign_budget",
-            "kwargs": finding.action_kwargs,
-        }
 
 
 # ─────────────────────────────────────────────────────────────────────────

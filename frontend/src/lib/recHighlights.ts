@@ -134,15 +134,6 @@ export function pickHighlights(ctx: PickContext): MetricHighlight[] {
       { label: '7-day CTR', value: fmtPct(ctr), tone: 'gray' },
     ]
   }
-  if (t === 'SCALE_TOO_FAST') {
-    const before = num(f, 'budget_before') ?? 0
-    const after = num(f, 'budget_after') ?? 0
-    const pct = before > 0 ? (after - before) / before : 0
-    return [
-      { label: 'Budget jump', value: `+${(pct * 100).toFixed(0)}%`, tone: 'amber', caption: 'In one step' },
-      { label: 'New daily', value: fmtMoney(after, currency), tone: 'gray' },
-    ]
-  }
   if (t === 'BUDGET_SHIFT_APPROACHING' || t === 'SEASONALITY_LEAD_TIME_APPROACHING') {
     const days = num(f, 'days_to_event') ?? num(f, 'lead_days') ?? 0
     const event = String(f?.event_name || f?.event || 'Seasonal peak')

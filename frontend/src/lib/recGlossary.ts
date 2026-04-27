@@ -115,8 +115,6 @@ export const REC_TYPE_GLOSSARY: Record<string, string> = {
     "CTR is below the benchmark for this audience temperature. Tree 2: check frequency > 2.5, placement mix (Audience Network leak), hook strength, and language match before killing the creative.",
   META_HIGH_CTR_LOW_CVR:
     "Clicks are healthy but booking conversion rate is below 1%. Tree 3: landing-page mismatch, slow mobile load, booking friction, or missing trust signals.",
-  META_SCALE_TOO_FAST:
-    "Budget was raised more than 25% in one day — resets Meta's learning phase. System will revert the budget to last-stable +25% cap.",
   META_FREQ_ABOVE_CEILING:
     "Ad frequency exceeds 2.5 per week — creative fatigue threshold. System will pause the ad so the audience can cool down.",
 
@@ -212,8 +210,6 @@ export const SOP_REFERENCE_GLOSSARY: Record<string, string> = {
     "Decision Tree 2 (Low CTR / Expensive Clicks) — check frequency > 2.5 (fatigue), placement mix (restrict Audience Network), audience temperature benchmarks, hook strength, language match.",
   "PLAYBOOK.G.3.CVR":
     "Decision Tree 3 (High CTR / Low CVR) — landing-page mismatch is most common. Check mobile load >3s, booking friction, missing trust signals, mobile-vs-desktop CR gap.",
-  "PLAYBOOK.G.4.RULE_4":
-    "Golden Rule #4 — never scale a campaign by more than 25% budget increase in one day. Above 25%, Meta restarts the learning phase.",
   "PLAYBOOK.G.4.ATTRIBUTION":
     "Golden Rule #7 — do not trust Meta's in-platform ROAS alone. Reconcile weekly against actual PMS/OTA bookings.",
   "PLAYBOOK.F.6.FREQUENCY":

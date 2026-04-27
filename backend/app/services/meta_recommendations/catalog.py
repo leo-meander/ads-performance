@@ -58,12 +58,6 @@ CATALOG: dict[str, RecTypeSpec] = {spec.rec_type: spec for spec in [
         "trust signals. Audit the funnel as a first-time visitor.",
     ),
     RecTypeSpec(
-        "META_SCALE_TOO_FAST", _CRIT, _DAILY, "PLAYBOOK.G.4.RULE_4", True,
-        "Budget raised more than 25% in 24h",
-        "Budget increase of more than 25% in one day resets Meta's learning phase. "
-        "System will revert the budget to last-stable +25% cap. Confirm to apply.",
-    ),
-    RecTypeSpec(
         "META_FREQ_ABOVE_CEILING", _WARN, _DAILY, "PLAYBOOK.F.6.FREQUENCY", True,
         "Ad frequency above 2.5 in 7-day window",
         "Ad frequency exceeds 2.5/week — creative fatigue threshold in Section F.6. "

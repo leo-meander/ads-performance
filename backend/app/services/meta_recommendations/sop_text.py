@@ -45,11 +45,6 @@ PLAYBOOK_EXCERPTS: dict[str, str] = {
         "gap (mobile CR often 50% lower in hospitality).",
 
     # ── G.4 Seven Golden Rules ────────────────────────────────
-    "PLAYBOOK.G.4.RULE_4":
-        "Rule #4: do not scale a campaign by more than 25% budget increase in "
-        "one day. Above 25%, Meta restarts the learning phase and CPA may spike "
-        "for 1-2 weeks. If a recommendation proposes revert, cap at last-stable "
-        "+25%.",
     "PLAYBOOK.G.4.ATTRIBUTION":
         "Rule #7: do not trust Meta's in-platform ROAS alone. Reconcile against "
         "actual bookings from the PMS or OTA weekly. Attribution shifts (7d vs "

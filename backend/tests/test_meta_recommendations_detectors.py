@@ -30,7 +30,6 @@ from app.services.meta_recommendations.detectors.performance import (
     BadROASDetector,
     FrequencyAboveCeilingDetector,
     LowCTRDetector,
-    ScaleTooFastDetector,
 )
 from app.services.meta_recommendations.detectors.seasonal import (
     SeasonalBudgetBumpDetector,
@@ -175,32 +174,6 @@ def test_bad_roas_detector_fires_below_tier_floor(db):
     finding = det.evaluate(db, target)
     assert finding is not None
     assert finding.evidence["actual_roas_7d"] < 1.0
-
-
-# ── Scale too fast ───────────────────────────────────────────────────────
-
-def test_scale_too_fast_detector_fires_when_budget_spikes(db):
-    acc = _make_account(db)
-    # yesterday spend 30, today budget 100 -> ratio 3.3x, > 1.25 threshold
-    camp = _make_campaign(db, acc, daily_budget=Decimal("100"))
-    for offset in (1, 2):
-        db.add(MetricsCache(
-            id=str(uuid.uuid4()), campaign_id=camp.id,
-            platform="meta", date=date.today() - timedelta(days=offset),
-            spend=Decimal("30"), impressions=2000, clicks=20,
-            conversions=1, revenue=Decimal("60"),
-        ))
-    db.commit()
-    det = ScaleTooFastDetector()
-    target = next(iter(det.scope(db)))
-    finding = det.evaluate(db, target)
-    assert finding is not None
-    proposed = finding.evidence["proposed_capped_budget"]
-    # Capped at day-before spend * 1.25 == 37.5
-    assert proposed == pytest.approx(37.5, rel=1e-3)
-    action = det.build_action(target, finding)
-    assert action["function"] == "update_campaign_budget"
-    assert action["kwargs"]["force"] is True
 
 
 # ── Creative age ─────────────────────────────────────────────────────────

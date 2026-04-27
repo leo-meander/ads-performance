@@ -9,10 +9,8 @@ from facebook_business.api import FacebookAdsApi
 
 logger = logging.getLogger(__name__)
 
-# Golden Rule #4 (Meta playbook G.4): never scale a campaign by more than
-# 25% in a single day — Meta will reset learning phase and ROAS collapses.
-# The applier passes force=True only when the recommendation is
-# SCALE_TOO_FAST auto-revert (which brings budget DOWN, never up).
+# Safety cap on the apply path: reject single-step daily budget increases
+# above 25% unless the caller explicitly passes force=True.
 MAX_DAILY_BUDGET_INCREASE_PCT = 0.25
 
 
@@ -127,9 +125,9 @@ def update_budget(access_token: str, platform_campaign_id: str, new_daily_budget
 
 
 def _guard_increase(current: float | None, new_value: float, *, force: bool) -> None:
-    """Enforce the Meta playbook Golden Rule #4 25% daily cap on increases.
+    """Reject single-step daily budget increases above 25%.
 
-    Decreases and force=True (used by SCALE_TOO_FAST revert) bypass the guard.
+    Decreases and force=True bypass the guard.
     """
     if force or current is None or current <= 0 or new_value <= current:
         return
