@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
@@ -8,6 +8,7 @@ import {
 } from 'recharts'
 import { TrendingUp, TrendingDown, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { useSortableRows } from '@/lib/useSortableRows'
+import FunnelRecommendations from '@/components/FunnelRecommendations'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -171,13 +172,16 @@ export default function DashboardPage() {
     return currencies.length === 1 ? currencies[0] : 'VND'
   })()
 
-  const getDateParams = useCallback(() => {
+  const resolvedRange = useMemo(() => {
     if (datePreset === 'custom' && customFrom && customTo) {
-      return `date_from=${customFrom}&date_to=${customTo}`
+      return { from: customFrom, to: customTo }
     }
-    const { from, to } = getDateRange(datePreset)
-    return `date_from=${from}&date_to=${to}`
+    return getDateRange(datePreset)
   }, [datePreset, customFrom, customTo])
+
+  const getDateParams = useCallback(() => {
+    return `date_from=${resolvedRange.from}&date_to=${resolvedRange.to}`
+  }, [resolvedRange])
 
   const fetchData = useCallback(() => {
     setLoading(true)
@@ -447,6 +451,15 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+
+      {/* Funnel Recommendations — bottlenecks broken down by Channel × Country
+          × Funnel × TA, with deep-link to the page that owns each root cause. */}
+      <FunnelRecommendations
+        branches={selectedBranches.join(',')}
+        platform={selectedPlatform}
+        dateFrom={resolvedRange.from}
+        dateTo={resolvedRange.to}
+      />
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">

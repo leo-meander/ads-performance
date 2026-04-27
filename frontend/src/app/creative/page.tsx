@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { Suspense, useEffect, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Plus, X, ArrowUpDown } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -28,8 +28,16 @@ const VERDICT_COLORS: Record<string, string> = {
 }
 const TA_LIST = ['Solo', 'Couple', 'Friend', 'Group', 'Business']
 
-export default function CreativePage() {
+function CreativePageInner() {
   const router = useRouter()
+  // Deep-link inputs from /funnel-recommendations cards. Read once on mount;
+  // subsequent URL edits don't fight the user's filter changes.
+  const search = useSearchParams()
+  const initialBranchHint = (search?.get('branches') || '').split(',').map(s => s.trim()).filter(Boolean)[0] || ''
+  const initialTA = search?.get('ta') || ''
+  const initialCountry = (search?.get('country') || '').toUpperCase()
+  const initialVerdict = (search?.get('verdict') || '').toUpperCase()
+
   const [tab, setTab] = useState<'combos' | 'copies' | 'materials'>('combos')
   const [combos, setCombos] = useState<Combo[]>([])
   const [copies, setCopies] = useState<Copy[]>([])
@@ -43,9 +51,9 @@ export default function CreativePage() {
 
   // Filters (shared across tabs)
   const [fBranch, setFBranch] = useState('')
-  const [fTA, setFTA] = useState('')
-  const [fCountry, setFCountry] = useState('')
-  const [fVerdict, setFVerdict] = useState('')
+  const [fTA, setFTA] = useState(initialTA)
+  const [fCountry, setFCountry] = useState(initialCountry)
+  const [fVerdict, setFVerdict] = useState(initialVerdict)
 
   // Sort
   const [sortBy, setSortBy] = useState('')
@@ -61,9 +69,24 @@ export default function CreativePage() {
   }
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
+    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) return
+        const metaAccounts = d.data.filter((a: any) => a.platform === 'meta')
+        setAccounts(metaAccounts)
+        // Resolve branch-name hint from URL → first matching Meta account
+        if (initialBranchHint && !fBranch) {
+          const hit = metaAccounts.find((a: Account) =>
+            (a.account_name || '').toLowerCase().includes(initialBranchHint.toLowerCase()),
+          )
+          if (hit) setFBranch(hit.id)
+        }
+      })
+      .catch(() => {})
     fetch(`${API_BASE}/api/keypoints`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAllKeypoints(d.data) }).catch(() => {})
     fetch(`${API_BASE}/api/angles`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAllAngles(d.data) }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Fetch combos with filters + sort
@@ -356,5 +379,13 @@ export default function CreativePage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function CreativePage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}>
+      <CreativePageInner />
+    </Suspense>
   )
 }

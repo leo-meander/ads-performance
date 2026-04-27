@@ -1,7 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { Sparkles, X } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
 import { API_BASE } from '@/lib/api'
 import type { LandingPage } from '@/lib/landingPage'
@@ -18,18 +20,28 @@ const STATUS_COLORS: Record<string, string> = {
   ARCHIVED: 'bg-gray-200 text-gray-500',
 }
 
-export default function LandingPagesList() {
+function LandingPagesListInner() {
   const { canEditSection } = useAuth()
   const canEdit = canEditSection('landing_pages')
+  // Deep-link inputs from /funnel-recommendations cards: branches=Saigon&country=VN&range=7d
+  const search0 = useSearchParams()
+  const initialBranches = (search0?.get('branches') || '').split(',').map((s) => s.trim()).filter(Boolean)
+  const initialCountry = (search0?.get('country') || '').toUpperCase()
+  const initialSearch = initialBranches[0] || ''
   const [pages, setPages] = useState<LandingPage[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [filterStatus, setFilterStatus] = useState<string>('')
   const [filterSource, setFilterSource] = useState<string>('')
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useState(initialSearch)
   const [importBusy, setImportBusy] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
+  const [recContext, setRecContext] = useState<{ branches: string[]; country: string } | null>(
+    initialBranches.length > 0 || initialCountry
+      ? { branches: initialBranches, country: initialCountry }
+      : null,
+  )
 
   const load = async () => {
     setLoading(true)
@@ -118,6 +130,28 @@ export default function LandingPagesList() {
           )}
         </div>
       </div>
+
+      {/* Recommendation context banner — shown when user opened from a
+          Funnel Recommendation deep-link. Mirrors the slice they were looking
+          at so they don't lose context when jumping pages. */}
+      {recContext && (
+        <div className="bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-lg px-4 py-2 mb-4 flex items-center justify-between text-sm">
+          <span className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4" />
+            Opened from <strong>Click → Search</strong> bottleneck
+            {recContext.branches.length > 0 && <> for <strong>{recContext.branches.join(', ')}</strong></>}
+            {recContext.country && <> in <strong>{recContext.country}</strong></>}
+            <span className="text-indigo-500">— review LP load + relevance for these pages.</span>
+          </span>
+          <button
+            onClick={() => { setRecContext(null); setSearch('') }}
+            className="text-indigo-500 hover:text-indigo-700"
+            title="Clear recommendation context"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4 flex gap-3 flex-wrap">
@@ -237,6 +271,14 @@ export default function LandingPagesList() {
 
       {showCreate && <CreatePageModal onClose={() => setShowCreate(false)} onCreated={(id) => { setShowCreate(false); load(); window.location.href = `/landing-pages/${id}` }} />}
     </div>
+  )
+}
+
+export default function LandingPagesList() {
+  return (
+    <Suspense fallback={<div className="p-6 text-gray-400">Loading...</div>}>
+      <LandingPagesListInner />
+    </Suspense>
   )
 }
 
