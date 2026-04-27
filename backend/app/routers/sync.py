@@ -125,6 +125,11 @@ def reparse_names(body: ReparseBody = ReparseBody(), db: Session = Depends(get_d
                 if parsed["funnel_stage"] == "Unknown":
                     unknown_funnel += 1
 
+        # Track per-platform country distribution for diagnostics.
+        country_dist: dict[str, dict[str, int]] = {}
+        # Sample names of unparseable rows so the user can spot bad naming.
+        unknown_samples: dict[str, list[str]] = {}
+
         if body.scope in ("all", "adsets"):
             q = db.query(AdSet)
             if body.account_id:
@@ -136,13 +141,20 @@ def reparse_names(body: ReparseBody = ReparseBody(), db: Session = Depends(get_d
 
             for a in adsets:
                 if a.platform == "google":
-                    country = parse_country(campaign_names.get(a.campaign_id, ""))
+                    source_name = campaign_names.get(a.campaign_id, "")
+                    country = parse_country(source_name)
                 else:
+                    source_name = a.name
                     country = parse_adset_metadata(a.name)["country"]
                 a.country = country
                 reparsed += 1
                 if country == "Unknown":
                     unknown_country += 1
+                    samples = unknown_samples.setdefault(a.platform, [])
+                    if len(samples) < 5 and source_name:
+                        samples.append(source_name)
+                plat_dist = country_dist.setdefault(a.platform, {})
+                plat_dist[country] = plat_dist.get(country, 0) + 1
 
         db.commit()
         logger.info("Re-parse complete: %d items, %d unknown TA, %d unknown country", reparsed, unknown_ta, unknown_country)
@@ -152,6 +164,8 @@ def reparse_names(body: ReparseBody = ReparseBody(), db: Session = Depends(get_d
             "unknown_ta": unknown_ta,
             "unknown_funnel_stage": unknown_funnel,
             "unknown_country": unknown_country,
+            "country_distribution": country_dist,
+            "unknown_samples": unknown_samples,
         })
     except Exception as e:
         db.rollback()
