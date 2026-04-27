@@ -22,6 +22,7 @@ from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.meta_recommendation import MetaRecommendation
 from app.services import meta_actions
+from app.services.changelog import log_change
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,37 @@ def apply_recommendation(
     else:
         rec.status = "failed"
         rec.action_log_id = log.id
+
+    sanitized_kwargs = {k: v for k, v in kwargs.items() if k != "access_token"}
+    log_change(
+        db,
+        category="recommendation_applied",
+        source="auto",
+        triggered_by="recommendation",
+        title=(
+            f"Recommendation applied: {rec.title}"
+            if success
+            else f"Recommendation failed: {rec.title}"
+        ),
+        description=(
+            f"{rec.rec_type} · {function_name}"
+            + (f" · {error_message}" if error_message else "")
+        ),
+        platform="meta",
+        account_id=rec.account_id,
+        campaign_id=rec.campaign_id,
+        ad_set_id=rec.ad_set_id,
+        ad_id=rec.ad_id,
+        after_value={
+            "rec_type": rec.rec_type,
+            "function": function_name,
+            "kwargs": sanitized_kwargs,
+            "success": success,
+        },
+        metrics_snapshot=rec.metrics_snapshot,
+        author_user_id=applied_by_user_id,
+        action_log_id=log.id,
+    )
     db.commit()
     return rec
 

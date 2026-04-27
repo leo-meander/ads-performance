@@ -14,6 +14,7 @@ import {
   Layers,
   Globe2,
   Filter,
+  Sparkles,
 } from 'lucide-react'
 import {
   Area,
@@ -82,6 +83,7 @@ const CATEGORY_META: Record<string, { label: string; color: string; icon: JSX.El
   external_competitor: { label: 'Competitor', color: 'bg-rose-100 text-rose-700', icon: <Megaphone className="w-3.5 h-3.5" /> },
   external_algorithm: { label: 'Algorithm', color: 'bg-sky-100 text-sky-700', icon: <RefreshCw className="w-3.5 h-3.5" /> },
   tracking_integrity: { label: 'Tracking', color: 'bg-red-100 text-red-700', icon: <AlertTriangle className="w-3.5 h-3.5" /> },
+  recommendation_applied: { label: 'Recommendation', color: 'bg-violet-100 text-violet-700', icon: <Sparkles className="w-3.5 h-3.5" /> },
   other: { label: 'Other', color: 'bg-gray-100 text-gray-700', icon: <UserPlus className="w-3.5 h-3.5" /> },
 }
 
@@ -449,6 +451,7 @@ export default function ActivityLogPanel({
                     m.category === 'external_competitor' ? '#f43f5e' :
                     m.category === 'external_algorithm' ? '#0ea5e9' :
                     m.category === 'tracking_integrity' ? '#ef4444' :
+                    m.category === 'recommendation_applied' ? '#8b5cf6' :
                     '#3b82f6'
                   return (
                     <ReferenceDot

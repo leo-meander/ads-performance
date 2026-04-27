@@ -20,6 +20,7 @@ from app.models.action_log import ActionLog
 from app.models.campaign import Campaign
 from app.models.google_recommendation import GoogleRecommendation
 from app.services import google_actions
+from app.services.changelog import log_change
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,36 @@ def apply_recommendation(
     else:
         rec.status = "failed"
         rec.action_log_id = log.id
+
+    log_change(
+        db,
+        category="recommendation_applied",
+        source="auto",
+        triggered_by="recommendation",
+        title=(
+            f"Recommendation applied: {rec.title}"
+            if success
+            else f"Recommendation failed: {rec.title}"
+        ),
+        description=(
+            f"{rec.rec_type} · {function_name}"
+            + (f" · {error_message}" if error_message else "")
+        ),
+        platform="google",
+        account_id=rec.account_id,
+        campaign_id=rec.campaign_id,
+        ad_set_id=rec.ad_group_id,
+        ad_id=rec.ad_id,
+        after_value={
+            "rec_type": rec.rec_type,
+            "function": function_name,
+            "kwargs": kwargs,
+            "success": success,
+        },
+        metrics_snapshot=rec.metrics_snapshot,
+        author_user_id=applied_by_user_id,
+        action_log_id=log.id,
+    )
     db.commit()
     return rec
 
