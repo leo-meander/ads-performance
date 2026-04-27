@@ -23,4 +23,6 @@ class Campaign(TimestampMixin, Base):
     end_date = Column(Date, nullable=True)
     ta = Column(String(50), nullable=True, index=True)  # Parsed: Solo/Couple/Friend/Group/Business/Unknown
     funnel_stage = Column(String(10), nullable=True, index=True)  # Parsed: TOF/MOF/BOF/Unknown
+    # Google: parsed from last 2 chars of campaign name (Meta uses AdSet.country instead).
+    country = Column(String(8), nullable=True, index=True)
     raw_data = Column(JSONType, nullable=True)

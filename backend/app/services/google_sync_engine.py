@@ -35,7 +35,10 @@ from app.services.google_client import (
     fetch_conversion_action_metrics,
 )
 from app.config import settings
-from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata, parse_country
+from app.services.parse_utils import (
+    parse_campaign_metadata,
+    parse_google_country,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +337,7 @@ def sync_google_account(
 
     for raw in raw_campaigns:
         parsed = parse_campaign_metadata(raw["name"])
+        country = parse_google_country(raw["name"])
         # Enrich raw_data with brand-exclusion flag before persisting.
         raw_data = dict(raw.get("raw_data") or {})
         raw_data["has_brand_exclusion"] = raw["platform_campaign_id"] in brand_excluded_ids
@@ -351,6 +355,7 @@ def sync_google_account(
             existing.lifetime_budget = raw["lifetime_budget"]
             existing.ta = parsed["ta"]
             existing.funnel_stage = parsed["funnel_stage"]
+            existing.country = country
             # start_date only overwritten if we got a real value from the API —
             # never null out an existing start_date.
             if raw.get("start_date"):
@@ -371,6 +376,7 @@ def sync_google_account(
                 lifetime_budget=raw["lifetime_budget"],
                 ta=parsed["ta"],
                 funnel_stage=parsed["funnel_stage"],
+                country=country,
                 start_date=raw.get("start_date"),
                 end_date=raw.get("end_date"),
                 raw_data=raw_data,
@@ -400,8 +406,9 @@ def sync_google_account(
             )
             continue
 
-        # Google adgroups don't carry country; it lives on the parent campaign name.
-        country = parse_country(campaign.name)
+        # Google adgroups don't carry country — it lives in the trailing 2 chars
+        # of the parent campaign name (e.g. `..._VN`, `..._TW`).
+        country = parse_google_country(campaign.name)
 
         existing = (
             db.query(AdSet)

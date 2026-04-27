@@ -420,3 +420,60 @@ def trigger_ga4_sync(
     _require_secret(x_internal_secret)
     _run_in_thread(_do_ga4_sync, "ga4-sync", days_back=days_back, branch_filter=branch_filter)
     return _api_response(data={"status": "started", "days_back": days_back, "branch_filter": branch_filter})
+
+
+# --------------------------------------------------- Google country backfill --
+
+
+def _do_backfill_google_country(db):
+    """Re-parse country (last 2 chars of campaign name) for every Google campaign
+    and its ad groups. Run once after migration 024 so the Country Dashboard
+    has data without waiting for the next regular sync."""
+    from app.models.ad_set import AdSet
+    from app.models.campaign import Campaign
+    from app.services.parse_utils import parse_google_country
+
+    google_campaigns = db.query(Campaign).filter(Campaign.platform == "google").all()
+    campaigns_updated = 0
+    for c in google_campaigns:
+        parsed = parse_google_country(c.name or "")
+        if c.country != parsed:
+            c.country = parsed
+            campaigns_updated += 1
+
+    db.flush()
+
+    # Mirror parsed country onto Search ad groups (AdSet) so Meta-style adset
+    # queries still work for Google Search.
+    google_adsets = (
+        db.query(AdSet)
+        .join(Campaign, Campaign.id == AdSet.campaign_id)
+        .filter(Campaign.platform == "google")
+        .all()
+    )
+    adsets_updated = 0
+    for a in google_adsets:
+        parent = next((c for c in google_campaigns if c.id == a.campaign_id), None)
+        if not parent:
+            continue
+        parsed = parse_google_country(parent.name or "")
+        if a.country != parsed:
+            a.country = parsed
+            adsets_updated += 1
+
+    db.commit()
+    logger.info(
+        "[backfill-google-country] %d campaigns updated, %d adsets updated",
+        campaigns_updated, adsets_updated,
+    )
+
+
+@router.post("/internal/tasks/backfill-google-country", status_code=202)
+def trigger_backfill_google_country(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """One-shot: re-parse country for every Google campaign + Search ad group
+    using the last-2-chars-of-campaign-name rule. Safe to run multiple times."""
+    _require_secret(x_internal_secret)
+    _run_in_thread(_do_backfill_google_country, "backfill-google-country")
+    return _api_response(data={"status": "started"})

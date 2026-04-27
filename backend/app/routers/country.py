@@ -3,8 +3,8 @@
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import exists, func, or_
+from sqlalchemy.orm import Session, aliased
 
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
@@ -72,12 +72,41 @@ def _default_date_range():
     return today - timedelta(days=6), today
 
 
+def _country_col():
+    """Effective country dimension across platforms.
+
+    - Meta: AdSet.country (parsed from adset-name prefix at sync time).
+    - Google Search: AdSet.country (set from parent campaign trailing 2 chars).
+    - Google PMax: no AdSet rows exist → falls back to Campaign.country.
+
+    COALESCE works because Meta never sets Campaign.country, and Google sets
+    both AdSet.country and Campaign.country to the same value.
+    """
+    return func.coalesce(AdSet.country, Campaign.country)
+
+
+def _no_double_count_filter():
+    """Avoid double-counting Search-style platforms that sync both campaign-
+    level and ad-group-level metrics rows for the same date.
+
+    Rule:
+      - Keep ad-set-level rows (ad_set_id IS NOT NULL).
+      - Keep campaign-level rows (ad_set_id IS NULL) only if the campaign has
+        no AdSets at all — i.e. PMax campaigns.
+    """
+    _AS = aliased(AdSet)
+    has_adset = exists().where(_AS.campaign_id == MetricsCache.campaign_id)
+    return or_(MetricsCache.ad_set_id.isnot(None), ~has_adset)
+
+
 def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage, account_id, account_ids=None):
     """Apply common filters to a metrics query (already joined with Campaign + AdSet)."""
-    # Only adset-level rows — exclude ad-level to prevent double counting
-    q = q.filter(MetricsCache.ad_id.is_(None))
+    # Exclude ad-level rows; for campaign-level rows, only keep when the
+    # campaign has no AdSets (PMax). Avoids double-counting Search.
+    q = q.filter(MetricsCache.ad_id.is_(None), _no_double_count_filter())
+    cc = _country_col()
     if country:
-        q = q.filter(AdSet.country == country.upper())
+        q = q.filter(cc == country.upper())
     if platform:
         q = q.filter(MetricsCache.platform == platform)
     if date_from:
@@ -94,9 +123,9 @@ def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage
     # Valid country codes: 2-letter ISO, or the "ALL" multi-country marker.
     # Excludes NULL and the "Unknown" sentinel from failed parses.
     q = q.filter(
-        AdSet.country.isnot(None),
-        AdSet.country != "Unknown",
-        (func.length(AdSet.country) == 2) | (AdSet.country == "ALL"),
+        cc.isnot(None),
+        cc != "Unknown",
+        (func.length(cc) == 2) | (cc == "ALL"),
     )
     return q
 
@@ -123,10 +152,15 @@ def _resolve_scope(db, user, account_id, branches=None):
 
 
 def _base_metrics_query(db: Session):
-    """Base query joining metrics → campaign → adset → account, grouped per (country, account)."""
+    """Base query joining metrics → campaign → adset (LEFT) → account, grouped per (country, account).
+
+    LEFT JOIN on AdSet so Google PMax (which has no AdSet rows) still surfaces
+    via Campaign.country fallback in `_country_col()`.
+    """
+    cc = _country_col().label("country")
     return (
         db.query(
-            AdSet.country,
+            cc,
             Campaign.account_id.label("account_id"),
             AdAccount.currency.label("currency"),
             func.sum(MetricsCache.spend).label("total_spend"),
@@ -138,7 +172,7 @@ def _base_metrics_query(db: Session):
         )
         .join(Campaign, Campaign.id == MetricsCache.campaign_id)
         .join(AdAccount, AdAccount.id == Campaign.account_id)
-        .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
+        .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
     )
 
 
@@ -212,15 +246,17 @@ def country_kpi_summary(
         dt = date.fromisoformat(date_to)
         prev_from, prev_to = get_prev_period(df, dt)
 
+        cc = _country_col()
+
         # Current period
         q = _base_metrics_query(db)
         q = _apply_common_filters(q, country, platform, df, dt, funnel_stage, account_id, scoped_ids)
-        rows = q.group_by(AdSet.country, Campaign.account_id, AdAccount.currency).all()
+        rows = q.group_by(cc, Campaign.account_id, AdAccount.currency).all()
 
         # Previous period
         q_prev = _base_metrics_query(db)
         q_prev = _apply_common_filters(q_prev, country, platform, prev_from, prev_to, funnel_stage, account_id, scoped_ids)
-        prev_rows = q_prev.group_by(AdSet.country, Campaign.account_id, AdAccount.currency).all()
+        prev_rows = q_prev.group_by(cc, Campaign.account_id, AdAccount.currency).all()
 
         curr_by_country = _aggregate_country_rows(rows, convert_to_vnd)
         prev_by_country = _aggregate_country_rows(prev_rows, convert_to_vnd)
@@ -301,7 +337,7 @@ def daily_spend_series(
             )
             .join(Campaign, Campaign.id == MetricsCache.campaign_id)
             .join(AdAccount, AdAccount.id == Campaign.account_id)
-            .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
+            .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
         )
         q = _apply_common_filters(q, country, platform, df, dt, funnel_stage, account_id, scoped_ids)
         rows = q.group_by(MetricsCache.date, AdAccount.currency).all()
@@ -369,6 +405,7 @@ def ta_breakdown(
         prev_from, prev_to = get_prev_period(df, dt)
 
         def _query_ta(d_from, d_to):
+            cc = _country_col()
             q = (
                 db.query(
                     Campaign.ta,
@@ -382,9 +419,9 @@ def ta_breakdown(
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
                 .join(AdAccount, AdAccount.id == Campaign.account_id)
-                .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
-                .filter(MetricsCache.ad_id.is_(None))
-                .filter(AdSet.country == country.upper())
+                .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
+                .filter(MetricsCache.ad_id.is_(None), _no_double_count_filter())
+                .filter(cc == country.upper())
                 .filter(MetricsCache.date >= d_from, MetricsCache.date <= d_to)
             )
             if platform:
@@ -485,6 +522,7 @@ def country_funnel(
         prev_from, prev_to = get_prev_period(df, dt)
 
         def _query_funnel(d_from, d_to):
+            cc = _country_col()
             q = (
                 db.query(
                     func.sum(MetricsCache.impressions).label("impressions"),
@@ -495,9 +533,9 @@ def country_funnel(
                     func.sum(MetricsCache.conversions).label("bookings"),
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
-                .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
-                .filter(MetricsCache.ad_id.is_(None))
-                .filter(AdSet.country == country.upper())
+                .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
+                .filter(MetricsCache.ad_id.is_(None), _no_double_count_filter())
+                .filter(cc == country.upper())
                 .filter(MetricsCache.date >= d_from, MetricsCache.date <= d_to)
             )
             if ta:
@@ -591,12 +629,14 @@ def country_comparison(
         prev_from, prev_to = get_prev_period(df, dt)
 
         def _query_countries(d_from, d_to):
+            cc = _country_col()
             q = _base_metrics_query(db).filter(
-                AdSet.country.isnot(None),
-                func.length(AdSet.country) == 2,
+                cc.isnot(None),
+                func.length(cc) == 2,
                 MetricsCache.date >= d_from,
                 MetricsCache.date <= d_to,
                 MetricsCache.ad_id.is_(None),
+                _no_double_count_filter(),
             )
             if platform:
                 q = q.filter(MetricsCache.platform == platform)
@@ -606,7 +646,7 @@ def country_comparison(
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:
                 q = q.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
-            return q.group_by(AdSet.country, Campaign.account_id, AdAccount.currency).all()
+            return q.group_by(cc, Campaign.account_id, AdAccount.currency).all()
 
         rows = _query_countries(df, dt)
         prev_rows = _query_countries(prev_from, prev_to)
@@ -680,6 +720,7 @@ def country_campaign_breakdown(
         prev_from, prev_to = get_prev_period(df, dt)
 
         def _query(d_from, d_to):
+            cc = _country_col()
             q = (
                 db.query(
                     Campaign.id.label("campaign_id"),
@@ -698,17 +739,17 @@ def country_campaign_breakdown(
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
                 .join(AdAccount, AdAccount.id == Campaign.account_id)
-                .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
-                .filter(MetricsCache.ad_id.is_(None))
+                .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
+                .filter(MetricsCache.ad_id.is_(None), _no_double_count_filter())
                 .filter(MetricsCache.date >= d_from, MetricsCache.date <= d_to)
             )
             if country:
-                q = q.filter(AdSet.country == country.upper())
+                q = q.filter(cc == country.upper())
             else:
                 q = q.filter(
-                    AdSet.country.isnot(None),
-                    AdSet.country != "Unknown",
-                    (func.length(AdSet.country) == 2) | (AdSet.country == "ALL"),
+                    cc.isnot(None),
+                    cc != "Unknown",
+                    (func.length(cc) == 2) | (cc == "ALL"),
                 )
             if platform:
                 q = q.filter(MetricsCache.platform == platform)
@@ -818,8 +859,9 @@ def list_countries(
         if err:
             return _api_response(error=err)
 
-        q = (
-            db.query(AdSet.country, func.count(AdSet.id).label("adset_count"))
+        # Source 1: countries on AdSets (Meta + Google Search).
+        adset_q = (
+            db.query(AdSet.country.label("country"), func.count(AdSet.id).label("entity_count"))
             .filter(
                 AdSet.country.isnot(None),
                 AdSet.country != "Unknown",
@@ -827,24 +869,41 @@ def list_countries(
             )
         )
         if account_id:
-            q = q.filter(AdSet.account_id == account_id)
+            adset_q = adset_q.filter(AdSet.account_id == account_id)
         elif scoped_ids is not None:
-            q = q.filter(AdSet.account_id.in_(scoped_ids or ["__no_match__"]))
+            adset_q = adset_q.filter(AdSet.account_id.in_(scoped_ids or ["__no_match__"]))
+        adset_rows = adset_q.group_by(AdSet.country).all()
 
-        rows = q.group_by(AdSet.country).order_by(AdSet.country).all()
+        # Source 2: Google PMax countries (no AdSet) — read from Campaign.country.
+        pmax_q = (
+            db.query(Campaign.country.label("country"), func.count(Campaign.id).label("entity_count"))
+            .filter(
+                Campaign.platform == "google",
+                Campaign.country.isnot(None),
+                Campaign.country != "Unknown",
+                func.length(Campaign.country) == 2,
+                ~exists().where(AdSet.campaign_id == Campaign.id),
+            )
+        )
+        if account_id:
+            pmax_q = pmax_q.filter(Campaign.account_id == account_id)
+        elif scoped_ids is not None:
+            pmax_q = pmax_q.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
+        pmax_rows = pmax_q.group_by(Campaign.country).all()
+
+        counts: dict[str, int] = {}
+        for row in adset_rows:
+            counts[row.country] = counts.get(row.country, 0) + int(row.entity_count or 0)
+        for row in pmax_rows:
+            counts[row.country] = counts.get(row.country, 0) + int(row.entity_count or 0)
 
         data = []
-        for row in rows:
-            if is_valid_country(row.country):
-                name = country_name(row.country)
+        for code, count in counts.items():
+            if is_valid_country(code):
+                name = country_name(code)
                 if name:
-                    data.append({
-                        "code": row.country,
-                        "name": name,
-                        "adset_count": row.adset_count,
-                    })
+                    data.append({"code": code, "name": name, "adset_count": count})
 
-        # Sort by display name
         data.sort(key=lambda x: x["name"])
         return _api_response(data=data)
     except Exception as e:
