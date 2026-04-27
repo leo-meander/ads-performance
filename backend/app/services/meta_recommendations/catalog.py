@@ -126,13 +126,6 @@ CATALOG: dict[str, RecTypeSpec] = {spec.rec_type: spec for spec in [
         "double-counting conversions. Check the adset's targeting JSON and add the "
         "exclusion list manually.",
     ),
-    RecTypeSpec(
-        "META_MISSING_STAFF_EXCLUSION", _INFO, _MONTHLY, "PLAYBOOK.E.4.STAFF", False,
-        "Campaign is missing the staff-email exclusion",
-        "Section E.4 mandatory exclusion: staff Custom Audience. Upload current "
-        "staff emails and exclude everywhere so internal traffic does not pollute "
-        "learning.",
-    ),
 
     # ── Branch-level roll-up (Section H.x.3) ────────────────────
     RecTypeSpec(

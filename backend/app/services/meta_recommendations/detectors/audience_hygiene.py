@@ -7,7 +7,6 @@ at sync time and flag missing exclusion blocks.
 
 - META_MISSING_RECENT_BOOKER_EXCLUSION — no Purchase:30d exclusion on cold/warm
 - META_TEMPERATURE_OVERLAP             — cold campaign not excluding warm/hot
-- META_MISSING_STAFF_EXCLUSION         — no staff Custom Audience exclusion
 
 These detectors work on a best-effort basis — the targeting JSON is
 operator-authored so our keyword heuristics may miss edge cases. Errors on
@@ -185,52 +184,6 @@ class TemperatureOverlapDetector(Detector):
                 "ad_set_name": target.context.get("ad_set_name"),
                 "campaign_name": target.context.get("campaign_name"),
                 "funnel_stage": target.funnel_stage,
-            },
-            metrics_snapshot=snapshot_campaign(db, target.campaign_id),
-        )
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# META_MISSING_STAFF_EXCLUSION — ad_set level
-# ─────────────────────────────────────────────────────────────────────────
-@register
-class MissingStaffExclusionDetector(Detector):
-    rec_type = "META_MISSING_STAFF_EXCLUSION"
-
-    def scope(
-        self, db: Session, account_ids: list[str] | None = None,
-    ) -> Iterable[DetectorTarget]:
-        for ad_set, camp in _scope_active_ad_sets(db, account_ids):
-            yield DetectorTarget(
-                entity_level="ad_set",
-                entity_id=ad_set.id,
-                account_id=ad_set.account_id,
-                campaign_id=camp.id,
-                ad_set_id=ad_set.id,
-                funnel_stage=campaign_funnel_stage(camp),
-                targeted_country=ad_set_targeted_country(ad_set),
-                context={
-                    "ad_set_name": ad_set.name,
-                    "campaign_name": camp.name,
-                },
-            )
-
-    def evaluate(
-        self, db: Session, target: DetectorTarget,
-    ) -> DetectorFinding | None:
-        ad_set = db.query(AdSet).filter(AdSet.id == target.ad_set_id).first()
-        if ad_set is None:
-            return None
-        text = _targeting_text(ad_set)
-        if not text:
-            return None
-        if "staff" in text or "employee" in text or "internal" in text:
-            return None
-
-        return DetectorFinding(
-            evidence={
-                "ad_set_name": target.context.get("ad_set_name"),
-                "campaign_name": target.context.get("campaign_name"),
             },
             metrics_snapshot=snapshot_campaign(db, target.campaign_id),
         )

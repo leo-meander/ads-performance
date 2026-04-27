@@ -64,7 +64,7 @@ def weekly_meta_recommendations_task(self):
     bind=True, max_retries=3,
 )
 def monthly_meta_recommendations_task(self):
-    """Runs monthly detectors (staff exclusion audit)."""
+    """Runs monthly detectors."""
     try:
         return _run("monthly", source="beat:monthly")
     except Exception as exc:

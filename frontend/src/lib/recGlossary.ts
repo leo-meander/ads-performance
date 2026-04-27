@@ -139,8 +139,6 @@ export const REC_TYPE_GLOSSARY: Record<string, string> = {
     "Campaign is missing the mandatory exclusion of Purchase events in the last 30 days. Add it manually to avoid re-targeting guests who already booked.",
   META_TEMPERATURE_OVERLAP:
     "Cold prospecting campaign does not exclude warm/hot audiences — risk of double-counting conversions. Add the exclusion list manually.",
-  META_MISSING_STAFF_EXCLUSION:
-    "Campaign is missing the staff-email exclusion Custom Audience. Upload current staff emails and exclude everywhere so internal traffic doesn't pollute learning.",
 
   // ── Meta — Branch-level roll-up (Section H.x.3) ─────────
   META_BRANCH_ICP_IMBALANCE:
@@ -230,8 +228,6 @@ export const SOP_REFERENCE_GLOSSARY: Record<string, string> = {
     "Mandatory exclusion — Purchase event in last 30 days (recent bookers). Re-targeting just-booked guests burns money and annoys them.",
   "PLAYBOOK.E.4.TEMP":
     "Cold prospecting campaigns must exclude warm and hot audiences; warm campaigns must exclude hot. Avoids double-counting conversions and distorting the bid.",
-  "PLAYBOOK.E.4.STAFF":
-    "Mandatory exclusion — staff emails Custom Audience, excluded everywhere. Internal traffic pollutes Pixel learning.",
   "PLAYBOOK.H.X.3.MIX":
     "Each branch has a playbook-defined monthly budget distribution across its ICPs (Section H.1.3 / H.2.3 / …). If actual spend drifts more than 30% from the target, rebalance next week.",
 }

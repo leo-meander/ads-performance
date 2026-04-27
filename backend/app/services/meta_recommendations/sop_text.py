@@ -98,10 +98,6 @@ PLAYBOOK_EXCERPTS: dict[str, str] = {
         "avoid double-counting conversions and distorting the bid. Warm "
         "campaigns must exclude hot (they are already in the AddToCart "
         "retargeting pool).",
-    "PLAYBOOK.E.4.STAFF":
-        "Mandatory exclusion: upload current staff emails as a Custom "
-        "Audience and exclude everywhere. Internal traffic pollutes the Pixel "
-        "learning signal.",
 
     # ── H.x.3 Branch ICP budget mixes ─────────────────────────
     "PLAYBOOK.H.X.3.MIX":
