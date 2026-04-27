@@ -11,12 +11,29 @@ from sqlalchemy.orm import Session
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
 from app.dependencies.auth import require_section
+from app.models.campaign import Campaign
 from app.models.meta_recommendation import MetaRecommendation
 from app.models.user import User
 from app.services.meta_recommendations import applier, engine
 from app.services.recommendation_context import build_context_map
 
 router = APIRouter()
+
+
+def _exclude_paused_campaign_pendings(q, db: Session):
+    """Hide pending recs whose underlying campaign is no longer ACTIVE.
+
+    Operators pause campaigns mid-cycle; until the next scheduler run flips
+    those recs to 'superseded', they would otherwise still surface in the UI.
+    """
+    paused = db.query(Campaign.id).filter(Campaign.status != "ACTIVE").subquery()
+    return q.filter(
+        ~(
+            (MetaRecommendation.status == "pending")
+            & MetaRecommendation.campaign_id.isnot(None)
+            & MetaRecommendation.campaign_id.in_(paused)
+        ),
+    )
 
 
 def _api_response(data=None, error=None):
@@ -110,6 +127,7 @@ def list_recommendations(
             q = q.filter(
                 MetaRecommendation.account_id.in_(scoped_ids or ["__no_match__"]),
             )
+        q = _exclude_paused_campaign_pendings(q, db)
 
         total = q.count()
         severity_order = case(
@@ -277,6 +295,9 @@ def count_for_campaign(
     db: Session = Depends(get_db),
 ):
     try:
+        camp = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        if camp is not None and camp.status != "ACTIVE":
+            return _api_response(data={"critical": 0, "warning": 0, "info": 0})
         rows = (
             db.query(MetaRecommendation.severity, func.count(MetaRecommendation.id))
             .filter(MetaRecommendation.campaign_id == campaign_id)
@@ -300,10 +321,17 @@ def count_for_branch(
 ):
     """Branch roll-up: pending recommendation severity counts for an account."""
     try:
+        paused = db.query(Campaign.id).filter(Campaign.status != "ACTIVE").subquery()
         rows = (
             db.query(MetaRecommendation.severity, func.count(MetaRecommendation.id))
             .filter(MetaRecommendation.account_id == account_id)
             .filter(MetaRecommendation.status == "pending")
+            .filter(
+                ~(
+                    MetaRecommendation.campaign_id.isnot(None)
+                    & MetaRecommendation.campaign_id.in_(paused)
+                ),
+            )
             .group_by(MetaRecommendation.severity)
             .all()
         )

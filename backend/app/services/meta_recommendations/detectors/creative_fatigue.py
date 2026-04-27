@@ -40,6 +40,8 @@ def _scope_active_meta_ads(
         .join(Campaign, Ad.campaign_id == Campaign.id)
         .filter(Ad.platform == "meta")
         .filter(Ad.status == "ACTIVE")
+        .filter(AdSet.status == "ACTIVE")
+        .filter(Campaign.status == "ACTIVE")
     )
     if account_ids:
         q = q.filter(Ad.account_id.in_(account_ids))
