@@ -5,7 +5,7 @@ Uses the facebook-business SDK. Each account uses its own access token.
 """
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from facebook_business.adobjects.ad import Ad
 from facebook_business.adobjects.adaccount import AdAccount
@@ -25,6 +25,7 @@ CAMPAIGN_FIELDS = [
     Campaign.Field.lifetime_budget,
     Campaign.Field.start_time,
     Campaign.Field.stop_time,
+    Campaign.Field.created_time,
 ]
 
 # Fields to fetch for ad sets
@@ -40,6 +41,7 @@ ADSET_FIELDS = [
     AdSet.Field.targeting,
     AdSet.Field.start_time,
     AdSet.Field.end_time,
+    AdSet.Field.created_time,
 ]
 
 # Fields to fetch for ads
@@ -50,6 +52,7 @@ AD_FIELDS = [
     Ad.Field.name,
     Ad.Field.status,
     Ad.Field.creative,
+    Ad.Field.created_time,
 ]
 
 # Insight fields for metrics
@@ -110,6 +113,19 @@ def _parse_date(value) -> date | None:
         return None
 
 
+def _parse_datetime(value) -> datetime | None:
+    """Parse Meta's ISO datetime string to a tz-aware datetime."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(str(value))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
 def _init_api(access_token: str):
     """Initialize the Facebook Ads API with a per-account access token."""
     FacebookAdsApi.init(
@@ -144,6 +160,7 @@ def fetch_campaigns(account_id: str, access_token: str) -> list[dict]:
                 "lifetime_budget": c.get(Campaign.Field.lifetime_budget),
                 "start_date": _parse_date(c.get(Campaign.Field.start_time)),
                 "end_date": _parse_date(c.get(Campaign.Field.stop_time)),
+                "platform_created_at": _parse_datetime(c.get(Campaign.Field.created_time)),
                 "raw_data": dict(c),
             })
         logger.info("Fetched %d campaigns from Meta account %s", len(results), account_id)
@@ -329,6 +346,7 @@ def fetch_ad_sets(account_id: str, access_token: str) -> list[dict]:
                 "targeting": _to_json_safe(raw_targeting) if raw_targeting else None,
                 "start_date": _parse_date(s.get(AdSet.Field.start_time)),
                 "end_date": _parse_date(s.get(AdSet.Field.end_time)),
+                "platform_created_at": _parse_datetime(s.get(AdSet.Field.created_time)),
                 "raw_data": _to_json_safe(dict(s)),
             })
         logger.info("Fetched %d ad sets from Meta account %s", len(results), account_id)
@@ -354,6 +372,7 @@ def fetch_ads(account_id: str, access_token: str) -> list[dict]:
                 "name": a[Ad.Field.name],
                 "status": a[Ad.Field.status],
                 "creative_id": creative.get("id") if creative else None,
+                "platform_created_at": _parse_datetime(a.get(Ad.Field.created_time)),
                 "raw_data": _to_json_safe(dict(a)),
             })
         logger.info("Fetched %d ads from Meta account %s", len(results), account_id)

@@ -5,6 +5,7 @@ Platform separation: this file has NO imports from meta_client.py.
 """
 
 import logging
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 # Default rolling window for Google metric pulls — keep aligned with Meta
@@ -35,6 +36,7 @@ from app.services.google_client import (
     fetch_conversion_action_metrics,
 )
 from app.config import settings
+from app.services.changelog import log_change
 from app.services.parse_utils import (
     parse_campaign_metadata,
     parse_google_country,
@@ -365,7 +367,9 @@ def sync_google_account(
             existing.raw_data = raw_data
             existing.updated_at = datetime.now(timezone.utc)
         else:
+            new_id = str(uuid.uuid4())
             campaign = Campaign(
+                id=new_id,
                 account_id=account.id,
                 platform="google",
                 platform_campaign_id=raw["platform_campaign_id"],
@@ -382,6 +386,31 @@ def sync_google_account(
                 raw_data=raw_data,
             )
             db.add(campaign)
+            # Google GAQL v23 doesn't expose campaign.creation_time in MCC
+            # context, so fall back to start_date if present, else now.
+            occurred = raw.get("start_date") or datetime.now(timezone.utc).date()
+            occurred_dt = (
+                datetime.combine(occurred, datetime.min.time(), tzinfo=timezone.utc)
+                if isinstance(occurred, date) else datetime.now(timezone.utc)
+            )
+            log_change(
+                db,
+                category="ad_creation",
+                title=f"Campaign created: {raw['name']}"[:200],
+                source="auto",
+                triggered_by="system",
+                occurred_at=occurred_dt,
+                description=f"New Google campaign synced (objective={raw.get('objective') or '?'})",
+                platform="google",
+                country=country,
+                account_id=account.id,
+                campaign_id=new_id,
+                after_value={
+                    "platform_campaign_id": raw["platform_campaign_id"],
+                    "objective": raw.get("objective"),
+                    "status": raw.get("status"),
+                },
+            )
         summary["campaigns_synced"] += 1
 
     db.flush()
@@ -473,7 +502,9 @@ def sync_google_account(
             existing.raw_data = raw["raw_data"]
             existing.updated_at = datetime.now(timezone.utc)
         else:
+            new_id = str(uuid.uuid4())
             ad = Ad(
+                id=new_id,
                 ad_set_id=adset.id,
                 campaign_id=campaign.id,
                 account_id=account.id,
@@ -485,6 +516,24 @@ def sync_google_account(
                 raw_data=raw["raw_data"],
             )
             db.add(ad)
+            log_change(
+                db,
+                category="ad_creation",
+                title=f"Ad created: {raw['name']}"[:200],
+                source="auto",
+                triggered_by="system",
+                occurred_at=datetime.now(timezone.utc),
+                description=f"New Google ad synced under campaign '{campaign.name}'",
+                platform="google",
+                account_id=account.id,
+                campaign_id=campaign.id,
+                ad_set_id=adset.id,
+                ad_id=new_id,
+                after_value={
+                    "platform_ad_id": raw["platform_ad_id"],
+                    "status": raw.get("status"),
+                },
+            )
         summary["ads_synced"] += 1
 
     db.flush()

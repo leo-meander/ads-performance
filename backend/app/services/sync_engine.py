@@ -1,6 +1,7 @@
 """Sync engine: orchestrates fetching data from ad platforms and upserting into DB."""
 
 import logging
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 # Sync window: always pull last 10 days including today. Meta conversions
@@ -16,6 +17,7 @@ from app.models.ad_country_metric import AdCountryMetric
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
+from app.services.changelog import log_change
 from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
 from app.services.meta_client import (
     fetch_ad_country_insights,
@@ -309,7 +311,9 @@ def sync_meta_account(
             existing.raw_data = raw["raw_data"]
             existing.updated_at = datetime.now(timezone.utc)
         else:
+            new_id = str(uuid.uuid4())
             campaign = Campaign(
+                id=new_id,
                 account_id=account.id,
                 platform="meta",
                 platform_campaign_id=raw["platform_campaign_id"],
@@ -325,6 +329,23 @@ def sync_meta_account(
                 raw_data=raw["raw_data"],
             )
             db.add(campaign)
+            log_change(
+                db,
+                category="ad_creation",
+                title=f"Campaign created: {raw['name']}"[:200],
+                source="auto",
+                triggered_by="system",
+                occurred_at=raw.get("platform_created_at") or datetime.now(timezone.utc),
+                description=f"New Meta campaign synced (objective={raw.get('objective') or '?'})",
+                platform="meta",
+                account_id=account.id,
+                campaign_id=new_id,
+                after_value={
+                    "platform_campaign_id": raw["platform_campaign_id"],
+                    "objective": raw.get("objective"),
+                    "status": raw.get("status"),
+                },
+            )
         summary["campaigns_synced"] += 1
 
     db.flush()  # ensure campaign IDs are available
@@ -422,7 +443,9 @@ def sync_meta_account(
             existing.raw_data = raw["raw_data"]
             existing.updated_at = datetime.now(timezone.utc)
         else:
+            new_id = str(uuid.uuid4())
             ad = Ad(
+                id=new_id,
                 ad_set_id=adset.id,
                 campaign_id=campaign.id,
                 account_id=account.id,
@@ -434,6 +457,25 @@ def sync_meta_account(
                 raw_data=raw["raw_data"],
             )
             db.add(ad)
+            log_change(
+                db,
+                category="ad_creation",
+                title=f"Ad created: {raw['name']}"[:200],
+                source="auto",
+                triggered_by="system",
+                occurred_at=raw.get("platform_created_at") or datetime.now(timezone.utc),
+                description=f"New Meta ad synced under campaign '{campaign.name}'",
+                platform="meta",
+                account_id=account.id,
+                campaign_id=campaign.id,
+                ad_set_id=adset.id,
+                ad_id=new_id,
+                after_value={
+                    "platform_ad_id": raw["platform_ad_id"],
+                    "creative_id": raw.get("creative_id"),
+                    "status": raw.get("status"),
+                },
+            )
         summary["ads_synced"] += 1
 
     db.flush()  # ensure ad IDs are available
