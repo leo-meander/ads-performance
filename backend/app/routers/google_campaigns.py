@@ -4,7 +4,9 @@ Provides Google-specific views for PMax asset groups, Search RSA ads,
 and a manual Google-only sync trigger.
 """
 
-from datetime import datetime, timezone
+import json
+import logging
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.orm import Session
@@ -21,6 +23,8 @@ from app.models.google_asset import GoogleAsset
 from app.models.google_asset_group import GoogleAssetGroup
 from app.models.metrics import MetricsCache
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -808,3 +812,231 @@ def enable_google_ad(
         _log_action(db, "enable_ad", ad_id=ad_id, success=False, error_message=str(e))
         db.commit()
         return _err(str(e), 500)
+
+
+# ── Insights (realtime GAQL) ────────────────────────────────
+
+
+def _parse_date_range(date_from: str | None, date_to: str | None) -> tuple[date, date]:
+    """Default to last 30 days if not provided."""
+    today = date.today()
+    df = date.fromisoformat(date_from) if date_from else today - timedelta(days=29)
+    dt = date.fromisoformat(date_to) if date_to else today
+    return df, dt
+
+
+def _resolve_campaign_for_insights(
+    db: Session, campaign_id: str, current_user: User,
+) -> tuple[Campaign | None, str | None, str | None, str | None]:
+    """Validate campaign exists, user has access, return (campaign, customer_id, account_currency, error_msg)."""
+    campaign = (
+        db.query(Campaign)
+        .filter(Campaign.id == campaign_id, Campaign.platform == "google")
+        .first()
+    )
+    if not campaign:
+        return None, None, None, "Campaign not found"
+
+    ok, _ids, err = scoped_account_ids(
+        db, current_user, "google_ads", requested_account_id=campaign.account_id
+    )
+    if not ok:
+        return None, None, None, err
+
+    account = db.query(AdAccount).filter(AdAccount.id == campaign.account_id).first()
+    if not account:
+        return None, None, None, "Account not found"
+
+    customer_id = account.account_id.replace("-", "")
+    return campaign, customer_id, account.currency or "VND", None
+
+
+@router.get("/google/campaigns/{campaign_id}/insights/search-terms")
+def get_search_terms_insight(
+    campaign_id: str,
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
+    """Search-term breakdown.
+
+    Search campaigns: real user queries via search_term_view.
+    PMax: bucketed category labels via campaign_search_term_insight.
+    """
+    try:
+        from app.services import google_insights, google_insights_client
+
+        campaign, customer_id, currency, err = _resolve_campaign_for_insights(db, campaign_id, current_user)
+        if err:
+            return _err(err, 404 if err == "Campaign not found" else 403)
+
+        df, dt = _parse_date_range(date_from, date_to)
+
+        if campaign.objective == "PERFORMANCE_MAX":
+            categories = google_insights_client.fetch_pmax_search_categories(
+                customer_id, campaign.platform_campaign_id, df, dt,
+            )
+            return _ok({
+                "mode": "pmax_categories",
+                "categories": categories,
+                "currency": currency,
+                "date_from": df.isoformat(),
+                "date_to": dt.isoformat(),
+            })
+
+        terms = google_insights_client.fetch_search_terms(
+            customer_id, campaign.platform_campaign_id, df, dt,
+        )
+        classified = google_insights.classify_search_terms(terms)
+        return _ok({
+            "mode": "search_terms",
+            **classified,
+            "currency": currency,
+            "date_from": df.isoformat(),
+            "date_to": dt.isoformat(),
+        })
+    except Exception as e:
+        logger.exception("search-terms insight failed for %s", campaign_id)
+        return _err(str(e), 500)
+
+
+@router.get("/google/campaigns/{campaign_id}/insights/devices")
+def get_devices_insight(
+    campaign_id: str,
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
+    try:
+        from app.services import google_insights, google_insights_client
+
+        campaign, customer_id, currency, err = _resolve_campaign_for_insights(db, campaign_id, current_user)
+        if err:
+            return _err(err, 404 if err == "Campaign not found" else 403)
+
+        df, dt = _parse_date_range(date_from, date_to)
+        rows = google_insights_client.fetch_device_metrics(customer_id, campaign.platform_campaign_id, df, dt)
+        diagnosis = google_insights.diagnose_devices(rows)
+        return _ok({
+            **diagnosis,
+            "currency": currency,
+            "date_from": df.isoformat(),
+            "date_to": dt.isoformat(),
+        })
+    except Exception as e:
+        logger.exception("devices insight failed for %s", campaign_id)
+        return _err(str(e), 500)
+
+
+@router.get("/google/campaigns/{campaign_id}/insights/locations")
+def get_locations_insight(
+    campaign_id: str,
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
+    try:
+        from app.services import google_insights, google_insights_client
+
+        campaign, customer_id, currency, err = _resolve_campaign_for_insights(db, campaign_id, current_user)
+        if err:
+            return _err(err, 404 if err == "Campaign not found" else 403)
+
+        df, dt = _parse_date_range(date_from, date_to)
+        rows = google_insights_client.fetch_location_metrics(customer_id, campaign.platform_campaign_id, df, dt)
+        diagnosis = google_insights.diagnose_locations(rows)
+        return _ok({
+            **diagnosis,
+            "currency": currency,
+            "date_from": df.isoformat(),
+            "date_to": dt.isoformat(),
+        })
+    except Exception as e:
+        logger.exception("locations insight failed for %s", campaign_id)
+        return _err(str(e), 500)
+
+
+@router.get("/google/campaigns/{campaign_id}/insights/time-of-day")
+def get_time_of_day_insight(
+    campaign_id: str,
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
+    try:
+        from app.services import google_insights, google_insights_client
+
+        campaign, customer_id, currency, err = _resolve_campaign_for_insights(db, campaign_id, current_user)
+        if err:
+            return _err(err, 404 if err == "Campaign not found" else 403)
+
+        df, dt = _parse_date_range(date_from, date_to)
+        rows = google_insights_client.fetch_hourly_metrics(customer_id, campaign.platform_campaign_id, df, dt)
+        diagnosis = google_insights.diagnose_time_of_day(rows)
+        return _ok({
+            **diagnosis,
+            "currency": currency,
+            "date_from": df.isoformat(),
+            "date_to": dt.isoformat(),
+        })
+    except Exception as e:
+        logger.exception("time-of-day insight failed for %s", campaign_id)
+        return _err(str(e), 500)
+
+
+@router.post("/google/campaigns/{campaign_id}/insights/narrative")
+def stream_combined_narrative_endpoint(
+    campaign_id: str,
+    body: dict = Body(...),
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
+    """Stream Claude-generated combined narrative.
+
+    Client sends the already-fetched per-panel data so we don't refetch.
+    Body: { search_terms, devices, locations, time_of_day, totals, date_range }
+    Returns text/event-stream with `data: <json-encoded chunk>\\n\\n`.
+    """
+    from fastapi.responses import StreamingResponse
+
+    from app.services.google_insights_ai import stream_combined_narrative
+
+    campaign, _customer_id, currency, err = _resolve_campaign_for_insights(db, campaign_id, current_user)
+    if err:
+        return _err(err, 404 if err == "Campaign not found" else 403)
+
+    payload = {
+        "campaign": {
+            "name": campaign.name,
+            "type": campaign.objective,
+            "ta": campaign.ta,
+            "funnel_stage": campaign.funnel_stage,
+            "currency": currency,
+        },
+        "date_range": body.get("date_range"),
+        "totals": body.get("totals"),
+        "search_terms": body.get("search_terms"),
+        "pmax_categories": body.get("pmax_categories"),
+        "devices": body.get("devices"),
+        "locations": body.get("locations"),
+        "time_of_day": body.get("time_of_day"),
+    }
+
+    def stream_sse():
+        try:
+            for chunk in stream_combined_narrative(payload):
+                yield f"data: {json.dumps(chunk)}\n\n"
+        except Exception as e:
+            logger.exception("narrative stream failed for %s", campaign_id)
+            yield f"event: error\ndata: {json.dumps(str(e))}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        stream_sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )

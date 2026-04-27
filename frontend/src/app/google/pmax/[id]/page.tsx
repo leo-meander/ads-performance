@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import RecBadge from '@/components/RecBadge'
+import GoogleInsightsSection from '@/components/GoogleInsightsSection'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -294,6 +295,9 @@ export default function PMaxDetail() {
           </div>
         ))}
       </div>
+
+      {/* Insights — realtime GAQL */}
+      <GoogleInsightsSection campaignId={campaign.id} campaignType="PERFORMANCE_MAX" />
 
       {/* Daily Metrics */}
       {metrics.length > 0 && (

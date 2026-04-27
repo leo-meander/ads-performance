@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import RecBadge from '@/components/RecBadge'
+import GoogleInsightsSection from '@/components/GoogleInsightsSection'
 import Link from 'next/link'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -333,6 +334,9 @@ export default function SearchCampaignDetail() {
           )}
         </div>
       </div>
+
+      {/* Insights — realtime GAQL */}
+      <GoogleInsightsSection campaignId={campaign.id} campaignType="SEARCH" />
 
       {/* Daily Metrics Table */}
       {metrics.length > 0 && (
