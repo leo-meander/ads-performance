@@ -62,3 +62,21 @@ def resolve_branch_for_account_name(account_name: str) -> str | None:
             if pattern.lower() in lower:
                 return branch
     return None
+
+
+def canonical_branch(branch: str | None) -> str | None:
+    """Normalize a user-supplied branch slug to a canonical BRANCH_ACCOUNT_MAP key.
+
+    Case-insensitive. Returns None if the input is empty or doesn't match any
+    canonical branch. External consumers commonly send lowercase ("saigon",
+    "osaka"); internal storage uses the canonical case ("Saigon", "Osaka").
+    """
+    if not branch:
+        return None
+    target = branch.strip().lower()
+    if not target:
+        return None
+    for canonical in BRANCH_ACCOUNT_MAP.keys():
+        if canonical.lower() == target:
+            return canonical
+    return None

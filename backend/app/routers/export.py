@@ -11,6 +11,11 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.branches import (
+    canonical_branch,
+    get_account_ids_for_branches,
+    resolve_branch_for_account_name,
+)
 from app.database import get_db
 from app.dependencies.auth import require_role
 from app.models.account import AdAccount
@@ -129,6 +134,10 @@ def deactivate_key(
 @router.get("/export/accounts")
 def export_accounts(
     platform: str = Query(None, description="meta | google | tiktok"),
+    branch: str = Query(
+        None,
+        description="Filter by canonical branch (case-insensitive): saigon|taipei|1948|oani|osaka|bread",
+    ),
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
@@ -137,6 +146,14 @@ def export_accounts(
         q = db.query(AdAccount).filter(AdAccount.is_active.is_(True))
         if platform:
             q = q.filter(AdAccount.platform == platform)
+        if branch:
+            canonical = canonical_branch(branch)
+            if canonical is None:
+                return _api_response(error=f"Unknown branch: {branch}")
+            account_ids = get_account_ids_for_branches(db, [canonical])
+            if not account_ids:
+                return _api_response(data=[])
+            q = q.filter(AdAccount.id.in_(account_ids))
         rows = q.order_by(AdAccount.account_name).all()
         return _api_response(data=[
             {
@@ -145,6 +162,7 @@ def export_accounts(
                 "account_id": r.account_id,
                 "account_name": r.account_name,
                 "currency": r.currency,
+                "branch": resolve_branch_for_account_name(r.account_name),
                 "is_active": r.is_active,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
@@ -692,41 +710,80 @@ def export_spend_daily(
     date_from: str = Query(...),
     date_to: str = Query(...),
     platform: str = Query(None),
+    branch: str = Query(
+        None,
+        description="Filter by canonical branch (case-insensitive): saigon|taipei|1948|oani|osaka|bread",
+    ),
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
-    """Export daily spend breakdown."""
+    """Export daily spend breakdown.
+
+    Each row = (date × platform × account). The `account_id` and `branch`
+    fields let consumers re-aggregate by branch without parsing account_name.
+    """
     try:
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+        if df > dt:
+            return _api_response(error="date_from must be <= date_to")
+
         q = db.query(
-            MetricsCache.date,
-            MetricsCache.platform,
+            MetricsCache.date.label("date"),
+            MetricsCache.platform.label("platform"),
+            Campaign.account_id.label("account_id"),
             func.sum(MetricsCache.spend).label("spend"),
             func.sum(MetricsCache.impressions).label("impressions"),
             func.sum(MetricsCache.clicks).label("clicks"),
             func.sum(MetricsCache.conversions).label("conversions"),
             func.sum(MetricsCache.revenue).label("revenue"),
-        ).filter(
-            MetricsCache.date >= date.fromisoformat(date_from),
-            MetricsCache.date <= date.fromisoformat(date_to),
+        ).join(Campaign, Campaign.id == MetricsCache.campaign_id).filter(
+            MetricsCache.date >= df,
+            MetricsCache.date <= dt,
         )
 
         if platform:
             q = q.filter(MetricsCache.platform == platform)
 
-        rows = q.group_by(MetricsCache.date, MetricsCache.platform).order_by(MetricsCache.date).all()
+        if branch:
+            canonical = canonical_branch(branch)
+            if canonical is None:
+                return _api_response(error=f"Unknown branch: {branch}")
+            account_ids = get_account_ids_for_branches(db, [canonical])
+            if not account_ids:
+                return _api_response(data=[])
+            q = q.filter(Campaign.account_id.in_(account_ids))
 
-        return _api_response(data=[
-            {
+        rows = (
+            q.group_by(MetricsCache.date, MetricsCache.platform, Campaign.account_id)
+            .order_by(MetricsCache.date)
+            .all()
+        )
+
+        # Resolve account_id → (account_name, branch) once for the response.
+        account_id_set = {r.account_id for r in rows if r.account_id}
+        accounts_by_id: dict[str, AdAccount] = {}
+        if account_id_set:
+            for a in db.query(AdAccount).filter(AdAccount.id.in_(account_id_set)).all():
+                accounts_by_id[a.id] = a
+
+        out = []
+        for row in rows:
+            acc = accounts_by_id.get(row.account_id)
+            account_name = acc.account_name if acc else None
+            out.append({
                 "date": row.date.isoformat(),
                 "platform": row.platform,
+                "account_id": str(row.account_id) if row.account_id else None,
+                "account_name": account_name,
+                "branch": resolve_branch_for_account_name(account_name),
                 "spend": float(row.spend or 0),
                 "impressions": int(row.impressions or 0),
                 "clicks": int(row.clicks or 0),
                 "conversions": int(row.conversions or 0),
                 "revenue": float(row.revenue or 0),
-            }
-            for row in rows
-        ])
+            })
+        return _api_response(data=out)
     except Exception as e:
         return _api_response(error=str(e))
 
