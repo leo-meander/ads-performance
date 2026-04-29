@@ -283,9 +283,9 @@ CATALOG: dict[str, RecTypeSpec] = {spec.rec_type: spec for spec in [
         "Yesterday's CTR is more than 2× the 30-day average. Inspect for invalid clicks or unusual placements.",
     ),
     RecTypeSpec(
-        "ZERO_CONVERSIONS_2D", _CRIT, _DAILY, "PART_7.DAILY", False,
-        "Zero conversions for two consecutive days",
-        "Zero conversions for 2 consecutive days while spend > 0. Likely broken conversion tag or landing-page change.",
+        "ZERO_CONVERSIONS_7D", _CRIT, _DAILY, "PART_7.DAILY", False,
+        "Zero conversions for seven consecutive days",
+        "Zero conversions for 7 consecutive days while spend > 0. Likely broken conversion tag or landing-page change.",
     ),
     RecTypeSpec(
         "POLICY_VIOLATION", _CRIT, _DAILY, "PART_7.DAILY", False,

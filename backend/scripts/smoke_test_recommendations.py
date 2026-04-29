@@ -52,7 +52,7 @@ def seed(db) -> dict:
     )
     db.add(pmax_stuck)
 
-    # ── PMax with zero conversions last 2 days (ZERO_CONVERSIONS_2D)
+    # ── PMax with zero conversions last 7 days (ZERO_CONVERSIONS_7D)
     pmax_tag_broken = Campaign(
         id=_u(), account_id=acc.id, platform="google",
         platform_campaign_id=f"pmax_2_{rand}",
@@ -72,8 +72,8 @@ def seed(db) -> dict:
             conversions=(1 if i < 5 else 0),
             revenue=Decimal("0"),
         ))
-    # Metrics for pmax_tag_broken: 2 days with spend but zero conversions
-    for i in (1, 2):
+    # Metrics for pmax_tag_broken: 7 days with spend but zero conversions
+    for i in range(1, 8):
         db.add(MetricsCache(
             id=_u(), campaign_id=pmax_tag_broken.id, platform="google",
             date=date.today() - timedelta(days=i),

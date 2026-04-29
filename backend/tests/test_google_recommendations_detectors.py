@@ -100,32 +100,46 @@ def _metrics(db, campaign, d: date, spend: float, conversions: float = 0, revenu
     return m
 
 
-# ── ZERO_CONVERSIONS_2D ──────────────────────────────────────
-def test_zero_conversions_detector_fires_on_2d_zero(db):
+# ── ZERO_CONVERSIONS_7D ──────────────────────────────────────
+def test_zero_conversions_detector_fires_on_7d_zero(db):
     acc = _account(db)
     camp = _campaign(db, acc)
-    yesterday = date.today() - timedelta(days=1)
-    day_before = date.today() - timedelta(days=2)
-    _metrics(db, camp, yesterday, spend=50, conversions=0)
-    _metrics(db, camp, day_before, spend=50, conversions=0)
+    for offset in range(1, 8):
+        d = date.today() - timedelta(days=offset)
+        _metrics(db, camp, d, spend=50, conversions=0)
 
-    det = get_detector("ZERO_CONVERSIONS_2D")
+    det = get_detector("ZERO_CONVERSIONS_7D")
     targets = list(det.scope(db))
     findings = [det.evaluate(db, t) for t in targets]
     hits = [f for f in findings if f is not None]
     assert len(hits) == 1
-    assert hits[0].evidence["yesterday_spend"] == 50
+    assert hits[0].evidence["window_days"] == 7
+    assert hits[0].evidence["total_spend"] == 350
 
 
 def test_zero_conversions_detector_skips_when_any_conversion(db):
     acc = _account(db)
     camp = _campaign(db, acc)
-    yesterday = date.today() - timedelta(days=1)
-    day_before = date.today() - timedelta(days=2)
-    _metrics(db, camp, yesterday, spend=50, conversions=1)
-    _metrics(db, camp, day_before, spend=50, conversions=0)
+    for offset in range(1, 8):
+        d = date.today() - timedelta(days=offset)
+        # Day 3 has a conversion → should not fire.
+        conv = 1 if offset == 3 else 0
+        _metrics(db, camp, d, spend=50, conversions=conv)
 
-    det = get_detector("ZERO_CONVERSIONS_2D")
+    det = get_detector("ZERO_CONVERSIONS_7D")
+    hits = [det.evaluate(db, t) for t in det.scope(db)]
+    assert all(h is None for h in hits)
+
+
+def test_zero_conversions_detector_skips_when_window_incomplete(db):
+    acc = _account(db)
+    camp = _campaign(db, acc)
+    # Only 6 days of zero-conv spend — not enough to fire the 7-day rule.
+    for offset in range(1, 7):
+        d = date.today() - timedelta(days=offset)
+        _metrics(db, camp, d, spend=50, conversions=0)
+
+    det = get_detector("ZERO_CONVERSIONS_7D")
     hits = [det.evaluate(db, t) for t in det.scope(db)]
     assert all(h is None for h in hits)
 
@@ -328,7 +342,7 @@ def test_all_detectors_registered():
     # Phase 3 core detectors MUST be present.
     assert {
         "DG_MISSING_VIDEO",
-        "ZERO_CONVERSIONS_2D",
+        "ZERO_CONVERSIONS_7D",
         "PMAX_LEARNING_STUCK",
         "BUDGET_MIX_OFF_TARGET",
         "SEASONALITY_LEAD_TIME_APPROACHING",

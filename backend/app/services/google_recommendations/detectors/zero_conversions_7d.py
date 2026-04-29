@@ -1,4 +1,4 @@
-"""ZERO_CONVERSIONS_2D — Two consecutive days with zero conversions + non-zero spend.
+"""ZERO_CONVERSIONS_7D — Seven consecutive days with zero conversions + non-zero spend.
 
 Per SOP Part 7: indicates broken conversion tag or landing page change. Urgent
 manual check.
@@ -24,10 +24,12 @@ from app.services.google_recommendations.utils import (
     snapshot_metrics,
 )
 
+WINDOW_DAYS = 7
+
 
 @register
-class ZeroConversions2DDetector(Detector):
-    rec_type = "ZERO_CONVERSIONS_2D"
+class ZeroConversions7DDetector(Detector):
+    rec_type = "ZERO_CONVERSIONS_7D"
 
     def scope(
         self, db: Session, account_ids: list[str] | None = None,
@@ -52,31 +54,34 @@ class ZeroConversions2DDetector(Detector):
     def evaluate(
         self, db: Session, target: DetectorTarget,
     ) -> DetectorFinding | None:
-        today = date.today()
-        yesterday = today - timedelta(days=1)
-        day_before = today - timedelta(days=2)
+        yesterday = date.today() - timedelta(days=1)
+        window_start = yesterday - timedelta(days=WINDOW_DAYS - 1)
 
-        spend_series = daily_metric_series(db, target.campaign_id, "spend", days=3, today=yesterday)
-        conv_series = daily_metric_series(db, target.campaign_id, "conversions", days=3, today=yesterday)
+        spend_series = daily_metric_series(
+            db, target.campaign_id, "spend", days=WINDOW_DAYS, today=yesterday,
+        )
+        conv_series = daily_metric_series(
+            db, target.campaign_id, "conversions", days=WINDOW_DAYS, today=yesterday,
+        )
 
-        spend_y = float(spend_series.get(yesterday, 0))
-        spend_d = float(spend_series.get(day_before, 0))
-        conv_y = float(conv_series.get(yesterday, 0))
-        conv_d = float(conv_series.get(day_before, 0))
-
-        if spend_y <= 0 or spend_d <= 0:
-            return None
-        if conv_y > 0 or conv_d > 0:
-            return None
+        total_spend = 0.0
+        for offset in range(WINDOW_DAYS):
+            d = yesterday - timedelta(days=offset)
+            spend_d = float(spend_series.get(d, 0))
+            conv_d = float(conv_series.get(d, 0))
+            if spend_d <= 0:
+                return None
+            if conv_d > 0:
+                return None
+            total_spend += spend_d
 
         return DetectorFinding(
             evidence={
-                "yesterday_date": str(yesterday),
-                "day_before_date": str(day_before),
-                "yesterday_spend": spend_y,
-                "day_before_spend": spend_d,
-                "yesterday_conversions": conv_y,
-                "day_before_conversions": conv_d,
+                "window_days": WINDOW_DAYS,
+                "window_start_date": str(window_start),
+                "window_end_date": str(yesterday),
+                "total_spend": total_spend,
+                "total_conversions": 0,
                 "campaign_name": target.context.get("campaign_name"),
             },
             metrics_snapshot=snapshot_metrics(db, target.campaign_id, today=yesterday),

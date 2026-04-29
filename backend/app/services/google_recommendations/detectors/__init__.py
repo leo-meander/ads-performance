@@ -17,7 +17,7 @@ from app.services.google_recommendations.detectors import (  # noqa: F401
     pmax_learning_stuck,
     seasonality_lead_time_approaching,
     budget_mix_off_target,
-    zero_conversions_2d,
+    zero_conversions_7d,
     # Phase 6 extensions
     dg_ctr_below_benchmark,
     rsa_insufficient_assets,

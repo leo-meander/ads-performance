@@ -68,13 +68,15 @@ def _setup_campaign_with_zero_conv(db) -> Campaign:
         id=str(uuid.uuid4()), account_id=acc.id, platform="google",
         platform_campaign_id=f"gc_{uuid.uuid4().hex[:8]}",
         name="Test PMax", status="ACTIVE", objective="PERFORMANCE_MAX",
-        # Budget matches actual spend so SPEND_VS_BUDGET_ANOMALY won't fire.
-        daily_budget=Decimal("50"),
+        # Spend=50, budget=60 → 83% utilization: keeps SPEND_VS_BUDGET_ANOMALY
+        # (>±20% deviation) AND BUDGET_DAILY_EXHAUSTED_EARLY (≥90% on 3+ days)
+        # both quiet. Only ZERO_CONVERSIONS_7D should fire.
+        daily_budget=Decimal("60"),
         start_date=date.today() - timedelta(days=40),
     )
     db.add(camp); db.commit()
-    # two consecutive days of spend with zero conversions
-    for offset in (1, 2):
+    # seven consecutive days of spend with zero conversions
+    for offset in range(1, 8):
         db.add(MetricsCache(
             id=str(uuid.uuid4()), campaign_id=camp.id, platform="google",
             date=date.today() - timedelta(days=offset),
@@ -92,7 +94,7 @@ def test_run_daily_inserts_recommendation(db):
     assert stats["updated"] == 0
     rows = db.query(GoogleRecommendation).all()
     assert len(rows) == 1
-    assert rows[0].rec_type == "ZERO_CONVERSIONS_2D"
+    assert rows[0].rec_type == "ZERO_CONVERSIONS_7D"
     assert rows[0].status == "pending"
     assert rows[0].ai_reasoning.startswith("STUB")
 

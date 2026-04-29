@@ -103,8 +103,8 @@ export const REC_TYPE_GLOSSARY: Record<string, string> = {
     "Impressions dropped by at least 50% week-over-week. Check auction insights, ad disapprovals, and budget pacing.",
   CTR_SPIKE_100:
     "Yesterday's CTR is more than 2× the 30-day average. Inspect for invalid clicks or unusual placements.",
-  ZERO_CONVERSIONS_2D:
-    "Zero conversions for 2 consecutive days while spend was non-zero. Likely a broken conversion tag or a landing-page change.",
+  ZERO_CONVERSIONS_7D:
+    "Zero conversions for 7 consecutive days while spend was non-zero. Likely a broken conversion tag or a landing-page change.",
   POLICY_VIOLATION:
     "Google reports active policy disapprovals. Resolve them today — affected ads will not serve.",
 
@@ -199,7 +199,7 @@ export const SOP_REFERENCE_GLOSSARY: Record<string, string> = {
   "PART_6.BUDGET_PACING":
     "Budget pacing — if PMax daily spend exhausts before 2pm local on 3 of the last 7 days, budget is too low for the current tCPA target.",
   "PART_7.DAILY":
-    "Daily review (5–10 min) — spend vs daily budget within ±20%, impressions drop >50% alert, CTR spike >100% inspect, zero-conversion 2+ days → tag audit, policy violations resolved same day.",
+    "Daily review (5–10 min) — spend vs daily budget within ±20%, impressions drop >50% alert, CTR spike >100% inspect, zero-conversion 7+ days → tag audit, policy violations resolved same day.",
 
   // ── Meta Ads Playbook sections ──────────────────────────
   "PLAYBOOK.G.3.ROAS":

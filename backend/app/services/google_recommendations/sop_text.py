@@ -131,7 +131,7 @@ SOP_EXCERPTS: dict[str, str] = {
     # ── Part 7 — Daily checks ─────────────────────────────
     "PART_7.DAILY":
         "Daily review (5-10 min): spend vs daily budget within ±20%; impressions drop >50% alert; "
-        "CTR spike >100% inspect for invalid clicks; zero-conversion days for 2+ days → tag audit; "
+        "CTR spike >100% inspect for invalid clicks; zero-conversion days for 7+ days → tag audit; "
         "policy violations resolved same day.",
 }
 

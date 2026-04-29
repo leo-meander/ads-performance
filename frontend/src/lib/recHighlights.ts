@@ -201,10 +201,10 @@ export function pickHighlights(ctx: PickContext): MetricHighlight[] {
       { label: 'Day before', value: fmtMoney(dayBefore, currency), tone: 'gray' },
     ]
   }
-  if (t === 'ZERO_CONVERSIONS_2D') {
+  if (t === 'ZERO_CONVERSIONS_7D') {
     const spend = num(m, 'spend_7d') ?? 0
     return [
-      { label: 'Conversions (2d)', value: '0', tone: 'red', caption: 'Two days dry' },
+      { label: 'Conversions (7d)', value: '0', tone: 'red', caption: 'Seven days dry' },
       { label: '7-day spend', value: fmtMoney(spend, currency), tone: 'gray' },
     ]
   }
