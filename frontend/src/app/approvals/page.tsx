@@ -79,6 +79,7 @@ export default function ApprovalsPage() {
           >
             <option value="">All Status</option>
             <option value="PENDING_APPROVAL">Pending</option>
+            <option value="NEEDS_REVISION">Needs Revision</option>
             <option value="APPROVED">Approved</option>
             <option value="REJECTED">Rejected</option>
             <option value="LAUNCHED">Launched</option>

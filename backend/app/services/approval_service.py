@@ -117,8 +117,8 @@ def record_decision(
     """Record a reviewer's decision (APPROVED or REJECTED).
     After each decision, check if all reviewers have decided and update approval status.
     """
-    if decision not in ("APPROVED", "REJECTED"):
-        raise ValueError("Decision must be APPROVED or REJECTED")
+    if decision not in ("APPROVED", "REJECTED", "NEEDS_REVISION"):
+        raise ValueError("Decision must be APPROVED, REJECTED, or NEEDS_REVISION")
 
     approval = db.query(ComboApproval).filter(ComboApproval.id == approval_id).first()
     if not approval:
@@ -154,11 +154,16 @@ def record_decision(
 
     email_tasks = []
 
-    # ANY rejected → REJECTED
+    # ANY rejected → REJECTED (terminal); ANY needs-revision → NEEDS_REVISION
+    # so the creator can revise without waiting for remaining reviewers
     if decision == "REJECTED":
         approval.status = "REJECTED"
         approval.resolved_at = now
         _notify_creator_of_result(db, approval, "REJECTED", reviewer_id, email_tasks)
+    elif decision == "NEEDS_REVISION":
+        approval.status = "NEEDS_REVISION"
+        approval.resolved_at = now
+        _notify_creator_of_result(db, approval, "NEEDS_REVISION", reviewer_id, email_tasks)
     else:
         # Check if ALL approved
         all_decided = all(r.status != "PENDING" for r in all_reviewers)
@@ -177,22 +182,32 @@ def record_decision(
 def resubmit(
     db: Session,
     approval_id: str,
-    reviewer_ids: list[str],
+    reviewer_ids: list[str] | None,
     working_file_url: str | None,
     working_file_label: str | None,
     creator_id: str,
     deadline: str | None = None,
 ) -> ComboApproval:
-    """Re-submit a rejected approval. Creates a new round."""
+    """Re-submit an approval after rejection or revision request. New round."""
     old_approval = db.query(ComboApproval).filter(ComboApproval.id == approval_id).first()
     if not old_approval:
         raise ValueError("Approval not found")
 
-    if old_approval.status != "REJECTED":
-        raise ValueError("Only rejected approvals can be re-submitted")
+    if old_approval.status not in ("REJECTED", "NEEDS_REVISION"):
+        raise ValueError("Only rejected or needs-revision approvals can be re-submitted")
 
     if old_approval.submitted_by != creator_id:
         raise ValueError("Only the original creator can re-submit")
+
+    # Default to the previous round's reviewers when caller doesn't pass any.
+    if not reviewer_ids:
+        reviewer_ids = [
+            r.reviewer_id for r in db.query(ApprovalReviewer)
+            .filter(ApprovalReviewer.approval_id == old_approval.id)
+            .all()
+        ]
+        if not reviewer_ids:
+            raise ValueError("No previous reviewers to inherit; specify reviewer_ids")
 
     return submit_for_approval(
         db=db,
@@ -329,6 +344,13 @@ def _notify_creator_of_result(
         title = f"Approved: {combo_name}"
         body = f"{combo_name} has been fully approved. You can now launch it."
         notif_type = "COMBO_APPROVED"
+    elif event == "NEEDS_REVISION":
+        title = f"Needs revision: {combo_name}"
+        body = (
+            f"{rejector_name or 'A reviewer'} asked for changes on {combo_name}. "
+            "Open the approval, revise the working file, then submit a new round."
+        )
+        notif_type = "COMBO_NEEDS_REVISION"
     else:
         title = f"Rejected: {combo_name}"
         body = f"{combo_name} was rejected by {rejector_name or 'a reviewer'}. Check the working file for feedback."

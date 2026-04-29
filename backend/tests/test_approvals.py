@@ -301,6 +301,120 @@ def test_resubmit_after_rejection():
     assert data["data"]["status"] == "PENDING_APPROVAL"
 
 
+# ── Needs-revision tests ─────────────────────────────────────
+
+
+def test_needs_revision_decision():
+    creator = _create_user(["creator"])
+    r1 = _create_user(["reviewer"])
+    r2 = _create_user(["reviewer"])
+    combo = _create_combo()
+
+    resp = client.post(
+        "/api/approvals",
+        json={"combo_id": combo.id, "reviewer_ids": [r1.id, r2.id]},
+        headers=_auth_headers(creator),
+    )
+    approval_id = resp.json()["data"]["id"]
+
+    # First reviewer asks for revision — approval transitions immediately
+    resp = client.post(
+        f"/api/approvals/{approval_id}/decide",
+        json={"decision": "NEEDS_REVISION"},
+        headers=_auth_headers(r1),
+    )
+    data = resp.json()
+    assert data["success"] is True
+    assert data["data"]["status"] == "NEEDS_REVISION"
+
+    # Second reviewer is locked out — already resolved
+    resp = client.post(
+        f"/api/approvals/{approval_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(r2),
+    )
+    assert resp.json()["success"] is False
+
+
+def test_needs_revision_notifies_creator():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo = _create_combo()
+
+    resp = client.post(
+        "/api/approvals",
+        json={"combo_id": combo.id, "reviewer_ids": [reviewer.id]},
+        headers=_auth_headers(creator),
+    )
+    approval_id = resp.json()["data"]["id"]
+
+    client.post(
+        f"/api/approvals/{approval_id}/decide",
+        json={"decision": "NEEDS_REVISION"},
+        headers=_auth_headers(reviewer),
+    )
+
+    db = TestSession()
+    notifs = db.query(Notification).filter(
+        Notification.user_id == creator.id,
+        Notification.type == "COMBO_NEEDS_REVISION",
+    ).all()
+    assert len(notifs) == 1
+    db.close()
+
+
+def test_resubmit_after_needs_revision():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo = _create_combo()
+
+    resp = client.post(
+        "/api/approvals",
+        json={"combo_id": combo.id, "reviewer_ids": [reviewer.id]},
+        headers=_auth_headers(creator),
+    )
+    approval_id = resp.json()["data"]["id"]
+
+    client.post(
+        f"/api/approvals/{approval_id}/decide",
+        json={"decision": "NEEDS_REVISION"},
+        headers=_auth_headers(reviewer),
+    )
+
+    # Omit reviewer_ids — service should reuse the previous round's reviewers
+    resp = client.post(
+        f"/api/approvals/{approval_id}/resubmit",
+        json={"working_file_url": "https://canva.com/design/v2"},
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()
+    assert data["success"] is True
+    assert data["data"]["round"] == 2
+    assert data["data"]["status"] == "PENDING_APPROVAL"
+    assert len(data["data"]["reviewers"]) == 1
+    assert data["data"]["reviewers"][0]["reviewer_id"] == reviewer.id
+
+
+def test_invalid_decision_rejected():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo = _create_combo()
+
+    resp = client.post(
+        "/api/approvals",
+        json={"combo_id": combo.id, "reviewer_ids": [reviewer.id]},
+        headers=_auth_headers(creator),
+    )
+    approval_id = resp.json()["data"]["id"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/decide",
+        json={"decision": "MAYBE"},
+        headers=_auth_headers(reviewer),
+    )
+    assert resp.json()["success"] is False
+
+
 # ── Access control tests ─────────────────────────────────────
 
 

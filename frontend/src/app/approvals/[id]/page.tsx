@@ -59,6 +59,10 @@ export default function ApprovalDetailPage() {
   const [approval, setApproval] = useState<ApprovalDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [deciding, setDeciding] = useState(false)
+  const [resubmitting, setResubmitting] = useState(false)
+  const [resubmitFile, setResubmitFile] = useState('')
+  const [resubmitDeadline, setResubmitDeadline] = useState('')
+  const [resubmitError, setResubmitError] = useState('')
 
   const fetchApproval = () => {
     fetch(`${API_BASE}/api/approvals/${id}`, { credentials: 'include' })
@@ -83,6 +87,31 @@ export default function ApprovalDetailPage() {
       if (data.success) setApproval(data.data)
     } catch {}
     setDeciding(false)
+  }
+
+  const handleResubmit = async () => {
+    setResubmitting(true)
+    setResubmitError('')
+    try {
+      const res = await fetch(`${API_BASE}/api/approvals/${id}/resubmit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          working_file_url: resubmitFile || null,
+          deadline: resubmitDeadline ? new Date(resubmitDeadline).toISOString() : null,
+        }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        router.push(`/approvals/${data.data.id}`)
+      } else {
+        setResubmitError(data.error || 'Resubmit failed')
+      }
+    } catch {
+      setResubmitError('Network error')
+    }
+    setResubmitting(false)
   }
 
   if (loading) return <p className="text-gray-500">Loading...</p>
@@ -211,7 +240,7 @@ export default function ApprovalDetailPage() {
           {isAssignedReviewer && approval.status === 'PENDING_APPROVAL' && (
             <div className="bg-white rounded-xl border border-gray-200 p-4">
               <h3 className="text-sm font-semibold text-gray-900 mb-3">Your Decision</h3>
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3">
                 <button
                   onClick={() => handleDecision('APPROVED')}
                   disabled={deciding}
@@ -220,11 +249,63 @@ export default function ApprovalDetailPage() {
                   {deciding ? 'Submitting...' : 'Approve'}
                 </button>
                 <button
+                  onClick={() => handleDecision('NEEDS_REVISION')}
+                  disabled={deciding}
+                  className="bg-orange-500 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 disabled:opacity-50"
+                >
+                  {deciding ? 'Submitting...' : 'Needs Revision'}
+                </button>
+                <button
                   onClick={() => handleDecision('REJECTED')}
                   disabled={deciding}
                   className="bg-red-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50"
                 >
                   {deciding ? 'Submitting...' : 'Reject'}
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 mt-2">
+                Approve = ready to launch. Needs Revision = creator can fix and resubmit. Reject = combo dead.
+              </p>
+            </div>
+          )}
+
+          {/* Creator: revise & resubmit panel */}
+          {isCreator && approval.status === 'NEEDS_REVISION' && (
+            <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
+              <h3 className="text-sm font-semibold text-orange-900 mb-1">Revise & Resubmit</h3>
+              <p className="text-xs text-orange-700 mb-3">
+                Update the working file with your changes, then submit a new round to the same reviewers.
+              </p>
+              {resubmitError && (
+                <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-xs mb-3">{resubmitError}</div>
+              )}
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">New working file URL (optional)</label>
+                  <input
+                    type="url"
+                    value={resubmitFile}
+                    onChange={e => setResubmitFile(e.target.value)}
+                    placeholder={approval.working_file_url || 'https://canva.com/design/...'}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  />
+                  <p className="text-[11px] text-gray-400 mt-1">Leave empty to reuse the previous file.</p>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-600 mb-1">New deadline (optional)</label>
+                  <input
+                    type="datetime-local"
+                    value={resubmitDeadline}
+                    onChange={e => setResubmitDeadline(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  />
+                </div>
+                <button
+                  onClick={handleResubmit}
+                  disabled={resubmitting}
+                  className="bg-orange-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-orange-700 disabled:opacity-50"
+                >
+                  {resubmitting ? 'Submitting...' : 'Submit New Round'}
                 </button>
               </div>
             </div>

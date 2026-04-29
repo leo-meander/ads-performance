@@ -90,24 +90,37 @@ def render_approval_result_email(
     approval_id: str,
     platform_url: str = "",
 ) -> tuple[str, str]:
-    """Render email for approval result (approved/rejected). Returns (subject, html_body)."""
+    """Render email for approval result (approved/rejected/needs-revision). Returns (subject, html_body)."""
     if event == "APPROVED":
         subject = f"[Approved] {combo_name} is ready to launch"
         status_color = "#059669"
         status_text = "fully approved"
         action_text = "You can now launch it."
+    elif event == "NEEDS_REVISION":
+        subject = f"[Needs Revision] {combo_name}"
+        status_color = "#d97706"
+        status_text = (
+            f"sent back for revision by {reviewer_name}"
+            if reviewer_name else "sent back for revision"
+        )
+        action_text = "Revise the working file and submit a new round from the same approval."
     else:
-        subject = f"[Rejected] {combo_name} needs revision"
+        subject = f"[Rejected] {combo_name}"
         status_color = "#dc2626"
         status_text = f"rejected by {reviewer_name}" if reviewer_name else "rejected"
         action_text = "Check the working file for feedback."
 
     review_url = f"{platform_url}/approvals/{approval_id}"
+    header_label = {
+        "APPROVED": "Combo Approved",
+        "REJECTED": "Combo Rejected",
+        "NEEDS_REVISION": "Combo Needs Revision",
+    }.get(event, f"Combo {event.title()}")
 
     html_body = f"""
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
         <div style="background:{status_color};color:white;padding:20px;border-radius:8px 8px 0 0;">
-            <h2 style="margin:0;">Combo {event.title()}</h2>
+            <h2 style="margin:0;">{header_label}</h2>
         </div>
         <div style="padding:20px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;">
             <p>Hi {creator_name},</p>

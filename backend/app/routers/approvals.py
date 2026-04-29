@@ -39,11 +39,11 @@ class SubmitApprovalRequest(BaseModel):
 
 
 class DecisionRequest(BaseModel):
-    decision: str  # APPROVED | REJECTED
+    decision: str  # APPROVED | REJECTED | NEEDS_REVISION
 
 
 class ResubmitRequest(BaseModel):
-    reviewer_ids: list[str]
+    reviewer_ids: list[str] | None = None  # None/empty -> reuse previous round
     working_file_url: str | None = None
     working_file_label: str | None = None
     deadline: str | None = None
