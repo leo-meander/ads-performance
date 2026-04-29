@@ -132,7 +132,7 @@ function ChannelNoteEditor({
       <div className="flex items-center justify-between text-xs">
         <span className={`font-medium ${isOver ? 'text-red-600' : 'text-gray-500'}`}>
           {isOver
-            ? `Over ${fmt(overspend)} ${currency} — bù từ?`
+            ? `Over ${fmt(overspend)} ${currency} — offset from?`
             : 'Note'}
         </span>
         {dirty && editable && (
