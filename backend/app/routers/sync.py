@@ -105,6 +105,26 @@ def sync_status():
         return _api_response(data=dict(_sync_state))
 
 
+@router.get("/sync/tiktok/diag")
+def tiktok_diag():
+    """Diagnostic: confirm the backend is reading TIKTOK_ACCESS_TOKEN and that
+    its prefix/length match the value pasted on Zeabur. Token value itself is
+    NEVER returned — only first 6 chars + length + a fingerprint hash."""
+    import hashlib
+    from app.config import settings
+    token = settings.TIKTOK_ACCESS_TOKEN or ""
+    return _api_response(data={
+        "token_set": bool(token),
+        "token_length": len(token),
+        "token_prefix": token[:6] if token else None,
+        "token_suffix": token[-4:] if len(token) > 10 else None,
+        "token_fingerprint_sha256_8": hashlib.sha256(token.encode()).hexdigest()[:8] if token else None,
+        "has_whitespace": token != token.strip() if token else False,
+        "app_id_set": bool(settings.TIKTOK_APP_ID),
+        "app_secret_set": bool(settings.TIKTOK_APP_SECRET),
+    })
+
+
 @router.get("/sync/tiktok/list-advertisers")
 def tiktok_list_advertisers():
     """Discover advertiser_ids accessible to the configured access token.
