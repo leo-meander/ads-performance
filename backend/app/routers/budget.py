@@ -66,6 +66,10 @@ class MonthlySplitUpsert(BaseModel):
     overflow_note: str | None = None
 
 
+class PlanNotesPatch(BaseModel):
+    notes: str | None = None
+
+
 @router.get("/budget/dashboard")
 def budget_dashboard(
     month: str = Query(None, description="YYYY-MM format"),
@@ -194,6 +198,34 @@ def get_plan(
                 return _api_response(error="No view access to this plan's branch")
         return _api_response(data=result)
     except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.patch("/budget/plans/{plan_id}/notes")
+def patch_plan_notes(
+    plan_id: str,
+    body: PlanNotesPatch,
+    current_user: User = Depends(require_section("budget", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Update only the notes field on a BudgetPlan.
+
+    Used by the Monthly dashboard to record where an over-spend is being
+    offset from (e.g. "bù từ KOL budget"). Preserved across split re-saves.
+    """
+    try:
+        plan = db.query(BudgetPlan).filter(BudgetPlan.id == plan_id).first()
+        if not plan:
+            return _api_response(error="Plan not found")
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget", min_level="edit") or []
+            if plan.branch not in allowed:
+                return _api_response(error=f"No edit access to branch '{plan.branch}'")
+        plan.notes = (body.notes or None)
+        db.commit()
+        return _api_response(data={"id": str(plan.id), "notes": plan.notes})
+    except Exception as e:
+        db.rollback()
         return _api_response(error=str(e))
 
 
@@ -344,7 +376,7 @@ def yearly_overview(
             .all()
         )
 
-        # Aggregate allocate by branch per month
+        # Aggregate allocate by branch per month + collect per-channel notes
         branch_data: dict[str, dict] = {}
         for plan in plans:
             b = plan.branch
@@ -360,9 +392,14 @@ def yearly_overview(
                     "months": {},
                 }
             if m not in branch_data[b]["months"]:
-                branch_data[b]["months"][m] = {"budget": 0, "spent": 0}
+                branch_data[b]["months"][m] = {"budget": 0, "spent": 0, "notes": []}
             branch_data[b]["months"][m]["budget"] += float(plan.total_budget)
             branch_data[b]["yearly_budget"] += float(plan.total_budget)
+            if plan.notes:
+                branch_data[b]["months"][m]["notes"].append({
+                    "channel": plan.channel,
+                    "text": plan.notes,
+                })
 
         # Get actual spend per branch per month from metrics
         for b, data in branch_data.items():
@@ -392,7 +429,7 @@ def yearly_overview(
                 if m in data["months"]:
                     data["months"][m]["spent"] = spent
                 else:
-                    data["months"][m] = {"budget": 0, "spent": spent}
+                    data["months"][m] = {"budget": 0, "spent": spent, "notes": []}
 
         # Build response
         MONTH_NAMES = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -406,12 +443,13 @@ def yearly_overview(
             data = branch_data[b]
             months_list = []
             for m in range(1, 13):
-                md = data["months"].get(m, {"budget": 0, "spent": 0})
+                md = data["months"].get(m, {"budget": 0, "spent": 0, "notes": []})
                 months_list.append({
                     "month": m,
                     "month_name": MONTH_NAMES[m],
                     "budget": round(md["budget"], 2),
                     "spent": round(md["spent"], 2),
+                    "notes": md.get("notes", []),
                 })
             result.append({
                 "branch": b,

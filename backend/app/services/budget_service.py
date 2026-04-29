@@ -79,6 +79,7 @@ def get_budget_dashboard(
             "days_remaining": pace_info["days_remaining"],
             "projected_spend": pace_info["projected_spend"],
             "currency": plan.currency,
+            "notes": plan.notes,
         })
 
     return items
@@ -333,12 +334,9 @@ def upsert_monthly_split(
         raise ValueError("month must be 1-12")
 
     pct = _normalize_pct(channel_pct)
-    pct_sum = sum(pct.values())
-
-    if pct_sum > 100 and not (overflow_note or "").strip():
-        raise ValueError(
-            f"Channel % sum is {pct_sum:.1f}% (>100%) — overflow_note is required"
-        )
+    # Note: per-channel "where the over-spend is offset from" notes live on
+    # BudgetPlan.notes (set via PATCH /api/budget/plans/{id}). overflow_note
+    # on the split is kept for backward compatibility but unused by the UI.
 
     branch_currency = BRANCH_CURRENCY.get(branch, "VND")
     rate_to_vnd = _get_rate_to_vnd(db, branch_currency)
@@ -376,14 +374,17 @@ def upsert_monthly_split(
     # Cascade — replace every channel plan for this (branch, month).
     # Use bulk DELETE (not per-row db.delete) to avoid session-identity-map
     # races against rows created by the legacy "New Plan" path or earlier
-    # script runs.
+    # script runs. Preserve any per-channel `notes` (the "bù từ" overspend
+    # offset notes set via PATCH on the Monthly tab) across the rebuild so
+    # re-saving a split doesn't wipe finance commentary.
     month_date = date(year, month, 1)
-    existing_plan_ids = [
-        row[0]
-        for row in db.query(BudgetPlan.id)
+    existing_plans = (
+        db.query(BudgetPlan)
         .filter(BudgetPlan.branch == branch, BudgetPlan.month == month_date)
         .all()
-    ]
+    )
+    notes_by_channel = {p.channel: p.notes for p in existing_plans if p.notes}
+    existing_plan_ids = [p.id for p in existing_plans]
     if existing_plan_ids:
         # FK is ON DELETE CASCADE on Postgres, but be explicit so SQLite (and
         # any case where the FK was added without cascade) still works.
@@ -407,7 +408,7 @@ def upsert_monthly_split(
             month=month_date,
             total_budget=amount,
             currency=branch_currency,
-            notes=(overflow_note or None),
+            notes=notes_by_channel.get(channel),
             created_by=created_by,
         )
         db.add(plan)

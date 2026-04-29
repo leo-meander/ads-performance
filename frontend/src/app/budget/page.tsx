@@ -9,11 +9,14 @@ type BudgetItem = {
   plan_id: string; name: string; branch: string; channel: string
   total_budget: number; allocated: number; spent: number
   pace_status: string; days_remaining: number; projected_spend: number; currency: string
+  notes?: string | null
 }
+
+type MonthNote = { channel: string; text: string }
 
 type YearlyBranch = {
   branch: string; currency: string; yearly_budget: number; yearly_spent: number
-  months: { month: number; month_name: string; budget: number; spent: number }[]
+  months: { month: number; month_name: string; budget: number; spent: number; notes?: MonthNote[] }[]
 }
 
 type SplitMonth = {
@@ -79,6 +82,77 @@ function BudgetCard({ label, spent, budget, currency, projected, daysRemaining, 
           {daysRemaining !== undefined && <span>{daysRemaining}d remaining</span>}
         </div>
       )}
+    </div>
+  )
+}
+
+function ChannelNoteEditor({
+  planId, initialNote, isOver, editable, overspend, currency, onSaved,
+}: {
+  planId: string; initialNote: string | null; isOver: boolean; editable: boolean
+  overspend: number; currency: string; onSaved: (note: string | null) => void
+}) {
+  const [note, setNote] = useState(initialNote || '')
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState<'ok' | 'err' | null>(null)
+  // Sync local state when the row's note refreshes from server
+  useEffect(() => { setNote(initialNote || '') }, [initialNote])
+  // Stop showing "Saved" / "Saved!" feedback once the user edits again
+  useEffect(() => { setStatus(null) }, [note])
+
+  const dirty = note !== (initialNote || '')
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/budget/plans/${planId}/notes`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ notes: note || null }),
+      }).then(r => r.json())
+      if (res.success) {
+        setStatus('ok')
+        onSaved(note || null)
+      } else {
+        setStatus('err')
+      }
+    } catch {
+      setStatus('err')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Hide entirely when not over and nothing saved — keeps cards clean
+  if (!isOver && !initialNote) return null
+
+  return (
+    <div className="border-t border-gray-100 pt-2 mt-2 space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className={`font-medium ${isOver ? 'text-red-600' : 'text-gray-500'}`}>
+          {isOver
+            ? `Over ${fmt(overspend)} ${currency} — bù từ?`
+            : 'Note'}
+        </span>
+        {dirty && editable && (
+          <button onClick={save} disabled={saving}
+            className={`text-xs px-2 py-0.5 rounded font-medium ${
+              status === 'err'
+                ? 'bg-red-100 text-red-700'
+                : 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50'
+            }`}>
+            {saving ? '...' : status === 'err' ? 'Retry' : 'Save'}
+          </button>
+        )}
+        {!dirty && status === 'ok' && (
+          <span className="text-xs text-green-600">Saved</span>
+        )}
+      </div>
+      <input type="text" value={note} disabled={!editable}
+        onChange={e => setNote(e.target.value)}
+        placeholder={isOver ? 'e.g. KOL budget, offline event…' : ''}
+        className="w-full border rounded px-2 py-1 text-xs disabled:bg-gray-50 disabled:text-gray-400" />
     </div>
   )
 }
@@ -193,10 +267,6 @@ export default function BudgetDashboard() {
   }
 
   const saveSplitRow = async (row: SplitMonth) => {
-    if (row.pct_sum > 100 && !(row.overflow_note || '').trim()) {
-      setSaveStatus(prev => ({ ...prev, [row.month]: 'err' }))
-      return
-    }
     setSavingMonth(row.month)
     try {
       const res = await fetch(`${API_BASE}/api/budget/monthly-splits`, {
@@ -209,7 +279,6 @@ export default function BudgetDashboard() {
           month: row.month,
           total_vnd: row.total_vnd,
           channel_pct: row.channel_pct,
-          overflow_note: row.overflow_note || null,
         }),
       }).then(r => r.json())
       setSaveStatus(prev => ({ ...prev, [row.month]: res.success ? 'ok' : 'err' }))
@@ -373,13 +442,28 @@ export default function BudgetDashboard() {
                     <BudgetCard label="Total" spent={tSpent} budget={tBudget} currency={cur} projected={tProjected} daysRemaining={dRem} />
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 divide-x divide-y divide-gray-100">
-                    {bi.map(item => (
-                      <div key={item.plan_id} className="p-4">
-                        <BudgetCard label={item.channel.charAt(0).toUpperCase() + item.channel.slice(1)}
-                          spent={item.spent} budget={item.total_budget} currency={item.currency}
-                          projected={item.projected_spend} daysRemaining={item.days_remaining} paceStatus={item.pace_status} />
-                      </div>
-                    ))}
+                    {bi.map(item => {
+                      const isOver = item.pace_status === 'Over'
+                      const overspend = Math.max(0, item.spent - item.total_budget)
+                      return (
+                        <div key={item.plan_id} className="p-4">
+                          <BudgetCard label={item.channel.charAt(0).toUpperCase() + item.channel.slice(1)}
+                            spent={item.spent} budget={item.total_budget} currency={item.currency}
+                            projected={item.projected_spend} daysRemaining={item.days_remaining} paceStatus={item.pace_status} />
+                          <ChannelNoteEditor
+                            planId={item.plan_id}
+                            initialNote={item.notes ?? null}
+                            isOver={isOver}
+                            overspend={overspend}
+                            currency={item.currency}
+                            editable={editableBranches.includes(item.branch)}
+                            onSaved={(note) => {
+                              setItems(prev => prev.map(i => i.plan_id === item.plan_id ? { ...i, notes: note } : i))
+                            }}
+                          />
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               )
@@ -426,6 +510,7 @@ export default function BudgetDashboard() {
                           <th className="text-right py-2 px-4 text-gray-500 font-medium">Remaining</th>
                           <th className="text-right py-2 px-4 text-gray-500 font-medium w-20">%</th>
                           <th className="py-2 px-4 w-32"></th>
+                          <th className="text-left py-2 px-4 text-gray-500 font-medium">Notes</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -434,6 +519,14 @@ export default function BudgetDashboard() {
                           const mPct = m.budget > 0 ? (m.spent / m.budget * 100) : 0
                           const remaining = m.budget - m.spent
                           const isCurrent = m.month === new Date().getMonth() + 1 && year === new Date().getFullYear()
+                          // Aggregate notes from every branch for this month
+                          const aggregated: { branch: string; channel: string; text: string }[] = []
+                          for (const b of yearlyData) {
+                            const bm = b.months.find(x => x.month === m.month)
+                            for (const n of (bm?.notes || [])) {
+                              aggregated.push({ branch: b.branch, channel: n.channel, text: n.text })
+                            }
+                          }
                           return (
                             <tr key={m.month} className={`border-b border-gray-50 ${isCurrent ? 'bg-blue-50' : 'hover:bg-gray-50'} ${!hasBudget && m.spent === 0 ? 'text-gray-300' : ''}`}>
                               <td className="py-2 px-4 font-medium">{m.month_name}</td>
@@ -451,6 +544,18 @@ export default function BudgetDashboard() {
                                   </div>
                                 )}
                               </td>
+                              <td className="py-2 px-4 text-xs text-gray-600 max-w-sm">
+                                {aggregated.length > 0 ? (
+                                  <div className="space-y-0.5">
+                                    {aggregated.map((n, idx) => (
+                                      <div key={idx} className="flex gap-1.5">
+                                        <span className="text-gray-400 capitalize w-24 shrink-0 truncate">{n.branch} · {n.channel}</span>
+                                        <span className="text-gray-700">{n.text}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : <span className="text-gray-300">—</span>}
+                              </td>
                             </tr>
                           )
                         })}
@@ -462,6 +567,7 @@ export default function BudgetDashboard() {
                             {fmt(totalsVnd.yearly_budget - totalsVnd.yearly_spent)}
                           </td>
                           <td className="py-2 px-4 text-right text-xs">{pct.toFixed(1)}%</td>
+                          <td className="py-2 px-4"></td>
                           <td className="py-2 px-4"></td>
                         </tr>
                       </tbody>
@@ -503,6 +609,7 @@ export default function BudgetDashboard() {
                           <th className="text-right py-2 px-4 text-gray-500 font-medium">Remaining</th>
                           <th className="text-right py-2 px-4 text-gray-500 font-medium w-20">%</th>
                           <th className="py-2 px-4 w-32"></th>
+                          <th className="text-left py-2 px-4 text-gray-500 font-medium">Note</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -511,6 +618,7 @@ export default function BudgetDashboard() {
                           const mPct = m.budget > 0 ? (m.spent / m.budget * 100) : 0
                           const remaining = m.budget - m.spent
                           const isCurrentMonth = m.month === new Date().getMonth() + 1 && year === new Date().getFullYear()
+                          const monthNotes = m.notes || []
                           return (
                             <tr key={m.month} className={`border-b border-gray-50 ${isCurrentMonth ? 'bg-blue-50' : 'hover:bg-gray-50'} ${!hasBudget && m.spent === 0 ? 'text-gray-300' : ''}`}>
                               <td className="py-2 px-4 font-medium">{m.month_name}</td>
@@ -534,6 +642,18 @@ export default function BudgetDashboard() {
                                   </div>
                                 )}
                               </td>
+                              <td className="py-2 px-4 text-xs text-gray-600 max-w-xs">
+                                {monthNotes.length > 0 ? (
+                                  <div className="space-y-0.5">
+                                    {monthNotes.map((n, idx) => (
+                                      <div key={idx} className="flex gap-1.5">
+                                        <span className="text-gray-400 capitalize w-12 shrink-0">{n.channel}:</span>
+                                        <span className="text-gray-700">{n.text}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : <span className="text-gray-300">—</span>}
+                              </td>
                             </tr>
                           )
                         })}
@@ -546,6 +666,7 @@ export default function BudgetDashboard() {
                             {fmt(branch.yearly_budget - branch.yearly_spent)}
                           </td>
                           <td className="py-2 px-4 text-right text-xs">{pct.toFixed(1)}%</td>
+                          <td className="py-2 px-4"></td>
                           <td className="py-2 px-4"></td>
                         </tr>
                       </tbody>
@@ -626,7 +747,6 @@ export default function BudgetDashboard() {
                       ))}
                       <th className="text-right py-2 px-2 text-gray-500 font-medium w-16">Sum</th>
                       <th className="text-right py-2 px-3 text-gray-500 font-medium">Native</th>
-                      <th className="text-left py-2 px-3 text-gray-500 font-medium">Overflow note</th>
                       <th className="py-2 px-3 w-24"></th>
                     </tr>
                   </thead>
@@ -636,8 +756,6 @@ export default function BudgetDashboard() {
                       const isUnder = row.pct_sum > 0 && row.pct_sum < 100
                       const sumColor = isOver ? 'text-red-600 font-semibold' : isUnder ? 'text-yellow-600' : row.pct_sum === 100 ? 'text-green-600' : 'text-gray-300'
                       const status = saveStatus[row.month]
-                      const noteRequired = isOver
-                      const noteMissing = noteRequired && !(row.overflow_note || '').trim()
                       return (
                         <tr key={row.month} className="border-b border-gray-50 hover:bg-gray-50">
                           <td className="py-2 px-3 font-medium text-gray-700">{MONTH_NAMES[row.month]}</td>
@@ -659,16 +777,9 @@ export default function BudgetDashboard() {
                           <td className="py-2 px-3 text-right text-xs text-gray-600">
                             {row.total_vnd > 0 ? `${fmt(row.total_native)} ${row.currency}` : '-'}
                           </td>
-                          <td className="py-2 px-3">
-                            <input type="text" disabled={!splitEditable || !noteRequired}
-                              placeholder={noteRequired ? `Vượt ${fmt(row.total_vnd * (row.pct_sum - 100) / 100)} VND — bù từ?` : '—'}
-                              value={row.overflow_note || ''}
-                              onChange={e => updateSplitField(row.month, { overflow_note: e.target.value })}
-                              className={`w-full border rounded px-2 py-1 text-xs disabled:bg-gray-50 disabled:text-gray-300 ${noteMissing ? 'border-red-400 bg-red-50' : ''}`} />
-                          </td>
                           <td className="py-2 px-3 text-right">
                             {splitEditable ? (
-                              <button onClick={() => saveSplitRow(row)} disabled={savingMonth === row.month || noteMissing}
+                              <button onClick={() => saveSplitRow(row)} disabled={savingMonth === row.month}
                                 className={`text-xs px-3 py-1 rounded font-medium ${
                                   status === 'ok' ? 'bg-green-100 text-green-700' :
                                   status === 'err' ? 'bg-red-100 text-red-700' :
