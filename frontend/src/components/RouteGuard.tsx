@@ -61,14 +61,22 @@ export default function RouteGuard({ children }: { children: ReactNode }) {
     }
   }, [loading, mustChange, pathname, router])
 
+  // Send unauthenticated users to /login instead of letting protected pages
+  // render with no data (looks like a broken empty dashboard).
+  useEffect(() => {
+    if (!loading && !user && pathname !== '/login') {
+      router.replace('/login')
+    }
+  }, [loading, user, pathname, router])
+
   // Login page: no guard
   if (pathname === '/login') return <>{children}</>
 
-  // Still booting — let the page handle its own loading state
-  if (loading) return <>{children}</>
+  // Still booting — render nothing to avoid a flash of an empty/unauthed page.
+  if (loading) return null
 
-  // Not logged in: don't gate (pages typically redirect to /login themselves)
-  if (!user) return <>{children}</>
+  // Not logged in: redirect is in-flight; render nothing meanwhile.
+  if (!user) return null
 
   // While the forced-redirect above is in-flight, render nothing to avoid a
   // flash of a gated page the user shouldn't see yet.

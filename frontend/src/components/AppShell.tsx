@@ -19,13 +19,12 @@ import FloatingChatWidget from '@/components/FloatingChatWidget'
 export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const isPublicLanding = pathname?.startsWith('/lp/') ?? false
+  const isLogin = pathname === '/login'
 
-  if (isPublicLanding) {
+  if (isPublicLanding || isLogin) {
     // Bare shell — page owns its own full viewport
     return <>{children}</>
   }
-
-  const isLogin = pathname === '/login'
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -36,7 +35,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <RouteGuard>{children}</RouteGuard>
         </main>
       </div>
-      {!isLogin && <FloatingChatWidget />}
+      <FloatingChatWidget />
     </div>
   )
 }
