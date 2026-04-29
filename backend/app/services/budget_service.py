@@ -8,13 +8,21 @@ from decimal import Decimal
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.branches import BRANCH_ACCOUNT_MAP
+from app.core.branches import BRANCH_ACCOUNT_MAP, BRANCH_CURRENCY
 from app.models.account import AdAccount
-from app.models.budget import BudgetAllocation, BudgetPlan
+from app.models.budget import BudgetAllocation, BudgetMonthlySplit, BudgetPlan
 from app.models.campaign import Campaign
+from app.models.currency_rate import CurrencyRate
 from app.models.metrics import MetricsCache
 
 logger = logging.getLogger(__name__)
+
+
+# Used to auto-name the per-channel BudgetPlan rows generated from a split.
+_MONTH_NAMES = [
+    "", "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
 
 
 def _get_account_ids_for_branch(db: Session, branch: str) -> list[str]:
@@ -268,3 +276,184 @@ def get_plan_with_allocations(db: Session, plan_id: str) -> dict | None:
             for a in allocations
         ],
     }
+
+
+# ============================================================
+# Monthly split (total VND + channel %) — cascades to budget_plans
+# ============================================================
+
+
+def _get_rate_to_vnd(db: Session, currency: str) -> Decimal:
+    """Look up rate_to_vnd for `currency` from the currency_rates table.
+
+    Falls back to 1 if the row is missing so the import never crashes —
+    the user can fix the rate in Settings and re-save the split.
+    """
+    if currency == "VND":
+        return Decimal("1")
+    row = db.query(CurrencyRate).filter(CurrencyRate.currency == currency).first()
+    if not row or not row.rate_to_vnd:
+        logger.warning("No currency_rates row for %s — defaulting to 1", currency)
+        return Decimal("1")
+    return Decimal(str(row.rate_to_vnd))
+
+
+def _normalize_pct(channel_pct: dict) -> dict[str, float]:
+    """Coerce arbitrary input into {channel: float_pct} with non-negative values."""
+    out: dict[str, float] = {}
+    for ch, v in (channel_pct or {}).items():
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if f < 0:
+            f = 0
+        out[str(ch).lower()] = f
+    return out
+
+
+def upsert_monthly_split(
+    db: Session,
+    branch: str,
+    year: int,
+    month: int,
+    total_vnd: float,
+    channel_pct: dict,
+    overflow_note: str | None = None,
+    created_by: str | None = None,
+) -> BudgetMonthlySplit:
+    """Upsert (branch, year, month) split + cascade to budget_plans.
+
+    Cascade rule: delete every existing budget_plan for that (branch, month)
+    across ALL channels, then insert one new plan per channel where pct > 0.
+    The plan amount is in the branch's native currency, converted from
+    total_vnd via currency_rates.rate_to_vnd.
+    """
+    if month < 1 or month > 12:
+        raise ValueError("month must be 1-12")
+
+    pct = _normalize_pct(channel_pct)
+    pct_sum = sum(pct.values())
+
+    if pct_sum > 100 and not (overflow_note or "").strip():
+        raise ValueError(
+            f"Channel % sum is {pct_sum:.1f}% (>100%) — overflow_note is required"
+        )
+
+    branch_currency = BRANCH_CURRENCY.get(branch, "VND")
+    rate_to_vnd = _get_rate_to_vnd(db, branch_currency)
+    total_vnd_dec = Decimal(str(total_vnd))
+    total_native = total_vnd_dec / rate_to_vnd if rate_to_vnd > 0 else Decimal("0")
+
+    # Upsert split row
+    split = (
+        db.query(BudgetMonthlySplit)
+        .filter(
+            BudgetMonthlySplit.branch == branch,
+            BudgetMonthlySplit.year == year,
+            BudgetMonthlySplit.month == month,
+        )
+        .first()
+    )
+    if split is None:
+        split = BudgetMonthlySplit(
+            branch=branch,
+            year=year,
+            month=month,
+            total_vnd=total_vnd_dec,
+            channel_pct=pct,
+            overflow_note=(overflow_note or None),
+            created_by=created_by,
+        )
+        db.add(split)
+    else:
+        split.total_vnd = total_vnd_dec
+        split.channel_pct = pct
+        split.overflow_note = (overflow_note or None)
+        if created_by:
+            split.created_by = created_by
+
+    # Cascade — replace every channel plan for this (branch, month)
+    month_date = date(year, month, 1)
+    existing_plans = (
+        db.query(BudgetPlan)
+        .filter(
+            BudgetPlan.branch == branch,
+            BudgetPlan.month == month_date,
+        )
+        .all()
+    )
+    for p in existing_plans:
+        # Detach allocations first (FK CASCADE handles this, but be explicit
+        # so SQLite without cascade also works).
+        db.query(BudgetAllocation).filter(BudgetAllocation.plan_id == p.id).delete()
+        db.delete(p)
+    db.flush()
+
+    month_label = _MONTH_NAMES[month]
+    for channel, p in pct.items():
+        if p <= 0:
+            continue
+        amount = (total_native * Decimal(str(p)) / Decimal("100")).quantize(Decimal("0.01"))
+        plan = BudgetPlan(
+            name=f"{branch} {channel.title()} {month_label} {year}",
+            branch=branch,
+            channel=channel,
+            month=month_date,
+            total_budget=amount,
+            currency=branch_currency,
+            notes=(overflow_note or None),
+            created_by=created_by,
+        )
+        db.add(plan)
+
+    db.flush()
+    return split
+
+
+def list_monthly_splits(db: Session, branch: str, year: int) -> list[dict]:
+    """Return all 12 months for (branch, year). Missing months return zeros."""
+    rows = (
+        db.query(BudgetMonthlySplit)
+        .filter(
+            BudgetMonthlySplit.branch == branch,
+            BudgetMonthlySplit.year == year,
+        )
+        .all()
+    )
+    by_month = {r.month: r for r in rows}
+    branch_currency = BRANCH_CURRENCY.get(branch, "VND")
+    rate = _get_rate_to_vnd(db, branch_currency)
+
+    out = []
+    for m in range(1, 13):
+        r = by_month.get(m)
+        if r is None:
+            out.append({
+                "branch": branch,
+                "year": year,
+                "month": m,
+                "total_vnd": 0,
+                "total_native": 0,
+                "currency": branch_currency,
+                "channel_pct": {},
+                "overflow_note": None,
+                "pct_sum": 0,
+            })
+            continue
+        pct = r.channel_pct or {}
+        total_vnd = float(r.total_vnd or 0)
+        total_native = float(Decimal(str(total_vnd)) / rate) if rate > 0 else 0
+        out.append({
+            "branch": branch,
+            "year": year,
+            "month": m,
+            "total_vnd": total_vnd,
+            "total_native": round(total_native, 2),
+            "currency": branch_currency,
+            "channel_pct": pct,
+            "overflow_note": r.overflow_note,
+            "pct_sum": round(sum(float(v) for v in pct.values()), 2),
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        })
+    return out

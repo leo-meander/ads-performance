@@ -1,6 +1,6 @@
 from sqlalchemy import Boolean, Column, Date, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 
-from app.models.base import Base, TimestampMixin, UUIDType
+from app.models.base import Base, JSONType, TimestampMixin, UUIDType
 
 
 class BudgetPlan(TimestampMixin, Base):
@@ -40,4 +40,29 @@ class BudgetAllocation(TimestampMixin, Base):
     amount = Column(Numeric(15, 2), nullable=False)
     version = Column(Integer, nullable=False, default=1)
     reason = Column(Text, nullable=True)
+    created_by = Column(String(100), nullable=True)
+
+
+class BudgetMonthlySplit(TimestampMixin, Base):
+    """Per-(branch, year, month) total budget in VND with channel % split.
+
+    Source of truth for the user's monthly intent. Saving cascades to
+    budget_plans (one row per channel with pct > 0, amount in branch's
+    native currency).
+
+    overflow_note is required only when channel_pct values sum > 100 —
+    it captures where the over-budget is offset from (e.g. KOL budget).
+    """
+
+    __tablename__ = "budget_monthly_splits"
+    __table_args__ = (
+        UniqueConstraint("branch", "year", "month", name="uq_bms_branch_year_month"),
+    )
+
+    branch = Column(String(100), nullable=False, index=True)
+    year = Column(Integer, nullable=False)
+    month = Column(Integer, nullable=False)  # 1-12
+    total_vnd = Column(Numeric(15, 2), nullable=False)
+    channel_pct = Column(JSONType, nullable=False, default=dict)  # {"meta": 70, "google": 20, "tiktok": 10}
+    overflow_note = Column(Text, nullable=True)
     created_by = Column(String(100), nullable=True)

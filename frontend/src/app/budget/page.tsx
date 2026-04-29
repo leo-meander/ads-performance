@@ -16,8 +16,18 @@ type YearlyBranch = {
   months: { month: number; month_name: string; budget: number; spent: number }[]
 }
 
+type SplitMonth = {
+  branch: string; year: number; month: number
+  total_vnd: number; total_native: number; currency: string
+  channel_pct: Record<string, number>
+  overflow_note: string | null
+  pct_sum: number
+  updated_at?: string | null
+}
+
 const BRANCHES_ORDER = ['Saigon', 'Osaka', '1948', 'Taipei', 'Oani', 'Bread']
 const CHANNELS = ['meta', 'google', 'tiktok']
+const MONTH_NAMES = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const CURRENCY_TO_VND: Record<string, number> = { VND: 1, TWD: 824.83, JPY: 165.01 }
 
 const fmt = (n: number) => new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 0 }).format(n)
@@ -80,7 +90,7 @@ export default function BudgetDashboard() {
   const canCreate = editableBranches.length > 0
   const filterBranches = BRANCHES_ORDER.filter(b => viewableBranches.includes(b))
   const formBranches = BRANCHES_ORDER.filter(b => editableBranches.includes(b))
-  const [tab, setTab] = useState<'monthly' | 'yearly'>('monthly')
+  const [tab, setTab] = useState<'monthly' | 'yearly' | 'splits'>('monthly')
   const [month, setMonth] = useState(() => {
     const d = new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
@@ -101,6 +111,14 @@ export default function BudgetDashboard() {
 
   // Branch filter
   const [selectedBranch, setSelectedBranch] = useState<string>('all')
+
+  // Splits state — per-(branch, month) totals + channel %
+  const [splitBranch, setSplitBranch] = useState<string>(BRANCHES_ORDER[0])
+  const [splitRows, setSplitRows] = useState<SplitMonth[]>([])
+  const [splitsLoading, setSplitsLoading] = useState(false)
+  const [savingMonth, setSavingMonth] = useState<number | null>(null)
+  const [saveStatus, setSaveStatus] = useState<Record<number, 'ok' | 'err' | null>>({})
+  const splitEditable = editableBranches.includes(splitBranch)
 
   // Create form
   const [showCreate, setShowCreate] = useState(false)
@@ -124,8 +142,92 @@ export default function BudgetDashboard() {
       .catch(() => setYearlyLoading(false))
   }
 
+  const loadSplits = () => {
+    if (!splitBranch) return
+    setSplitsLoading(true)
+    setSaveStatus({})
+    fetch(`${API_BASE}/api/budget/monthly-splits?branch=${encodeURIComponent(splitBranch)}&year=${year}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(res => {
+        if (res.success) setSplitRows(res.data.months)
+        setSplitsLoading(false)
+      })
+      .catch(() => setSplitsLoading(false))
+  }
+
   useEffect(() => { if (tab === 'monthly') loadMonthly() }, [month, tab])
   useEffect(() => { if (tab === 'yearly') loadYearly() }, [year, tab])
+  useEffect(() => { if (tab === 'splits') loadSplits() }, [splitBranch, year, tab])
+
+  // Default splitBranch to the first branch the user can view, once auth is loaded
+  useEffect(() => {
+    if (filterBranches.length > 0 && !filterBranches.includes(splitBranch)) {
+      setSplitBranch(filterBranches[0])
+    }
+  }, [filterBranches.join(','), splitBranch])
+
+  const updateSplitField = (monthIdx: number, patch: Partial<SplitMonth>) => {
+    setSplitRows(prev => prev.map(r => {
+      if (r.month !== monthIdx) return r
+      const next = { ...r, ...patch }
+      // Recompute pct_sum + native preview locally
+      const sum = Object.values(next.channel_pct).reduce((s, v) => s + (Number(v) || 0), 0)
+      next.pct_sum = Math.round(sum * 100) / 100
+      const rate = CURRENCY_TO_VND[next.currency] || 1
+      next.total_native = rate > 0 ? Math.round((next.total_vnd / rate) * 100) / 100 : 0
+      return next
+    }))
+    setSaveStatus(prev => ({ ...prev, [monthIdx]: null }))
+  }
+
+  const setChannelPct = (monthIdx: number, ch: string, val: string) => {
+    const num = val === '' ? 0 : parseFloat(val)
+    const safe = Number.isFinite(num) && num >= 0 ? num : 0
+    setSplitRows(prev => prev.map(r => {
+      if (r.month !== monthIdx) return r
+      const channel_pct = { ...r.channel_pct, [ch]: safe }
+      const sum = Object.values(channel_pct).reduce((s, v) => s + (Number(v) || 0), 0)
+      return { ...r, channel_pct, pct_sum: Math.round(sum * 100) / 100 }
+    }))
+    setSaveStatus(prev => ({ ...prev, [monthIdx]: null }))
+  }
+
+  const saveSplitRow = async (row: SplitMonth) => {
+    if (row.pct_sum > 100 && !(row.overflow_note || '').trim()) {
+      setSaveStatus(prev => ({ ...prev, [row.month]: 'err' }))
+      return
+    }
+    setSavingMonth(row.month)
+    try {
+      const res = await fetch(`${API_BASE}/api/budget/monthly-splits`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          branch: row.branch,
+          year: row.year,
+          month: row.month,
+          total_vnd: row.total_vnd,
+          channel_pct: row.channel_pct,
+          overflow_note: row.overflow_note || null,
+        }),
+      }).then(r => r.json())
+      setSaveStatus(prev => ({ ...prev, [row.month]: res.success ? 'ok' : 'err' }))
+    } catch {
+      setSaveStatus(prev => ({ ...prev, [row.month]: 'err' }))
+    } finally {
+      setSavingMonth(null)
+    }
+  }
+
+  const applyChannelToAll = (ch: string, val: number) => {
+    setSplitRows(prev => prev.map(r => {
+      const channel_pct = { ...r.channel_pct, [ch]: val }
+      const sum = Object.values(channel_pct).reduce((s, v) => s + (Number(v) || 0), 0)
+      return { ...r, channel_pct, pct_sum: Math.round(sum * 100) / 100 }
+    }))
+    setSaveStatus({})
+  }
 
   const handleCreate = async () => {
     if (!form.name || !form.total_budget) return
@@ -173,7 +275,7 @@ export default function BudgetDashboard() {
               )}
             </>
           )}
-          {tab === 'yearly' && (
+          {(tab === 'yearly' || tab === 'splits') && (
             <select value={year} onChange={e => setYear(Number(e.target.value))}
               className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
               {[2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
@@ -184,12 +286,12 @@ export default function BudgetDashboard() {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit">
-        {(['monthly', 'yearly'] as const).map(t => (
+        {(['monthly', 'yearly', 'splits'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               tab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}>
-            {t === 'monthly' ? 'Monthly' : 'Yearly'}
+            {t === 'monthly' ? 'Monthly' : t === 'yearly' ? 'Yearly' : 'Channel Splits'}
           </button>
         ))}
       </div>
@@ -458,6 +560,137 @@ export default function BudgetDashboard() {
             )}
           </div>
         )
+      )}
+
+      {/* ======================== SPLITS TAB ======================== */}
+      {tab === 'splits' && (
+        <div className="space-y-4">
+          {/* Branch sub-picker (Splits is per-branch — separate from monthly/yearly filter) */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-gray-500">Branch:</span>
+            {filterBranches.map(b => (
+              <button key={b} onClick={() => setSplitBranch(b)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium border ${
+                  splitBranch === b ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                }`}>
+                {b}
+              </button>
+            ))}
+          </div>
+
+          {!splitEditable && (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-2 text-sm text-yellow-800">
+              View-only — you don't have edit access to <strong>{splitBranch}</strong>.
+            </div>
+          )}
+
+          {splitsLoading ? (
+            <div className="flex items-center justify-center h-64"><div className="text-gray-500">Loading...</div></div>
+          ) : (
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="px-6 py-4 border-b flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-gray-900">{splitBranch} — {year} channel splits</h2>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Set total VND + channel %. Saving cascades to monthly budget plans (converted to {splitRows[0]?.currency || '...'}).
+                  </p>
+                </div>
+                {splitEditable && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-gray-500">Apply to all months:</span>
+                    {CHANNELS.map(c => (
+                      <div key={c} className="flex items-center gap-1">
+                        <span className="text-gray-600 capitalize">{c}</span>
+                        <input type="number" min={0} max={200} placeholder="%"
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              const v = parseFloat((e.target as HTMLInputElement).value)
+                              if (Number.isFinite(v)) applyChannelToAll(c, v)
+                            }
+                          }}
+                          className="w-14 border rounded px-1.5 py-0.5 text-right" />
+                      </div>
+                    ))}
+                    <span className="text-gray-400">↵ to apply</span>
+                  </div>
+                )}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-100 bg-gray-50">
+                      <th className="text-left py-2 px-3 text-gray-500 font-medium w-14">Month</th>
+                      <th className="text-right py-2 px-3 text-gray-500 font-medium">Total (VND)</th>
+                      {CHANNELS.map(c => (
+                        <th key={c} className="text-right py-2 px-2 text-gray-500 font-medium w-20 capitalize">{c} %</th>
+                      ))}
+                      <th className="text-right py-2 px-2 text-gray-500 font-medium w-16">Sum</th>
+                      <th className="text-right py-2 px-3 text-gray-500 font-medium">Native</th>
+                      <th className="text-left py-2 px-3 text-gray-500 font-medium">Overflow note</th>
+                      <th className="py-2 px-3 w-24"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {splitRows.map(row => {
+                      const isOver = row.pct_sum > 100
+                      const isUnder = row.pct_sum > 0 && row.pct_sum < 100
+                      const sumColor = isOver ? 'text-red-600 font-semibold' : isUnder ? 'text-yellow-600' : row.pct_sum === 100 ? 'text-green-600' : 'text-gray-300'
+                      const status = saveStatus[row.month]
+                      const noteRequired = isOver
+                      const noteMissing = noteRequired && !(row.overflow_note || '').trim()
+                      return (
+                        <tr key={row.month} className="border-b border-gray-50 hover:bg-gray-50">
+                          <td className="py-2 px-3 font-medium text-gray-700">{MONTH_NAMES[row.month]}</td>
+                          <td className="py-2 px-3 text-right">
+                            <input type="number" disabled={!splitEditable}
+                              value={row.total_vnd || ''}
+                              onChange={e => updateSplitField(row.month, { total_vnd: parseFloat(e.target.value) || 0 })}
+                              className="w-36 border rounded px-2 py-1 text-right text-xs disabled:bg-gray-50 disabled:text-gray-400" />
+                          </td>
+                          {CHANNELS.map(c => (
+                            <td key={c} className="py-2 px-2 text-right">
+                              <input type="number" min={0} max={200} step={1} disabled={!splitEditable}
+                                value={row.channel_pct[c] ?? ''}
+                                onChange={e => setChannelPct(row.month, c, e.target.value)}
+                                className="w-16 border rounded px-1.5 py-1 text-right text-xs disabled:bg-gray-50 disabled:text-gray-400" />
+                            </td>
+                          ))}
+                          <td className={`py-2 px-2 text-right text-xs ${sumColor}`}>{row.pct_sum.toFixed(0)}%</td>
+                          <td className="py-2 px-3 text-right text-xs text-gray-600">
+                            {row.total_vnd > 0 ? `${fmt(row.total_native)} ${row.currency}` : '-'}
+                          </td>
+                          <td className="py-2 px-3">
+                            <input type="text" disabled={!splitEditable || !noteRequired}
+                              placeholder={noteRequired ? `Vượt ${fmt(row.total_vnd * (row.pct_sum - 100) / 100)} VND — bù từ?` : '—'}
+                              value={row.overflow_note || ''}
+                              onChange={e => updateSplitField(row.month, { overflow_note: e.target.value })}
+                              className={`w-full border rounded px-2 py-1 text-xs disabled:bg-gray-50 disabled:text-gray-300 ${noteMissing ? 'border-red-400 bg-red-50' : ''}`} />
+                          </td>
+                          <td className="py-2 px-3 text-right">
+                            {splitEditable ? (
+                              <button onClick={() => saveSplitRow(row)} disabled={savingMonth === row.month || noteMissing}
+                                className={`text-xs px-3 py-1 rounded font-medium ${
+                                  status === 'ok' ? 'bg-green-100 text-green-700' :
+                                  status === 'err' ? 'bg-red-100 text-red-700' :
+                                  'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50'
+                                }`}>
+                                {savingMonth === row.month ? '...' :
+                                  status === 'ok' ? 'Saved' :
+                                  status === 'err' ? 'Retry' : 'Save'}
+                              </button>
+                            ) : (
+                              <span className="text-xs text-gray-300">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

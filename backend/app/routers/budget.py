@@ -22,6 +22,8 @@ from app.services.budget_service import (
     get_budget_dashboard,
     get_channel_summary,
     get_plan_with_allocations,
+    list_monthly_splits,
+    upsert_monthly_split,
 )
 
 router = APIRouter()
@@ -53,6 +55,15 @@ class AllocationCreate(BaseModel):
     amount: float
     reason: str | None = None
     created_by: str | None = None
+
+
+class MonthlySplitUpsert(BaseModel):
+    branch: str
+    year: int
+    month: int  # 1-12
+    total_vnd: float
+    channel_pct: dict[str, float]  # {"meta": 70, "google": 20, "tiktok": 10}
+    overflow_note: str | None = None
 
 
 @router.get("/budget/dashboard")
@@ -442,4 +453,69 @@ def yearly_overview(
 
         return _api_response(data={"year": year, "branches": result, "totals_vnd": totals_vnd})
     except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/budget/monthly-splits")
+def get_monthly_splits(
+    branch: str = Query(..., description="Branch key (e.g. Saigon, Osaka, 1948, Taipei, Oani)"),
+    year: int = Query(...),
+    current_user: User = Depends(require_section("budget")),
+    db: Session = Depends(get_db),
+):
+    """Return all 12 months of monthly split data for (branch, year).
+
+    Each month carries: total_vnd, total_native (converted via currency_rates),
+    channel_pct, overflow_note, pct_sum. Missing months are returned as zeros
+    so the UI can render a complete 12-row grid.
+    """
+    try:
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget") or []
+            if branch not in allowed:
+                return _api_response(error=f"No view access to branch '{branch}'")
+        items = list_monthly_splits(db, branch, year)
+        return _api_response(data={"branch": branch, "year": year, "months": items})
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.put("/budget/monthly-splits")
+def put_monthly_split(
+    body: MonthlySplitUpsert,
+    current_user: User = Depends(require_section("budget", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Upsert one (branch, year, month) split. Cascades to budget_plans.
+
+    overflow_note is required when sum(channel_pct) > 100. Existing channel
+    plans for that month are deleted and replaced based on the new split.
+    """
+    try:
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget", min_level="edit") or []
+            if body.branch not in allowed:
+                return _api_response(error=f"No edit access to branch '{body.branch}'")
+        split = upsert_monthly_split(
+            db,
+            branch=body.branch,
+            year=body.year,
+            month=body.month,
+            total_vnd=body.total_vnd,
+            channel_pct=body.channel_pct,
+            overflow_note=body.overflow_note,
+            created_by=current_user.email,
+        )
+        db.commit()
+        return _api_response(data={
+            "id": str(split.id),
+            "branch": split.branch,
+            "year": split.year,
+            "month": split.month,
+            "total_vnd": float(split.total_vnd),
+            "channel_pct": split.channel_pct,
+            "overflow_note": split.overflow_note,
+        })
+    except Exception as e:
+        db.rollback()
         return _api_response(error=str(e))
