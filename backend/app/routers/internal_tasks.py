@@ -95,6 +95,7 @@ def _do_sync_backfill(
         sync_meta_metrics_window,
     )
     from app.services.google_sync_engine import sync_google_metrics_window
+    from app.services.tiktok_sync_engine import sync_tiktok_metrics_window
 
     # Resolve range
     if date_to_iso:
@@ -126,6 +127,8 @@ def _do_sync_backfill(
                     res = sync_meta_metrics_window(db, account, chunk_start, chunk_end)
                 elif account.platform == "google":
                     res = sync_google_metrics_window(db, account, chunk_start, chunk_end)
+                elif account.platform == "tiktok":
+                    res = sync_tiktok_metrics_window(db, account, chunk_start, chunk_end)
                 else:
                     continue
                 logger.info(
@@ -169,7 +172,7 @@ def trigger_sync_all_platforms(
     background_tasks: BackgroundTasks,
     x_internal_secret: str | None = Header(default=None),
 ):
-    """Sync all active Meta + Google ad accounts. Intended for 15-min cron."""
+    """Sync all active Meta + Google + TikTok ad accounts. Intended for 15-min cron."""
     _require_secret(x_internal_secret)
     _run_in_thread(_do_sync_all_platforms, "sync-all-platforms")
     return _api_response(data={"status": "started"})
@@ -183,7 +186,7 @@ def trigger_sync_backfill(
     date_to: str | None = None,
 ):
     """One-shot historical backfill of metrics + ad×country for every active
-    Meta + Google account. Walks backwards in 30-day chunks.
+    Meta + Google + TikTok account. Walks backwards in 30-day chunks.
 
     Defaults to last 12 months. Pass `date_from=YYYY-MM-DD&date_to=YYYY-MM-DD`
     to override. Runs async in a thread; expect 5-30 min depending on account

@@ -551,7 +551,15 @@ def sync_all_platforms(
                 "platform": account.platform,
                 **result,
             })
-        # Phase 8: TikTok sync will be added here
+        elif account.platform == "tiktok":
+            from app.services.tiktok_sync_engine import sync_tiktok_account
+            result = sync_tiktok_account(db, account, date_from=date_from, date_to=date_to)
+            results.append({
+                "account_id": str(account.id),
+                "account_name": account.account_name,
+                "platform": account.platform,
+                **result,
+            })
 
     # After sync: auto-classify creative verdicts
     try:

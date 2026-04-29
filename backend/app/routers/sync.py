@@ -70,6 +70,11 @@ class ReparseBody(BaseModel):
     account_id: str | None = None
 
 
+class TikTokRegisterBody(BaseModel):
+    advertiser_ids: list[str]
+    branch: str | None = None  # canonical branch key from BRANCH_ACCOUNT_MAP
+
+
 @router.post("/sync/trigger")
 def trigger_sync(background_tasks: BackgroundTasks, platform: str | None = None):
     """Manually trigger a data sync for one or all platforms.
@@ -98,6 +103,46 @@ def sync_status():
     """Return the state of the most recent /sync/trigger call."""
     with _sync_lock:
         return _api_response(data=dict(_sync_state))
+
+
+@router.get("/sync/tiktok/list-advertisers")
+def tiktok_list_advertisers():
+    """Discover advertiser_ids accessible to the configured access token.
+
+    Requires TIKTOK_APP_ID + TIKTOK_APP_SECRET. If only TIKTOK_ACCESS_TOKEN is
+    set, callers should POST advertiser_ids manually to /sync/tiktok/register.
+    """
+    try:
+        from app.services.tiktok_client import TikTokAPIError, list_advertisers
+        try:
+            data = list_advertisers()
+        except TikTokAPIError as e:
+            return _api_response(error=str(e))
+        return _api_response(data=data)
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.post("/sync/tiktok/register")
+def tiktok_register_advertisers(body: TikTokRegisterBody, db: Session = Depends(get_db)):
+    """Upsert TikTok advertisers as ad_accounts rows.
+
+    Pulls name + currency from TikTok's /advertiser/info/ endpoint. When
+    `branch` is provided, the saved account_name is prefixed with the
+    branch's canonical pattern (e.g. "Meander Saigon TikTok — <name>") so
+    BRANCH_ACCOUNT_MAP substring matching picks it up in dashboards.
+    """
+    try:
+        from app.services.tiktok_sync_engine import register_tiktok_advertisers
+        summary = register_tiktok_advertisers(
+            db, body.advertiser_ids, branch=body.branch,
+        )
+        if summary.get("errors"):
+            return _api_response(data=summary, error="; ".join(summary["errors"]))
+        return _api_response(data=summary)
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
 
 
 @router.post("/sync/reparse")
