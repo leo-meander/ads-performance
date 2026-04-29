@@ -87,10 +87,11 @@ function BudgetCard({ label, spent, budget, currency, projected, daysRemaining, 
 }
 
 function ChannelNoteEditor({
-  planId, initialNote, isOver, editable, overspend, currency, onSaved,
+  planId, initialNote, isOver, editable, overspend, currency, onSaved, channelLabel,
 }: {
   planId: string; initialNote: string | null; isOver: boolean; editable: boolean
   overspend: number; currency: string; onSaved: (note: string | null) => void
+  channelLabel?: string
 }) {
   const [note, setNote] = useState(initialNote || '')
   const [saving, setSaving] = useState(false)
@@ -132,8 +133,8 @@ function ChannelNoteEditor({
       <div className="flex items-center justify-between text-xs">
         <span className={`font-medium ${isOver ? 'text-red-600' : 'text-gray-500'}`}>
           {isOver
-            ? `Over ${fmt(overspend)} ${currency} — offset from?`
-            : 'Note'}
+            ? `${channelLabel ? `${channelLabel}: ` : ''}Over ${fmt(overspend)} ${currency} — offset from?`
+            : `${channelLabel ? `${channelLabel} note` : 'Note'}`}
         </span>
         {dirty && editable && (
           <button onClick={save} disabled={saving}
@@ -438,32 +439,36 @@ export default function BudgetDashboard() {
               return (
                 <div key={branch} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
                   <div className="px-6 py-4 border-b"><h2 className="text-sm font-semibold text-gray-900">{branch}</h2></div>
-                  <div className="px-4 pt-4 pb-2 border-b border-gray-100">
+                  <div className="px-4 pt-4 pb-3 border-b border-gray-100">
                     <BudgetCard label="Total" spent={tSpent} budget={tBudget} currency={cur} projected={tProjected} daysRemaining={dRem} />
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 divide-x divide-y divide-gray-100">
                     {bi.map(item => {
                       const isOver = item.pace_status === 'Over'
                       const overspend = Math.max(0, item.spent - item.total_budget)
                       return (
-                        <div key={item.plan_id} className="p-4">
-                          <BudgetCard label={item.channel.charAt(0).toUpperCase() + item.channel.slice(1)}
-                            spent={item.spent} budget={item.total_budget} currency={item.currency}
-                            projected={item.projected_spend} daysRemaining={item.days_remaining} paceStatus={item.pace_status} />
-                          <ChannelNoteEditor
-                            planId={item.plan_id}
-                            initialNote={item.notes ?? null}
-                            isOver={isOver}
-                            overspend={overspend}
-                            currency={item.currency}
-                            editable={editableBranches.includes(item.branch)}
-                            onSaved={(note) => {
-                              setItems(prev => prev.map(i => i.plan_id === item.plan_id ? { ...i, notes: note } : i))
-                            }}
-                          />
-                        </div>
+                        <ChannelNoteEditor
+                          key={item.plan_id}
+                          planId={item.plan_id}
+                          channelLabel={item.channel.charAt(0).toUpperCase() + item.channel.slice(1)}
+                          initialNote={item.notes ?? null}
+                          isOver={isOver}
+                          overspend={overspend}
+                          currency={item.currency}
+                          editable={editableBranches.includes(item.branch)}
+                          onSaved={(note) => {
+                            setItems(prev => prev.map(i => i.plan_id === item.plan_id ? { ...i, notes: note } : i))
+                          }}
+                        />
                       )
                     })}
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 divide-x divide-y divide-gray-100">
+                    {bi.map(item => (
+                      <div key={item.plan_id} className="p-4">
+                        <BudgetCard label={item.channel.charAt(0).toUpperCase() + item.channel.slice(1)}
+                          spent={item.spent} budget={item.total_budget} currency={item.currency}
+                          projected={item.projected_spend} daysRemaining={item.days_remaining} paceStatus={item.pace_status} />
+                      </div>
+                    ))}
                   </div>
                 </div>
               )
