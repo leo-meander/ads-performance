@@ -4,10 +4,12 @@ import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
-# Sync window: always pull last 10 days including today. Meta conversions
-# (esp. pixel/CRM-matched bookings) can arrive a few days late, so a shorter
-# window drops late attribution and under-reports revenue/ROAS.
-SYNC_LOOKBACK_DAYS = 10
+# Meta rolling sync window: 14 days including today. Meta CAPI offline
+# conversion uploads (Cloudbeds/CRM bookings matched against pixel clicks)
+# typically arrive within ~2 weeks of the original click, plus the standard
+# 7-day click + 1-day view attribution. The Tier-2 weekly sync-backfill
+# (60-day window) catches anything still arriving past 14 days.
+SYNC_LOOKBACK_DAYS = 14
 
 from sqlalchemy.orm import Session
 

@@ -63,6 +63,13 @@ on:
     # final "yesterday". days_back=2 re-syncs day-before-yesterday too for
     # self-healing against missed runs.
     - cron: "0 4 * * *"
+    # Weekly Sun 19:00 UTC — deep-refresh sync-backfill (60-day window).
+    # Tier-2 catch-up for offline conversion uploads (Cloudbeds → Meta CAPI
+    # / Google offline / TikTok offline) that arrive past the daily rolling
+    # window (Meta 14d / Google 21d / TikTok 14d). Walks 30-day chunks
+    # backwards covering ~2 months. Sun 19:00 UTC = Mon 02:00 VN — quiet
+    # period before the morning sync at 03:00 UTC.
+    - cron: "0 19 * * 0"
 
   # Allow manual triggering from the Actions tab for ad-hoc runs / testing.
   workflow_dispatch:
@@ -109,6 +116,7 @@ jobs:
               "0 2 * * *")      ENDPOINT="clarity-sync" ;;
               "30 * * * *")     ENDPOINT="landing-page-import" ;;
               "0 4 * * *")      ENDPOINT="ga4-sync" ;;
+              "0 19 * * 0")     ENDPOINT="sync-backfill?months_back=2" ;;
               *)
                 echo "Unknown schedule: ${{ github.event.schedule }}"
                 exit 1

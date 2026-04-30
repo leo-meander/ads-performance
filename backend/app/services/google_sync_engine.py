@@ -8,9 +8,13 @@ import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
-# Default rolling window for Google metric pulls — keep aligned with Meta
-# (sync_engine.SYNC_LOOKBACK_DAYS) so dashboards show consistent freshness.
-SYNC_LOOKBACK_DAYS = 10
+# Google rolling sync window: 21 days. Google Ads default attribution is
+# 30-day click for Search/Display, and offline conversion uploads (Cloudbeds
+# bookings imported via Google offline-conversion API) regularly arrive
+# 7-21 days after the original click. Wider than Meta's 14-day window
+# because Google's attribution + offline-upload patterns lag longer.
+# Tier-2 weekly sync-backfill (60-day window) catches the long tail.
+SYNC_LOOKBACK_DAYS = 21
 
 from sqlalchemy.orm import Session
 

@@ -33,9 +33,11 @@ from app.services.tiktok_client import (
 logger = logging.getLogger(__name__)
 
 
-# Keep aligned with sync_engine.SYNC_LOOKBACK_DAYS so dashboards show consistent
-# freshness across Meta / Google / TikTok.
-SYNC_LOOKBACK_DAYS = 10
+# TikTok rolling sync window: 14 days. Same rationale as Meta — 7-day click
+# + 1-day view attribution plus headroom for CRM/offline event uploads via
+# TikTok's offline conversion API. Tier-2 weekly sync-backfill catches the
+# long tail (events posted past 14 days).
+SYNC_LOOKBACK_DAYS = 14
 
 
 def _upsert_tiktok_metrics(
