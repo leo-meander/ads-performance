@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.branches import BRANCH_ACCOUNT_MAP, BRANCH_CURRENCY
 from app.models.account import AdAccount
-from app.models.budget import BudgetAllocation, BudgetMonthlySplit, BudgetPlan
+from app.models.budget import BudgetAllocation, BudgetMonthlySplit, BudgetPlan, BudgetYearlyPlan
 from app.models.campaign import Campaign
 from app.models.currency_rate import CurrencyRate
 from app.models.metrics import MetricsCache
@@ -463,3 +463,150 @@ def list_monthly_splits(db: Session, branch: str, year: int) -> list[dict]:
             "updated_at": r.updated_at.isoformat() if r.updated_at else None,
         })
     return out
+
+
+# ============================================================
+# Yearly plan (yearly total VND + per-month %) — cascades to splits
+# ============================================================
+
+
+def _normalize_month_pct(month_pct: dict) -> dict[int, float]:
+    """Coerce arbitrary input into {1..12: float_pct} with non-negative values.
+
+    Accepts both string and int month keys. Months not present default to 0.
+    """
+    out: dict[int, float] = {m: 0.0 for m in range(1, 13)}
+    for k, v in (month_pct or {}).items():
+        try:
+            m = int(k)
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if m < 1 or m > 12:
+            continue
+        if f < 0:
+            f = 0
+        out[m] = f
+    return out
+
+
+def get_yearly_plan(db: Session, branch: str, year: int) -> dict:
+    """Return the yearly plan for (branch, year), filling defaults if absent.
+
+    Always returns a 12-month payload so the UI can render a full grid even
+    on first edit.
+    """
+    plan = (
+        db.query(BudgetYearlyPlan)
+        .filter(BudgetYearlyPlan.branch == branch, BudgetYearlyPlan.year == year)
+        .first()
+    )
+    branch_currency = BRANCH_CURRENCY.get(branch, "VND")
+    rate = _get_rate_to_vnd(db, branch_currency)
+
+    if plan is None:
+        month_pct = {m: 0.0 for m in range(1, 13)}
+        yearly_total_vnd = 0.0
+    else:
+        month_pct = _normalize_month_pct(plan.month_pct or {})
+        yearly_total_vnd = float(plan.yearly_total_vnd or 0)
+
+    months = []
+    for m in range(1, 13):
+        pct = month_pct.get(m, 0.0)
+        budget_vnd = round(yearly_total_vnd * pct / 100, 2)
+        budget_native = round(float(Decimal(str(budget_vnd)) / rate), 2) if rate > 0 else 0
+        months.append({
+            "month": m,
+            "month_name": _MONTH_NAMES[m][:3],
+            "pct": pct,
+            "budget_vnd": budget_vnd,
+            "budget_native": budget_native,
+        })
+
+    pct_sum = round(sum(month_pct.values()), 2)
+
+    return {
+        "branch": branch,
+        "year": year,
+        "currency": branch_currency,
+        "yearly_total_vnd": yearly_total_vnd,
+        "yearly_total_native": round(
+            float(Decimal(str(yearly_total_vnd)) / rate) if rate > 0 else 0, 2
+        ),
+        "month_pct": {str(m): month_pct[m] for m in range(1, 13)},
+        "months": months,
+        "pct_sum": pct_sum,
+        "updated_at": plan.updated_at.isoformat() if plan and plan.updated_at else None,
+    }
+
+
+def upsert_yearly_plan(
+    db: Session,
+    branch: str,
+    year: int,
+    yearly_total_vnd: float,
+    month_pct: dict,
+    created_by: str | None = None,
+) -> BudgetYearlyPlan:
+    """Upsert (branch, year) yearly plan + cascade to BudgetMonthlySplit.
+
+    Cascade rule: for each of 12 months, recompute total_vnd =
+    yearly_total_vnd * pct/100 and upsert the matching BudgetMonthlySplit
+    row, preserving its existing channel_pct / overflow_note. If a month's
+    split already had channel_pct set, channel-level budget_plans for that
+    month are also rebuilt so per-channel amounts stay in sync.
+    """
+    pct = _normalize_month_pct(month_pct)
+    yearly_total_dec = Decimal(str(yearly_total_vnd or 0))
+
+    # Upsert yearly plan row
+    plan = (
+        db.query(BudgetYearlyPlan)
+        .filter(BudgetYearlyPlan.branch == branch, BudgetYearlyPlan.year == year)
+        .first()
+    )
+    pct_str_keys = {str(m): pct[m] for m in range(1, 13)}
+    if plan is None:
+        plan = BudgetYearlyPlan(
+            branch=branch,
+            year=year,
+            yearly_total_vnd=yearly_total_dec,
+            month_pct=pct_str_keys,
+            created_by=created_by,
+        )
+        db.add(plan)
+    else:
+        plan.yearly_total_vnd = yearly_total_dec
+        plan.month_pct = pct_str_keys
+        if created_by:
+            plan.created_by = created_by
+    db.flush()
+
+    # Cascade: for each month, recompute total_vnd and call upsert_monthly_split
+    # so the existing cascade-to-budget_plans logic stays the single source of
+    # truth. Preserve current channel_pct / overflow_note per month.
+    existing_splits = {
+        s.month: s
+        for s in db.query(BudgetMonthlySplit)
+        .filter(BudgetMonthlySplit.branch == branch, BudgetMonthlySplit.year == year)
+        .all()
+    }
+
+    for m in range(1, 13):
+        month_total_vnd = float((yearly_total_dec * Decimal(str(pct[m])) / Decimal("100")).quantize(Decimal("0.01")))
+        existing = existing_splits.get(m)
+        channel_pct = existing.channel_pct if existing else {}
+        overflow_note = existing.overflow_note if existing else None
+        upsert_monthly_split(
+            db,
+            branch=branch,
+            year=year,
+            month=m,
+            total_vnd=month_total_vnd,
+            channel_pct=channel_pct or {},
+            overflow_note=overflow_note,
+            created_by=created_by,
+        )
+
+    return plan

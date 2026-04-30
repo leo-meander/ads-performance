@@ -43,6 +43,30 @@ class BudgetAllocation(TimestampMixin, Base):
     created_by = Column(String(100), nullable=True)
 
 
+class BudgetYearlyPlan(TimestampMixin, Base):
+    """Per-(branch, year) yearly budget total + per-month % allocation.
+
+    The user enters one yearly total in VND and 12 month percentages; saving
+    cascades to BudgetMonthlySplit (monthly total_vnd = yearly * pct/100)
+    while preserving each month's existing channel_pct + overflow_note.
+
+    This is the upstream input — Channel Splits then divide each derived
+    monthly total across meta/google/tiktok.
+    """
+
+    __tablename__ = "budget_yearly_plans"
+    __table_args__ = (
+        UniqueConstraint("branch", "year", name="uq_byp_branch_year"),
+    )
+
+    branch = Column(String(100), nullable=False, index=True)
+    year = Column(Integer, nullable=False)
+    yearly_total_vnd = Column(Numeric(15, 2), nullable=False)
+    # {"1": 8.33, "2": 8.33, ...} — percentages per month (1-12)
+    month_pct = Column(JSONType, nullable=False, default=dict)
+    created_by = Column(String(100), nullable=True)
+
+
 class BudgetMonthlySplit(TimestampMixin, Base):
     """Per-(branch, year, month) total budget in VND with channel % split.
 

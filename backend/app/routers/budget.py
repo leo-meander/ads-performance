@@ -22,8 +22,10 @@ from app.services.budget_service import (
     get_budget_dashboard,
     get_channel_summary,
     get_plan_with_allocations,
+    get_yearly_plan,
     list_monthly_splits,
     upsert_monthly_split,
+    upsert_yearly_plan,
 )
 
 router = APIRouter()
@@ -68,6 +70,13 @@ class MonthlySplitUpsert(BaseModel):
 
 class PlanNotesPatch(BaseModel):
     notes: str | None = None
+
+
+class YearlyPlanUpsert(BaseModel):
+    branch: str
+    year: int
+    yearly_total_vnd: float
+    month_pct: dict[str, float]  # {"1": 8.33, "2": 8.33, ...}
 
 
 @router.get("/budget/dashboard")
@@ -554,6 +563,60 @@ def put_monthly_split(
             "channel_pct": split.channel_pct,
             "overflow_note": split.overflow_note,
         })
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.get("/budget/yearly-plan")
+def get_yearly_plan_route(
+    branch: str = Query(..., description="Branch key (e.g. Saigon, Osaka, 1948, Taipei, Oani, Bread)"),
+    year: int = Query(...),
+    current_user: User = Depends(require_section("budget")),
+    db: Session = Depends(get_db),
+):
+    """Return the yearly plan for (branch, year): yearly total VND + 12 month %.
+
+    Always returns a 12-month payload (zero-filled if no plan saved yet) so
+    the UI can render the editable grid without special-casing first edit.
+    """
+    try:
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget") or []
+            if branch not in allowed:
+                return _api_response(error=f"No view access to branch '{branch}'")
+        return _api_response(data=get_yearly_plan(db, branch, year))
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.put("/budget/yearly-plan")
+def put_yearly_plan_route(
+    body: YearlyPlanUpsert,
+    current_user: User = Depends(require_section("budget", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Upsert (branch, year) yearly plan. Cascades to all 12 monthly splits.
+
+    Each month's BudgetMonthlySplit.total_vnd is recomputed as
+    yearly_total_vnd * month_pct/100, while preserving its channel_pct and
+    overflow_note so Channel Splits configuration is not wiped.
+    """
+    try:
+        if not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "budget", min_level="edit") or []
+            if body.branch not in allowed:
+                return _api_response(error=f"No edit access to branch '{body.branch}'")
+        plan = upsert_yearly_plan(
+            db,
+            branch=body.branch,
+            year=body.year,
+            yearly_total_vnd=body.yearly_total_vnd,
+            month_pct=body.month_pct,
+            created_by=current_user.email,
+        )
+        db.commit()
+        return _api_response(data=get_yearly_plan(db, body.branch, body.year))
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))

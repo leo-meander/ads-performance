@@ -4,7 +4,7 @@ from app.models.ad_country_metric import AdCountryMetric
 from app.models.ad_set import AdSet
 from app.models.api_key import ApiKey
 from app.models.booking_match import BookingMatch
-from app.models.budget import BudgetAllocation, BudgetMonthlySplit, BudgetPlan
+from app.models.budget import BudgetAllocation, BudgetMonthlySplit, BudgetPlan, BudgetYearlyPlan
 from app.models.campaign import Campaign
 from app.models.currency_rate import CurrencyRate
 from app.models.metrics import MetricsCache
@@ -41,6 +41,7 @@ __all__ = [
     "BudgetAllocation",
     "BudgetMonthlySplit",
     "BudgetPlan",
+    "BudgetYearlyPlan",
     "Campaign",
     "CurrencyRate",
     "GoogleAssetGroup",
