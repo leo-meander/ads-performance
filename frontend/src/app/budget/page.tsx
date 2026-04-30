@@ -169,8 +169,8 @@ export default function BudgetDashboard() {
   const viewableBranches = branchesForSection('budget')
   const editableBranches = branchesForSection('budget', 'edit')
   const filterBranches = BRANCHES_ORDER.filter(b => viewableBranches.includes(b))
-  // Yearly is the entry point (input) — Splits divides each month — Monthly is status
-  const [tab, setTab] = useState<'yearly' | 'splits' | 'monthly'>('yearly')
+  // Flow: Yearly Plan (input) → Channel Splits (input) → Monthly (status) → Yearly (year-level status)
+  const [tab, setTab] = useState<'yearly_plan' | 'splits' | 'monthly' | 'yearly'>('yearly_plan')
   const [month, setMonth] = useState(() => {
     const d = new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
@@ -252,9 +252,8 @@ export default function BudgetDashboard() {
   }
 
   useEffect(() => { if (tab === 'monthly') loadMonthly() }, [month, tab])
-  useEffect(() => {
-    if (tab === 'yearly') { loadYearly(); loadYearlyPlan() }
-  }, [year, tab, yearlyEditBranch])
+  useEffect(() => { if (tab === 'yearly') loadYearly() }, [year, tab])
+  useEffect(() => { if (tab === 'yearly_plan') loadYearlyPlan() }, [year, tab, yearlyEditBranch])
   useEffect(() => { if (tab === 'splits') loadSplits() }, [splitBranch, year, tab])
 
   // Default sub-pickers to first viewable branch
@@ -432,7 +431,7 @@ export default function BudgetDashboard() {
             <input type="month" value={month} onChange={e => setMonth(e.target.value)}
               className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           )}
-          {(tab === 'yearly' || tab === 'splits') && (
+          {(tab === 'yearly_plan' || tab === 'yearly' || tab === 'splits') && (
             <select value={year} onChange={e => setYear(Number(e.target.value))}
               className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
               {[2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
@@ -441,20 +440,23 @@ export default function BudgetDashboard() {
         </div>
       </div>
 
-      {/* Tabs — Yearly first (input), then Channel Splits, then Monthly (status) */}
+      {/* Tabs — Yearly Plan (input) → Channel Splits (input) → Monthly (status) → Yearly (year status) */}
       <div className="flex gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit">
-        {(['yearly', 'splits', 'monthly'] as const).map(t => (
+        {(['yearly_plan', 'splits', 'monthly', 'yearly'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               tab === t ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}>
-            {t === 'yearly' ? 'Yearly' : t === 'splits' ? 'Channel Splits' : 'Monthly'}
+            {t === 'yearly_plan' ? 'Yearly Plan'
+              : t === 'splits' ? 'Channel Splits'
+              : t === 'monthly' ? 'Monthly'
+              : 'Yearly'}
           </button>
         ))}
       </div>
 
-      {/* ======================== YEARLY TAB ======================== */}
-      {tab === 'yearly' && (
+      {/* ======================== YEARLY PLAN TAB (input) ======================== */}
+      {tab === 'yearly_plan' && (
         <div className="space-y-6">
           {/* ---- Yearly editor ---- */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -577,8 +579,12 @@ export default function BudgetDashboard() {
               </>
             )}
           </div>
+        </div>
+      )}
 
-          {/* ---- Yearly summary (read-only, all branches) ---- */}
+      {/* ======================== YEARLY TAB (year-level summary) ======================== */}
+      {tab === 'yearly' && (
+        <div className="space-y-6">
           {yearlyLoading ? (
             <div className="flex items-center justify-center h-64"><div className="text-gray-500">Loading...</div></div>
           ) : (
