@@ -29,10 +29,18 @@ type SplitMonth = {
 }
 
 type YearlyPlan = {
-  branch: string; year: number; currency: string
+  branch: string; year: number; currency: string; rate_to_vnd: number
   yearly_total_vnd: number; yearly_total_native: number
+  yearly_spent_native: number; yearly_spent_vnd: number
+  yearly_remaining_vnd: number; yearly_spent_pct: number
   month_pct: Record<string, number>
-  months: { month: number; month_name: string; pct: number; budget_vnd: number; budget_native: number }[]
+  months: {
+    month: number; month_name: string; pct: number
+    budget_vnd: number; budget_native: number
+    spent_native: number; spent_vnd: number
+    remaining_vnd: number; remaining_native: number
+    spent_pct: number
+  }[]
   pct_sum: number
   updated_at?: string | null
 }

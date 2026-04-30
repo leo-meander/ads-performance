@@ -490,11 +490,40 @@ def _normalize_month_pct(month_pct: dict) -> dict[int, float]:
     return out
 
 
+def _get_branch_spend_by_month(db: Session, branch: str, year: int) -> dict[int, float]:
+    """Return {month: native_spend} for a branch in a given year.
+
+    Sums campaign-level spend (ad_set_id IS NULL) across every account that
+    belongs to the branch. Spend is in the platform's native currency, which
+    matches the branch currency for these hotels.
+    """
+    account_ids = _get_account_ids_for_branch(db, branch)
+    if not account_ids:
+        return {}
+    rows = (
+        db.query(
+            func.extract("month", MetricsCache.date).label("m"),
+            func.sum(MetricsCache.spend).label("spend"),
+        )
+        .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+        .filter(
+            Campaign.account_id.in_(account_ids),
+            func.extract("year", MetricsCache.date) == year,
+            MetricsCache.ad_set_id.is_(None),
+        )
+        .group_by(func.extract("month", MetricsCache.date))
+        .all()
+    )
+    return {int(r.m): float(r.spend or 0) for r in rows}
+
+
 def get_yearly_plan(db: Session, branch: str, year: int) -> dict:
     """Return the yearly plan for (branch, year), filling defaults if absent.
 
     Always returns a 12-month payload so the UI can render a full grid even
-    on first edit.
+    on first edit. Each month carries derived budget (VND + native) AND
+    actual spend (native + VND) so external systems can pull a single
+    snapshot of plan vs reality.
     """
     plan = (
         db.query(BudgetYearlyPlan)
@@ -511,29 +540,50 @@ def get_yearly_plan(db: Session, branch: str, year: int) -> dict:
         month_pct = _normalize_month_pct(plan.month_pct or {})
         yearly_total_vnd = float(plan.yearly_total_vnd or 0)
 
+    spend_by_month = _get_branch_spend_by_month(db, branch, year)
+
     months = []
+    yearly_spent_native = 0.0
     for m in range(1, 13):
         pct = month_pct.get(m, 0.0)
         budget_vnd = round(yearly_total_vnd * pct / 100, 2)
         budget_native = round(float(Decimal(str(budget_vnd)) / rate), 2) if rate > 0 else 0
+        spent_native = round(spend_by_month.get(m, 0.0), 2)
+        spent_vnd = round(float(Decimal(str(spent_native)) * rate), 2) if rate > 0 else 0
+        yearly_spent_native += spent_native
+        remaining_vnd = round(budget_vnd - spent_vnd, 2)
+        remaining_native = round(budget_native - spent_native, 2)
+        spent_pct = round((spent_vnd / budget_vnd * 100), 2) if budget_vnd > 0 else 0
         months.append({
             "month": m,
             "month_name": _MONTH_NAMES[m][:3],
             "pct": pct,
             "budget_vnd": budget_vnd,
             "budget_native": budget_native,
+            "spent_native": spent_native,
+            "spent_vnd": spent_vnd,
+            "remaining_vnd": remaining_vnd,
+            "remaining_native": remaining_native,
+            "spent_pct": spent_pct,
         })
 
     pct_sum = round(sum(month_pct.values()), 2)
+    yearly_spent_native = round(yearly_spent_native, 2)
+    yearly_spent_vnd = round(float(Decimal(str(yearly_spent_native)) * rate), 2) if rate > 0 else 0
 
     return {
         "branch": branch,
         "year": year,
         "currency": branch_currency,
+        "rate_to_vnd": float(rate),
         "yearly_total_vnd": yearly_total_vnd,
         "yearly_total_native": round(
             float(Decimal(str(yearly_total_vnd)) / rate) if rate > 0 else 0, 2
         ),
+        "yearly_spent_native": yearly_spent_native,
+        "yearly_spent_vnd": yearly_spent_vnd,
+        "yearly_remaining_vnd": round(yearly_total_vnd - yearly_spent_vnd, 2),
+        "yearly_spent_pct": round((yearly_spent_vnd / yearly_total_vnd * 100), 2) if yearly_total_vnd > 0 else 0,
         "month_pct": {str(m): month_pct[m] for m in range(1, 13)},
         "months": months,
         "pct_sum": pct_sum,
