@@ -15,12 +15,14 @@ name: Scheduled tasks
 
 on:
   schedule:
-    # Twice-daily sync — main dashboard refresh
+    # Twice-daily sync — main dashboard refresh.
+    # Syncs ALL active ad accounts across Meta + Google + TikTok in one pass
+    # (sync_all_platforms iterates ad_accounts.platform with no filter).
     # 03:00 UTC = 10:00 VN / 11:00 TW / 12:00 JP (morning)
     # 13:00 UTC = 20:00 VN / 21:00 TW / 22:00 JP (evening)
     - cron: "0 3 * * *"
     - cron: "0 13 * * *"
-    # Daily 23:00 UTC — re-enable paused ads + sync + rule eval
+    # Daily 23:00 UTC — re-enable paused ads + full sync (Meta + Google + TikTok) + rule eval
     - cron: "0 23 * * *"
     # Daily 00:00 UTC — PMS reservations + booking match
     - cron: "0 0 * * *"
