@@ -105,6 +105,8 @@ Accessed through campaign hierarchy.
 | GET | /api/export/keys | List API keys |
 | DELETE | /api/export/keys/{id} | Deactivate key |
 | GET | /api/export/budget/monthly | Export budget data |
+| GET | /api/export/budget/yearly-plan | Export yearly plan (mirror of /api/budget/yearly-plan) |
+| GET | /api/export/budget/monthly-splits | Export 12-month splits (mirror of /api/budget/monthly-splits) |
 | GET | /api/export/spend/daily | Export spend data |
 
 ## Query Parameters (common)

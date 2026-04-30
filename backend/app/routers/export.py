@@ -33,6 +33,7 @@ from app.models.keypoint import BranchKeypoint
 from app.models.metrics import MetricsCache
 from app.models.spy_saved_ad import SpySavedAd
 from app.models.user import User
+from app.services.budget_service import get_yearly_plan, list_monthly_splits
 from app.services.export_auth import create_api_key, validate_api_key
 
 router = APIRouter()
@@ -701,6 +702,44 @@ def export_budget_monthly(
                 for p in plans
             ],
         })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/budget/yearly-plan")
+def export_budget_yearly_plan(
+    branch: str = Query(..., description="Branch key (e.g. Saigon, Osaka, 1948, Taipei, Oani, Bread)"),
+    year: int = Query(..., description="4-digit year, e.g. 2026"),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export yearly budget plan for (branch, year): yearly total VND + 12 month %.
+
+    Mirrors GET /api/budget/yearly-plan for external/automation use. Returns
+    full 12-month payload (zero-filled if no plan saved yet) including budget
+    and actual spend per month in both native and VND.
+    """
+    try:
+        return _api_response(data=get_yearly_plan(db, branch, year))
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/budget/monthly-splits")
+def export_budget_monthly_splits(
+    branch: str = Query(..., description="Branch key (e.g. Saigon, Osaka, 1948, Taipei, Oani, Bread)"),
+    year: int = Query(..., description="4-digit year, e.g. 2026"),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export 12-month monthly splits for (branch, year).
+
+    Mirrors GET /api/budget/monthly-splits. Each month carries total_vnd,
+    total_native, channel_pct, overflow_note. Missing months returned as zeros.
+    """
+    try:
+        items = list_monthly_splits(db, branch, year)
+        return _api_response(data={"branch": branch, "year": year, "months": items})
     except Exception as e:
         return _api_response(error=str(e))
 
