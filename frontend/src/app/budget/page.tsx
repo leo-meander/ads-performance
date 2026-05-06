@@ -103,12 +103,11 @@ function BudgetCard({ label, spent, budget, currency, projected, daysRemaining, 
   )
 }
 
-function ChannelNoteEditor({
-  planId, initialNote, isOver, editable, overspend, currency, onSaved, channelLabel,
+function MonthlyBranchNoteEditor({
+  planIds, initialNote, isOver, editable, overspend, currency, onSaved,
 }: {
-  planId: string; initialNote: string | null; isOver: boolean; editable: boolean
+  planIds: string[]; initialNote: string | null; isOver: boolean; editable: boolean
   overspend: number; currency: string; onSaved: (note: string | null) => void
-  channelLabel?: string
 }) {
   const [note, setNote] = useState(initialNote || '')
   const [saving, setSaving] = useState(false)
@@ -119,15 +118,18 @@ function ChannelNoteEditor({
   const dirty = note !== (initialNote || '')
 
   const save = async () => {
+    if (planIds.length === 0) return
     setSaving(true)
     try {
-      const res = await fetch(`${API_BASE}/api/budget/plans/${planId}/notes`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ notes: note || null }),
-      }).then(r => r.json())
-      if (res.success) {
+      const results = await Promise.all(planIds.map(pid =>
+        fetch(`${API_BASE}/api/budget/plans/${pid}/notes`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ notes: note || null }),
+        }).then(r => r.json()).catch(() => ({ success: false }))
+      ))
+      if (results.every(r => r.success)) {
         setStatus('ok')
         onSaved(note || null)
       } else {
@@ -147,8 +149,8 @@ function ChannelNoteEditor({
       <div className="flex items-center justify-between text-xs">
         <span className={`font-medium ${isOver ? 'text-red-600' : 'text-gray-500'}`}>
           {isOver
-            ? `${channelLabel ? `${channelLabel}: ` : ''}Over ${fmt(overspend)} ${currency} — offset from?`
-            : `${channelLabel ? `${channelLabel} note` : 'Note'}`}
+            ? `Over ${fmt(overspend)} ${currency} — offset from?`
+            : 'Note'}
         </span>
         {dirty && editable && (
           <button onClick={save} disabled={saving}
@@ -946,30 +948,30 @@ export default function BudgetDashboard() {
               const cur = bi[0]?.currency || 'VND'
               const dRem = bi[0]?.days_remaining ?? 0
 
+              const totalOver = tBudget > 0 && tSpent > tBudget
+              const totalOverspend = Math.max(0, tSpent - tBudget)
+              const sortedItems = [...bi].sort((a, b) => a.channel.localeCompare(b.channel))
+              const branchPlanIds = sortedItems.map(i => i.plan_id)
+              const monthlyNote = sortedItems.find(i => i.notes)?.notes ?? null
+              const branchEditable = bi.some(i => editableBranches.includes(i.branch))
+
               return (
                 <div key={branch} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
                   <div className="px-6 py-4 border-b"><h2 className="text-sm font-semibold text-gray-900">{branch}</h2></div>
                   <div className="px-4 pt-4 pb-3 border-b border-gray-100">
                     <BudgetCard label="Total" spent={tSpent} budget={tBudget} currency={cur} projected={tProjected} daysRemaining={dRem} />
-                    {bi.map(item => {
-                      const isOver = item.pace_status === 'Over'
-                      const overspend = Math.max(0, item.spent - item.total_budget)
-                      return (
-                        <ChannelNoteEditor
-                          key={item.plan_id}
-                          planId={item.plan_id}
-                          channelLabel={item.channel.charAt(0).toUpperCase() + item.channel.slice(1)}
-                          initialNote={item.notes ?? null}
-                          isOver={isOver}
-                          overspend={overspend}
-                          currency={item.currency}
-                          editable={editableBranches.includes(item.branch)}
-                          onSaved={(note) => {
-                            setItems(prev => prev.map(i => i.plan_id === item.plan_id ? { ...i, notes: note } : i))
-                          }}
-                        />
-                      )
-                    })}
+                    <MonthlyBranchNoteEditor
+                      planIds={branchPlanIds}
+                      initialNote={monthlyNote}
+                      isOver={totalOver}
+                      overspend={totalOverspend}
+                      currency={cur}
+                      editable={branchEditable}
+                      onSaved={(note) => {
+                        const idSet = new Set(branchPlanIds)
+                        setItems(prev => prev.map(i => idSet.has(i.plan_id) ? { ...i, notes: note } : i))
+                      }}
+                    />
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 divide-x divide-y divide-gray-100">
                     {bi.map(item => (
