@@ -219,14 +219,14 @@ export default function ApprovalDetailPage() {
                 )}
               </div>
               <p className="text-xs text-gray-500 italic mb-2">
-                Angle là phương pháp tiếp cận của content này.
+                The angle is the strategic approach this content takes.
               </p>
               {approval.angle.angle_type && (
                 <p className="text-sm font-semibold text-gray-900">{approval.angle.angle_type}</p>
               )}
               {approval.angle.hook_examples && approval.angle.hook_examples.length > 0 && (
                 <p className="text-sm text-gray-700 mt-1">
-                  <span className="text-gray-500">Ví dụ:</span> {approval.angle.hook_examples[0]}
+                  <span className="text-gray-500">Example:</span> {approval.angle.hook_examples[0]}
                 </p>
               )}
               <div className="grid grid-cols-4 gap-3 mt-3">
@@ -251,7 +251,7 @@ export default function ApprovalDetailPage() {
             <div className="bg-white rounded-xl border border-gray-200 p-4">
               <h3 className="text-sm font-semibold text-gray-900 mb-1">Keypoints</h3>
               <p className="text-xs text-gray-500 italic mb-3">
-                Những điểm bán hàng cụ thể được dùng trong content này.
+                The specific selling points this content leans on.
               </p>
               <ul className="space-y-2">
                 {approval.keypoints.map(k => (
