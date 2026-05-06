@@ -49,8 +49,20 @@ interface ApprovalDetail {
     clicks: number | null; conversions: number | null; revenue: number | null
     roas: number | null; ctr: number | null; hook_rate: number | null
     thruplay_rate: number | null; engagement_rate: number | null
-    target_audience: string | null; keypoint_ids: string[] | null; angle_id: string | null
+    target_audience: string | null; country: string | null
+    keypoint_ids: string[] | null; angle_id: string | null
   } | null
+  branch: {
+    id: string; name: string; platform: string; currency: string
+  } | null
+  angle: {
+    angle_id: string; angle_type: string; angle_explain: string
+    hook_examples: string[]; status: string
+    branch_verdict: string; branch_benchmark: number
+    combos: number; spend: number; revenue: number
+    roas: number; conversions: number
+  } | null
+  keypoints: { id: string; title: string; category: string }[]
 }
 
 export default function ApprovalDetailPage() {
@@ -162,6 +174,15 @@ export default function ApprovalDetailPage() {
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div><span className="text-gray-500">Combo ID:</span> <span className="text-gray-900">{approval.combo_id_display}</span></div>
               <div><span className="text-gray-500">Round:</span> <span className="text-gray-900">{approval.round}</span></div>
+              {approval.branch && (
+                <div><span className="text-gray-500">Branch:</span> <span className="text-gray-900">{approval.branch.name}</span></div>
+              )}
+              {approval.performance?.country && (
+                <div><span className="text-gray-500">Country:</span> <span className="text-gray-900">{approval.performance.country}</span></div>
+              )}
+              {approval.performance?.target_audience && (
+                <div><span className="text-gray-500">Target Audience:</span> <span className="text-gray-900">{approval.performance.target_audience}</span></div>
+              )}
               <div><span className="text-gray-500">Submitted by:</span> <span className="text-gray-900">{approval.submitter_name}</span></div>
               <div><span className="text-gray-500">Submitted:</span> <span className="text-gray-900">{approval.submitted_at ? new Date(approval.submitted_at).toLocaleString() : '-'}</span></div>
               {approval.deadline && (
@@ -178,6 +199,65 @@ export default function ApprovalDetailPage() {
               {approval.launch_meta_ad_id && <div><span className="text-gray-500">Meta Ad ID:</span> <span className="text-gray-900">{approval.launch_meta_ad_id}</span></div>}
             </div>
           </div>
+
+          {/* Angle context */}
+          {approval.angle && (
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <h3 className="text-sm font-semibold text-gray-900">Angle</h3>
+                <span className="font-mono text-xs text-gray-400">{approval.angle.angle_id}</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                  approval.angle.branch_verdict === 'WIN' ? 'bg-green-100 text-green-700' :
+                  approval.angle.branch_verdict === 'LOSE' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                }`}>{approval.angle.branch_verdict}</span>
+                {approval.branch && (
+                  <span className="text-xs text-gray-400">on {approval.branch.name}</span>
+                )}
+              </div>
+              {approval.angle.angle_type && (
+                <p className="text-sm font-semibold text-gray-900">{approval.angle.angle_type}</p>
+              )}
+              {approval.angle.angle_explain && (
+                <p className="text-sm text-gray-600 mt-1 whitespace-pre-line">{approval.angle.angle_explain}</p>
+              )}
+              {approval.angle.hook_examples && approval.angle.hook_examples.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {approval.angle.hook_examples.map((h, i) => (
+                    <li key={i} className="text-sm text-gray-700">• {h}</li>
+                  ))}
+                </ul>
+              )}
+              <div className="grid grid-cols-4 gap-3 mt-3">
+                {[
+                  { label: 'ROAS (branch)', value: `${approval.angle.roas.toFixed(2)}x` },
+                  { label: 'Benchmark', value: approval.angle.branch_benchmark > 0 ? `${approval.angle.branch_benchmark.toFixed(2)}x` : '–' },
+                  { label: 'Spend', value: approval.angle.spend.toLocaleString() },
+                  { label: 'Conversions', value: approval.angle.conversions },
+                  { label: 'Combos', value: approval.angle.combos },
+                ].map(m => (
+                  <div key={m.label} className="bg-gray-50 rounded-lg p-2.5">
+                    <p className="text-[10px] text-gray-500 uppercase">{m.label}</p>
+                    <p className="text-sm font-bold text-gray-900">{m.value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Keypoints */}
+          {approval.keypoints && approval.keypoints.length > 0 && (
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <h3 className="text-sm font-semibold text-gray-900 mb-3">Keypoints</h3>
+              <ul className="flex flex-wrap gap-2">
+                {approval.keypoints.map(k => (
+                  <li key={k.id} className="bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1 text-xs">
+                    <span className="text-gray-500 mr-1">{k.category}:</span>
+                    <span className="text-gray-900 font-medium">{k.title}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {/* Ad Copy */}
           {approval.copy && (

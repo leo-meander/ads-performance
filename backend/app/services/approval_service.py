@@ -252,15 +252,22 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
             "feedback": r.feedback,
         })
 
-    # Fetch copy and material details for reviewer context
+    # Fetch copy, material, branch, angle, keypoints for reviewer context
     copy_data = None
     material_data = None
+    branch_data = None
+    angle_data = None
+    keypoint_list: list[dict] = []
     if combo:
+        from app.models.account import AdAccount
+        from app.models.ad_angle import AdAngle
         from app.models.ad_copy import AdCopy
         from app.models.ad_material import AdMaterial
+        from app.models.keypoint import BranchKeypoint
 
         copy = db.query(AdCopy).filter(AdCopy.copy_id == combo.copy_id).first() if combo.copy_id else None
         material = db.query(AdMaterial).filter(AdMaterial.material_id == combo.material_id).first() if combo.material_id else None
+        branch = db.query(AdAccount).filter(AdAccount.id == combo.branch_id).first() if combo.branch_id else None
 
         if copy:
             copy_data = {
@@ -281,6 +288,69 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
                 "target_audience": material.target_audience,
                 "derived_verdict": material.derived_verdict,
             }
+        if branch:
+            branch_data = {
+                "id": branch.id,
+                "name": branch.account_name,
+                "platform": branch.platform,
+                "currency": branch.currency,
+            }
+
+        # Resolve keypoint titles from the JSON list of UUIDs on the combo
+        if combo.keypoint_ids:
+            kps = (
+                db.query(BranchKeypoint)
+                .filter(BranchKeypoint.id.in_(combo.keypoint_ids))
+                .all()
+            )
+            keypoint_list = [
+                {"id": k.id, "title": k.title, "category": k.category}
+                for k in kps
+            ]
+
+        # Angle context — angles are global (branch_id=NULL), so we scope the
+        # aggregated ROAS to the current combo's branch to mirror what the
+        # /angles list page shows next to each angle row.
+        if combo.angle_id:
+            angle = db.query(AdAngle).filter(AdAngle.angle_id == combo.angle_id).first()
+            if angle:
+                branch_combos_for_angle = db.query(AdCombo).filter(
+                    AdCombo.angle_id == combo.angle_id,
+                    AdCombo.branch_id == combo.branch_id,
+                ).all()
+                ang_spend = sum(float(c.spend or 0) for c in branch_combos_for_angle)
+                ang_revenue = sum(float(c.revenue or 0) for c in branch_combos_for_angle)
+                ang_clicks = sum(int(c.clicks or 0) for c in branch_combos_for_angle)
+                ang_conversions = sum(int(c.conversions or 0) for c in branch_combos_for_angle)
+                ang_roas = ang_revenue / ang_spend if ang_spend > 0 else 0.0
+
+                # Branch benchmark = total branch revenue / total branch spend
+                branch_combos = db.query(AdCombo).filter(AdCombo.branch_id == combo.branch_id).all()
+                b_spend = sum(float(c.spend or 0) for c in branch_combos)
+                b_rev = sum(float(c.revenue or 0) for c in branch_combos)
+                branch_benchmark = b_rev / b_spend if b_spend > 0 else 0.0
+
+                if ang_clicks <= 9000 and ang_conversions < 10:
+                    branch_verdict = "TEST"
+                elif branch_benchmark > 0 and ang_roas >= branch_benchmark:
+                    branch_verdict = "WIN"
+                else:
+                    branch_verdict = "LOSE"
+
+                angle_data = {
+                    "angle_id": angle.angle_id,
+                    "angle_type": angle.angle_type or angle.hook or "",
+                    "angle_explain": angle.angle_explain or "",
+                    "hook_examples": angle.hook_examples or [],
+                    "status": angle.status,
+                    "branch_verdict": branch_verdict,
+                    "branch_benchmark": branch_benchmark,
+                    "combos": len(branch_combos_for_angle),
+                    "spend": ang_spend,
+                    "revenue": ang_revenue,
+                    "roas": ang_roas,
+                    "conversions": ang_conversions,
+                }
 
     # Combo performance data
     combo_performance = None
@@ -298,6 +368,7 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
             "thruplay_rate": float(combo.thruplay_rate) if combo.thruplay_rate else None,
             "engagement_rate": float(combo.engagement_rate) if combo.engagement_rate else None,
             "target_audience": combo.target_audience,
+            "country": combo.country,
             "keypoint_ids": combo.keypoint_ids,
             "angle_id": combo.angle_id,
         }
@@ -325,6 +396,9 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
         "copy": copy_data,
         "material": material_data,
         "performance": combo_performance,
+        "branch": branch_data,
+        "angle": angle_data,
+        "keypoints": keypoint_list,
     }
 
 
