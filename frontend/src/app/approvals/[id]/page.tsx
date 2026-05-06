@@ -62,7 +62,11 @@ interface ApprovalDetail {
     combos: number; spend: number; revenue: number
     roas: number; conversions: number
   } | null
-  keypoints: { id: string; title: string; category: string }[]
+  keypoints: {
+    id: string; title: string; category: string
+    combos: number; spend: number; roas: number
+    conversions: number; branch_verdict: string
+  }[]
 }
 
 export default function ApprovalDetailPage() {
@@ -203,7 +207,7 @@ export default function ApprovalDetailPage() {
           {/* Angle context */}
           {approval.angle && (
             <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <div className="flex items-center gap-2 mb-3">
+              <div className="flex items-center gap-2 mb-1">
                 <h3 className="text-sm font-semibold text-gray-900">Angle</h3>
                 <span className="font-mono text-xs text-gray-400">{approval.angle.angle_id}</span>
                 <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
@@ -214,18 +218,16 @@ export default function ApprovalDetailPage() {
                   <span className="text-xs text-gray-400">on {approval.branch.name}</span>
                 )}
               </div>
+              <p className="text-xs text-gray-500 italic mb-2">
+                Angle là phương pháp tiếp cận của content này.
+              </p>
               {approval.angle.angle_type && (
                 <p className="text-sm font-semibold text-gray-900">{approval.angle.angle_type}</p>
               )}
-              {approval.angle.angle_explain && (
-                <p className="text-sm text-gray-600 mt-1 whitespace-pre-line">{approval.angle.angle_explain}</p>
-              )}
               {approval.angle.hook_examples && approval.angle.hook_examples.length > 0 && (
-                <ul className="mt-2 space-y-1">
-                  {approval.angle.hook_examples.map((h, i) => (
-                    <li key={i} className="text-sm text-gray-700">• {h}</li>
-                  ))}
-                </ul>
+                <p className="text-sm text-gray-700 mt-1">
+                  <span className="text-gray-500">Ví dụ:</span> {approval.angle.hook_examples[0]}
+                </p>
               )}
               <div className="grid grid-cols-4 gap-3 mt-3">
                 {[
@@ -247,12 +249,37 @@ export default function ApprovalDetailPage() {
           {/* Keypoints */}
           {approval.keypoints && approval.keypoints.length > 0 && (
             <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <h3 className="text-sm font-semibold text-gray-900 mb-3">Keypoints</h3>
-              <ul className="flex flex-wrap gap-2">
+              <h3 className="text-sm font-semibold text-gray-900 mb-1">Keypoints</h3>
+              <p className="text-xs text-gray-500 italic mb-3">
+                Những điểm bán hàng cụ thể được dùng trong content này.
+              </p>
+              <ul className="space-y-2">
                 {approval.keypoints.map(k => (
-                  <li key={k.id} className="bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1 text-xs">
-                    <span className="text-gray-500 mr-1">{k.category}:</span>
-                    <span className="text-gray-900 font-medium">{k.title}</span>
+                  <li key={k.id} className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span className="text-[10px] uppercase text-gray-500">{k.category}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                          k.branch_verdict === 'WIN' ? 'bg-green-100 text-green-700' :
+                          k.branch_verdict === 'LOSE' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                        }`}>{k.branch_verdict}</span>
+                      </div>
+                      <p className="text-sm text-gray-900 font-medium truncate">{k.title}</p>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-gray-700 shrink-0">
+                      <div className="text-right">
+                        <p className="text-[10px] text-gray-500 uppercase">ROAS</p>
+                        <p className="text-sm font-bold">{k.roas.toFixed(2)}x</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] text-gray-500 uppercase">Conv</p>
+                        <p className="text-sm font-bold">{k.conversions}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] text-gray-500 uppercase">Combos</p>
+                        <p className="text-sm font-bold">{k.combos}</p>
+                      </div>
+                    </div>
                   </li>
                 ))}
               </ul>

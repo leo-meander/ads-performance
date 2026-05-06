@@ -296,17 +296,59 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
                 "currency": branch.currency,
             }
 
-        # Resolve keypoint titles from the JSON list of UUIDs on the combo
+        # Resolve keypoint titles + aggregate per-keypoint metrics (scoped to
+        # the same branch as the combo, since keypoints are branch-specific).
         if combo.keypoint_ids:
             kps = (
                 db.query(BranchKeypoint)
                 .filter(BranchKeypoint.id.in_(combo.keypoint_ids))
                 .all()
             )
-            keypoint_list = [
-                {"id": k.id, "title": k.title, "category": k.category}
-                for k in kps
-            ]
+
+            # Pull every combo on this branch that has any keypoint, then
+            # bucket spend/revenue/conversions/clicks per keypoint id.
+            branch_combos_with_kp = db.query(AdCombo).filter(
+                AdCombo.branch_id == combo.branch_id,
+                AdCombo.keypoint_ids.isnot(None),
+            ).all()
+            kp_metrics: dict[str, dict] = {}
+            for c in branch_combos_with_kp:
+                ids = c.keypoint_ids if isinstance(c.keypoint_ids, list) else []
+                for kid in ids:
+                    if kid not in kp_metrics:
+                        kp_metrics[kid] = {"combos": 0, "spend": 0.0, "revenue": 0.0, "clicks": 0, "conversions": 0}
+                    m = kp_metrics[kid]
+                    m["combos"] += 1
+                    m["spend"] += float(c.spend or 0)
+                    m["revenue"] += float(c.revenue or 0)
+                    m["clicks"] += int(c.clicks or 0)
+                    m["conversions"] += int(c.conversions or 0)
+
+            # Branch benchmark for keypoint verdicts (reuse if angle block already
+            # computed it; otherwise compute here so this block is independent).
+            kp_branch_combos = db.query(AdCombo).filter(AdCombo.branch_id == combo.branch_id).all()
+            kp_b_spend = sum(float(c.spend or 0) for c in kp_branch_combos)
+            kp_b_rev = sum(float(c.revenue or 0) for c in kp_branch_combos)
+            kp_branch_benchmark = kp_b_rev / kp_b_spend if kp_b_spend > 0 else 0.0
+
+            from app.services.creative_service import classify_verdict
+            for k in kps:
+                m = kp_metrics.get(k.id, {"combos": 0, "spend": 0.0, "revenue": 0.0, "clicks": 0, "conversions": 0})
+                kp_roas = m["revenue"] / m["spend"] if m["spend"] > 0 else 0.0
+                kp_verdict = (
+                    classify_verdict(m["clicks"], m["conversions"], kp_roas, kp_branch_benchmark)
+                    if m["combos"] > 0 else "TEST"
+                )
+                keypoint_list.append({
+                    "id": k.id,
+                    "title": k.title,
+                    "category": k.category,
+                    "combos": m["combos"],
+                    "spend": m["spend"],
+                    "roas": kp_roas,
+                    "conversions": m["conversions"],
+                    "branch_verdict": kp_verdict,
+                })
 
         # Angle context — angles are global (branch_id=NULL), so we scope the
         # aggregated ROAS to the current combo's branch to mirror what the
