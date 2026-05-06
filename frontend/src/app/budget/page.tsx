@@ -73,14 +73,15 @@ function BudgetCard({ label, spent, budget, currency, projected, daysRemaining, 
   label: string; spent: number; budget: number; currency: string
   projected?: number; daysRemaining?: number; paceStatus?: string
 }) {
-  const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0
+  const rawPct = budget > 0 ? (spent / budget) * 100 : 0
+  const widthPct = Math.min(100, rawPct)
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">{label}</span>
         {paceStatus
           ? <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${paceColor(paceStatus)}`}>{paceStatus}</span>
-          : pctBadge(pct)
+          : pctBadge(rawPct)
         }
       </div>
       <div>
@@ -89,8 +90,8 @@ function BudgetCard({ label, spent, budget, currency, projected, daysRemaining, 
           <span className="font-medium text-gray-700">{fmt(spent)} / {fmt(budget)} {currency}</span>
         </div>
         <div className="w-full bg-gray-200 rounded-full h-2">
-          <div className={`h-2 rounded-full ${paceStatus ? paceBgColor(paceStatus) : (pct > 110 ? 'bg-red-500' : pct < 80 ? 'bg-yellow-500' : 'bg-green-500')}`}
-            style={{ width: `${Math.min(pct, 100)}%` }} />
+          <div className={`h-2 rounded-full ${paceStatus ? paceBgColor(paceStatus) : (rawPct > 110 ? 'bg-red-500' : rawPct < 80 ? 'bg-yellow-500' : 'bg-green-500')}`}
+            style={{ width: `${widthPct}%` }} />
         </div>
       </div>
       {(projected !== undefined || daysRemaining !== undefined) && (
@@ -661,16 +662,23 @@ export default function BudgetDashboard() {
                                   )}
                                 </td>
                                 <td className="py-2 px-4 text-xs text-gray-600 max-w-sm">
-                                  {aggregated.length > 0 ? (
-                                    <div className="space-y-0.5">
-                                      {aggregated.map((n, idx) => (
-                                        <div key={idx} className="flex gap-1.5">
-                                          <span className="text-gray-400 capitalize w-24 shrink-0 truncate">{n.branch} · {n.channel}</span>
-                                          <span className="text-gray-700">{n.text}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : <span className="text-gray-300">—</span>}
+                                  {(() => {
+                                    const byBranch = new Map<string, string>()
+                                    for (const n of aggregated) {
+                                      if (n.text && !byBranch.has(n.branch)) byBranch.set(n.branch, n.text)
+                                    }
+                                    const entries = Array.from(byBranch.entries())
+                                    return entries.length > 0 ? (
+                                      <div className="space-y-0.5">
+                                        {entries.map(([branchName, text]) => (
+                                          <div key={branchName} className="flex gap-1.5">
+                                            <span className="text-gray-400 w-24 shrink-0 truncate">{branchName}</span>
+                                            <span className="text-gray-700">{text}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : <span className="text-gray-300">—</span>
+                                  })()}
                                 </td>
                               </tr>
                             )
@@ -757,16 +765,10 @@ export default function BudgetDashboard() {
                                   )}
                                 </td>
                                 <td className="py-2 px-4 text-xs text-gray-600 max-w-xs">
-                                  {monthNotes.length > 0 ? (
-                                    <div className="space-y-0.5">
-                                      {monthNotes.map((n, idx) => (
-                                        <div key={idx} className="flex gap-1.5">
-                                          <span className="text-gray-400 capitalize w-12 shrink-0">{n.channel}:</span>
-                                          <span className="text-gray-700">{n.text}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : <span className="text-gray-300">—</span>}
+                                  {(() => {
+                                    const text = monthNotes.find(n => n.text)?.text
+                                    return text ? <span className="text-gray-700">{text}</span> : <span className="text-gray-300">—</span>
+                                  })()}
                                 </td>
                               </tr>
                             )
