@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 import httpx
 
@@ -54,10 +55,14 @@ def render_review_request_email(
     submitter_name: str,
     working_file_url: str | None,
     approval_id: str,
+    branch_name: str | None = None,
+    deadline: datetime | None = None,
     platform_url: str = "",
 ) -> tuple[str, str]:
     """Render email for review request. Returns (subject, html_body)."""
-    subject = f"[Action Required] Review Combo: {combo_name}"
+    branch_part = f"{branch_name} — " if branch_name else ""
+    deadline_part = f" (by {deadline.strftime('%Y-%m-%d')})" if deadline else ""
+    subject = f"[Action Required] {branch_part}Review: {combo_name}{deadline_part}"
     review_url = f"{platform_url}/approvals/{approval_id}"
 
     working_file_section = ""
@@ -100,16 +105,18 @@ def render_approval_result_email(
     event: str,
     reviewer_name: str | None,
     approval_id: str,
+    branch_name: str | None = None,
     platform_url: str = "",
 ) -> tuple[str, str]:
     """Render email for approval result (approved/rejected/needs-revision). Returns (subject, html_body)."""
+    branch_part = f"{branch_name} — " if branch_name else ""
     if event == "APPROVED":
-        subject = f"[Approved] {combo_name} is ready to launch"
+        subject = f"[Approved] {branch_part}{combo_name} is ready to launch"
         status_color = "#059669"
         status_text = "fully approved"
         action_text = "You can now launch it."
     elif event == "NEEDS_REVISION":
-        subject = f"[Needs Revision] {combo_name}"
+        subject = f"[Needs Revision] {branch_part}{combo_name}"
         status_color = "#d97706"
         status_text = (
             f"sent back for revision by {reviewer_name}"
@@ -117,7 +124,7 @@ def render_approval_result_email(
         )
         action_text = "Revise the working file and submit a new round from the same approval."
     else:
-        subject = f"[Rejected] {combo_name}"
+        subject = f"[Rejected] {branch_part}{combo_name}"
         status_color = "#dc2626"
         status_text = f"rejected by {reviewer_name}" if reviewer_name else "rejected"
         action_text = "Check the working file for feedback."

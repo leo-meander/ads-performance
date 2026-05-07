@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.approval import ApprovalReviewer, ComboApproval
 from app.models.user import User
@@ -66,6 +67,9 @@ def submit_for_approval(
     submitter_name = submitter.full_name if submitter else "Unknown"
     combo_name = combo.ad_name or combo.combo_id
 
+    branch = db.query(AdAccount).filter(AdAccount.id == combo.branch_id).first() if combo.branch_id else None
+    branch_name = branch.account_name if branch else None
+
     # Create reviewer rows + notifications
     email_tasks = []
     for rid in reviewer_ids:
@@ -97,6 +101,8 @@ def submit_for_approval(
                 submitter_name=submitter_name,
                 working_file_url=working_file_url,
                 approval_id=approval.id,
+                branch_name=branch_name,
+                deadline=parsed_deadline,
             )
             email_tasks.append((reviewer.email, subject, html))
 
@@ -456,6 +462,11 @@ def _notify_creator_of_result(
     combo_name = combo.ad_name if combo else "Unknown"
     creator = db.query(User).filter(User.id == approval.submitted_by).first() if approval.submitted_by else None
 
+    branch_name = None
+    if combo and combo.branch_id:
+        branch = db.query(AdAccount).filter(AdAccount.id == combo.branch_id).first()
+        branch_name = branch.account_name if branch else None
+
     rejector_name = None
     if rejector_id:
         rejector = db.query(User).filter(User.id == rejector_id).first()
@@ -495,6 +506,7 @@ def _notify_creator_of_result(
                 event=event,
                 reviewer_name=rejector_name,
                 approval_id=approval.id,
+                branch_name=branch_name,
             )
             email_tasks.append((creator.email, subject, html))
 
