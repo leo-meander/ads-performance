@@ -11,6 +11,7 @@ from app.models.user import User
 from app.services.approval_service import (
     get_approval_detail,
     record_decision,
+    resend_review_request_emails,
     resubmit,
     submit_for_approval,
 )
@@ -204,6 +205,28 @@ def decide_approval(
         )
         detail = get_approval_detail(db, approval.id)
         return _api_response(data=detail)
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.post("/approvals/{approval_id}/resend-request")
+def resend_request(
+    approval_id: str,
+    current_user: User = Depends(require_role(["creator", "admin"])),
+    _section: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Resend the review-request email to all reviewers still PENDING."""
+    try:
+        result = resend_review_request_emails(
+            db=db,
+            approval_id=approval_id,
+            requester_id=current_user.id,
+        )
+        return _api_response(data=result)
     except ValueError as e:
         return _api_response(error=str(e))
     except Exception as e:

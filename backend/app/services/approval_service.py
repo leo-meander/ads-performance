@@ -450,6 +450,89 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
     }
 
 
+def resend_review_request_emails(
+    db: Session,
+    approval_id: str,
+    requester_id: str,
+) -> dict:
+    """Resend the review-request email to every reviewer still PENDING.
+
+    Only the original creator or an admin should call this; we enforce that
+    here so the router stays thin.
+    """
+    approval = db.query(ComboApproval).filter(ComboApproval.id == approval_id).first()
+    if not approval:
+        raise ValueError("Approval not found")
+
+    if approval.status != "PENDING_APPROVAL":
+        raise ValueError(f"Approval is {approval.status}; only PENDING_APPROVAL can be resent")
+
+    requester = db.query(User).filter(User.id == requester_id).first()
+    requester_roles = (requester.roles if requester else None) or []
+    if "admin" not in requester_roles and approval.submitted_by != requester_id:
+        raise ValueError("Only the creator or an admin can resend review requests")
+
+    combo = db.query(AdCombo).filter(AdCombo.id == approval.combo_id).first()
+    if not combo:
+        raise ValueError("Combo not found")
+
+    submitter = db.query(User).filter(User.id == approval.submitted_by).first() if approval.submitted_by else None
+    submitter_name = submitter.full_name if submitter else "Unknown"
+    combo_name = combo.ad_name or combo.combo_id
+
+    branch = db.query(AdAccount).filter(AdAccount.id == combo.branch_id).first() if combo.branch_id else None
+    branch_name = branch.account_name if branch else None
+
+    pending_reviewers = (
+        db.query(ApprovalReviewer)
+        .filter(
+            ApprovalReviewer.approval_id == approval_id,
+            ApprovalReviewer.status == "PENDING",
+        )
+        .all()
+    )
+
+    email_tasks = []
+    queued: list[dict] = []
+    skipped: list[dict] = []
+    now = datetime.now(timezone.utc)
+
+    for ar in pending_reviewers:
+        reviewer = db.query(User).filter(User.id == ar.reviewer_id).first()
+        if not reviewer:
+            skipped.append({"reviewer_id": ar.reviewer_id, "reason": "user not found"})
+            continue
+        if not reviewer.notification_email:
+            skipped.append({"reviewer_id": ar.reviewer_id, "reason": "notification_email opt-out"})
+            continue
+        if not reviewer.email:
+            skipped.append({"reviewer_id": ar.reviewer_id, "reason": "no email on user record"})
+            continue
+
+        subject, html = render_review_request_email(
+            combo_name=combo_name,
+            reviewer_name=reviewer.full_name,
+            submitter_name=submitter_name,
+            working_file_url=approval.working_file_url,
+            approval_id=approval.id,
+            branch_name=branch_name,
+            deadline=approval.deadline,
+        )
+        email_tasks.append((reviewer.email, subject, html))
+        ar.notified_email_at = now
+        queued.append({"reviewer_id": ar.reviewer_id, "email": reviewer.email})
+
+    db.commit()
+    _queue_emails(email_tasks)
+
+    return {
+        "approval_id": approval_id,
+        "queued_count": len(queued),
+        "queued": queued,
+        "skipped": skipped,
+    }
+
+
 def _notify_creator_of_result(
     db: Session,
     approval: ComboApproval,

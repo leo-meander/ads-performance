@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Plus } from 'lucide-react'
+import { Plus, Send } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
 import ApprovalStatusBadge from '@/components/ApprovalStatusBadge'
 
@@ -15,6 +15,7 @@ interface Approval {
   combo_id_display: string | null
   round: number
   status: string
+  submitted_by: string | null
   submitter_name: string | null
   submitted_at: string | null
   deadline: string | null
@@ -28,6 +29,30 @@ export default function ApprovalsPage() {
   const [approvals, setApprovals] = useState<Approval[]>([])
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('')
+  const [resending, setResending] = useState<string | null>(null)
+
+  const handleResend = async (approvalId: string) => {
+    if (resending) return
+    setResending(approvalId)
+    try {
+      const r = await fetch(`${API_BASE}/api/approvals/${approvalId}/resend-request`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      const data = await r.json()
+      if (data.success) {
+        const queued = data.data?.queued_count ?? 0
+        const skipped = data.data?.skipped?.length ?? 0
+        alert(`Resent to ${queued} reviewer${queued !== 1 ? 's' : ''}${skipped > 0 ? ` — ${skipped} skipped` : ''}.`)
+      } else {
+        alert(`Failed: ${data.error || 'unknown error'}`)
+      }
+    } catch (e) {
+      alert(`Failed: ${e instanceof Error ? e.message : 'network error'}`)
+    } finally {
+      setResending(null)
+    }
+  }
 
   useEffect(() => {
     setLoading(true)
@@ -105,6 +130,7 @@ export default function ApprovalsPage() {
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reviewers</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Deadline</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -131,6 +157,21 @@ export default function ApprovalsPage() {
                   </td>
                   <td className="px-4 py-3 text-xs text-gray-400">
                     {a.submitted_at ? new Date(a.submitted_at).toLocaleDateString() : '-'}
+                  </td>
+                  <td className="px-4 py-3 text-xs">
+                    {a.status === 'PENDING_APPROVAL' && (user?.id === a.submitted_by || user?.roles?.includes('admin')) ? (
+                      <button
+                        onClick={() => handleResend(a.id)}
+                        disabled={resending === a.id}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Resend review request email to pending reviewers"
+                      >
+                        <Send className="w-3 h-3" />
+                        {resending === a.id ? 'Sending…' : 'Resend'}
+                      </button>
+                    ) : (
+                      <span className="text-gray-300">-</span>
+                    )}
                   </td>
                 </tr>
               ))}
