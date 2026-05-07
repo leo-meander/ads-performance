@@ -39,16 +39,20 @@ export default function ApprovalsPage() {
         method: 'POST',
         credentials: 'include',
       })
-      const data = await r.json()
-      if (data.success) {
+      const raw = await r.text()
+      let data: { success?: boolean; error?: string; data?: { queued_count?: number; skipped?: unknown[] } } = {}
+      try { data = JSON.parse(raw) } catch { /* non-JSON response */ }
+
+      if (r.ok && data.success) {
         const queued = data.data?.queued_count ?? 0
         const skipped = data.data?.skipped?.length ?? 0
         alert(`Resent to ${queued} reviewer${queued !== 1 ? 's' : ''}${skipped > 0 ? ` — ${skipped} skipped` : ''}.`)
       } else {
-        alert(`Failed: ${data.error || 'unknown error'}`)
+        const reason = data.error || (data as { detail?: string }).detail || raw.slice(0, 200) || 'no body'
+        alert(`Failed (HTTP ${r.status}): ${reason}`)
       }
     } catch (e) {
-      alert(`Failed: ${e instanceof Error ? e.message : 'network error'}`)
+      alert(`Network error: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setResending(null)
     }
