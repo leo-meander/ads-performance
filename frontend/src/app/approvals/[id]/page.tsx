@@ -636,6 +636,7 @@ export default function ApprovalDetailPage() {
                           <option value="Group">Group</option>
                           <option value="Family">Family</option>
                           <option value="Business">Business</option>
+                          <option value="Re-target">Re-target</option>
                         </select>
                       </div>
                     </div>
