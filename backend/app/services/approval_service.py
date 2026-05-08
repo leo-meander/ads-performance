@@ -8,6 +8,7 @@ from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.approval import ApprovalReviewer, ComboApproval
 from app.models.user import User
+from app.services.canva_link_capture import capture_canva_link_from_approval
 from app.services.email_service import render_approval_result_email, render_review_request_email
 from app.services.notification_service import create_notification
 
@@ -182,6 +183,12 @@ def record_decision(
         if all_decided and all_approved:
             approval.status = "APPROVED"
             approval.resolved_at = now
+            # Snapshot Canva working file → ad_materials so winning ads can
+            # later be regenerated without losing the source link.
+            try:
+                capture_canva_link_from_approval(db, approval)
+            except Exception:
+                logger.exception("Canva link capture failed for approval %s", approval.id)
             _notify_creator_of_result(db, approval, "APPROVED", None, email_tasks)
 
     db.commit()

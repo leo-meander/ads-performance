@@ -31,6 +31,7 @@ from app.routers import (
     sync,
     transcriptions,
     users,
+    winning_ads,
 )
 
 app = FastAPI(
@@ -79,6 +80,7 @@ app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(landing_pages.router, prefix="/api", tags=["landing-pages"])
 app.include_router(public_landing.router, prefix="/api", tags=["public-landing"])
 app.include_router(changelog.router, prefix="/api", tags=["changelog"])
+app.include_router(winning_ads.router, prefix="/api", tags=["winning-ads"])
 
 
 @app.get("/health")

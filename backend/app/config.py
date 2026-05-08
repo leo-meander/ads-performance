@@ -66,6 +66,14 @@ class Settings(BaseSettings):
     FIGMA_ACCESS_TOKEN: str = ""
     FIGMA_TEAM_ID: str = ""
 
+    # Canva Connect API (winning-ads regenerate flow)
+    # When CANVA_API_TOKEN is empty the client runs in stub mode: it returns
+    # a deterministic mock URL so the regenerate flow is testable end-to-end
+    # without OAuth setup. Production needs a Canva Enterprise org with the
+    # Connect app installed; the token is the org-scoped OAuth access token.
+    CANVA_API_TOKEN: str = ""
+    CANVA_API_BASE_URL: str = "https://api.canva.com/rest/v1"
+
     # PMS (Reservation system)
     PMS_API_BASE_URL: str = "https://meander-hid-dashboard.zeabur.app"
     PMS_API_KEY: str = ""

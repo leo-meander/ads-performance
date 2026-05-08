@@ -28,6 +28,7 @@ from app.models.landing_page_approval import LandingPageApproval, LandingPageApp
 from app.models.landing_page_ad_link import LandingPageAdLink
 from app.models.landing_page_clarity import LandingPageClaritySnapshot
 from app.models.landing_page_ga4 import LandingPageGA4Snapshot
+from app.models.material_regeneration import MaterialRegeneration
 from app.models.user import User
 from app.models.user_permission import UserPermission
 
@@ -56,6 +57,7 @@ __all__ = [
     "LandingPageAdLink",
     "LandingPageClaritySnapshot",
     "LandingPageGA4Snapshot",
+    "MaterialRegeneration",
     "MetaRecommendation",
     "MetricsCache",
     "Reservation",
