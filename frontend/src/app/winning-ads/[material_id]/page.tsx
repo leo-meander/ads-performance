@@ -26,8 +26,10 @@ interface Regeneration {
   comment: string
   overrides: Record<string, string> | null
   status: string
+  canva_job_id: string | null
   output_canva_url: string | null
   output_design_id: string | null
+  output_material_id: string | null
   error: string | null
   requested_at: string | null
   completed_at: string | null
@@ -349,12 +351,22 @@ export default function WinningAdDetailPage() {
                     'bg-yellow-100 text-yellow-700'
                   }`}>{r.status}</span>
                 </div>
-                <div className="text-xs text-gray-500 flex gap-3">
+                <div className="text-xs text-gray-500 flex gap-3 flex-wrap">
                   {r.requested_at && <span>{new Date(r.requested_at).toLocaleString()}</span>}
                   {r.output_canva_url && (
                     <a href={r.output_canva_url} target="_blank" rel="noopener noreferrer" className="text-purple-700 hover:underline inline-flex items-center gap-0.5">
                       Open design <ExternalLink className="w-3 h-3" />
                     </a>
+                  )}
+                  {r.output_material_id && (
+                    <Link href={`/winning-ads/${r.output_material_id}`} className="text-blue-600 hover:underline">
+                      → New material {r.output_material_id}
+                    </Link>
+                  )}
+                  {r.status === 'PENDING' && r.canva_job_id && (
+                    <span className="text-yellow-700">
+                      Queued at Canva (job {r.canva_job_id.slice(0, 16)}…) — auto-polled every 2 min
+                    </span>
                   )}
                 </div>
                 {r.error && <p className="text-xs text-red-600 mt-1">{r.error}</p>}

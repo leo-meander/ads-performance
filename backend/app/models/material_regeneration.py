@@ -36,6 +36,7 @@ class MaterialRegeneration(TimestampMixin, Base):
         nullable=True,
     )
     error = Column(Text, nullable=True)
+    canva_job_id = Column(String(80), nullable=True, index=True)
     requested_by = Column(
         UUIDType,
         ForeignKey("users.id", ondelete="SET NULL"),

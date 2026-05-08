@@ -167,6 +167,21 @@ def _do_sync_material_urls(db):
     sync_material_urls(db)
 
 
+def _do_canva_poll(db):
+    """Walk PENDING/RUNNING material_regenerations with a job_id; finish ready ones.
+
+    Inline (not background) — Canva job polling is fast (one HTTP call per row,
+    capped at 50 rows). Logs counts for observability.
+    """
+    from app.services.regenerate_service import poll_pending_regenerations
+    counts = poll_pending_regenerations(db)
+    logger.info(
+        "[canva-poll] polled=%d completed=%d failed=%d still_pending=%d",
+        counts["polled"], counts["completed"], counts["failed"], counts["still_pending"],
+    )
+    return counts
+
+
 @router.post("/internal/tasks/sync-all-platforms", status_code=202)
 def trigger_sync_all_platforms(
     background_tasks: BackgroundTasks,
@@ -240,6 +255,22 @@ def trigger_sync_material_urls(
     _require_secret(x_internal_secret)
     _run_in_thread(_do_sync_material_urls, "sync-material-urls")
     return _api_response(data={"status": "started"})
+
+
+@router.post("/internal/tasks/canva-poll", status_code=200)
+def trigger_canva_poll(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Every ~2 min: advance PENDING/RUNNING material_regenerations whose Canva
+    job has completed. Returns counts inline (not threaded) — the work is
+    bounded (max 50 rows × 1 HTTP call each)."""
+    _require_secret(x_internal_secret)
+    db = SessionLocal()
+    try:
+        counts = _do_canva_poll(db)
+    finally:
+        db.close()
+    return _api_response(data={"status": "ok", **counts})
 
 
 # --------------------------------------------------- recommendation engines --
