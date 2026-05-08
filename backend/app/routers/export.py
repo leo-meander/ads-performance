@@ -827,6 +827,109 @@ def export_spend_daily(
         return _api_response(error=str(e))
 
 
+@router.get("/export/spend/daily-by-country")
+def export_spend_daily_by_country(
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    platform: str = Query(None, description="meta | google | tiktok"),
+    branch: str = Query(
+        None,
+        description="Filter by canonical branch (case-insensitive): saigon|taipei|1948|oani|osaka|bread",
+    ),
+    country: str = Query(None, description="ISO-2 country code (e.g. TW, JP, VN)"),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Export daily spend breakdown by country.
+
+    Each row = (date × platform × account × country). Mirrors /export/spend/daily
+    but adds country dimension. Source: ad_country_metrics (Meta uses
+    breakdowns=country; Google parses country from campaign-name suffix).
+
+    `revenue` and `conversions` are website + offline summed. `currency` is the
+    account's native currency — consumer applies FX (e.g. → VND) downstream.
+    """
+    try:
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+        if df > dt:
+            return _api_response(error="date_from must be <= date_to")
+
+        q = db.query(
+            AdCountryMetric.date.label("date"),
+            AdCountryMetric.platform.label("platform"),
+            Campaign.account_id.label("account_id"),
+            AdCountryMetric.country.label("country"),
+            func.sum(AdCountryMetric.spend).label("spend"),
+            func.sum(AdCountryMetric.impressions).label("impressions"),
+            func.sum(AdCountryMetric.clicks).label("clicks"),
+            func.sum(
+                AdCountryMetric.conversions_website
+                + AdCountryMetric.conversions_offline
+            ).label("conversions"),
+            func.sum(
+                AdCountryMetric.revenue_website + AdCountryMetric.revenue_offline
+            ).label("revenue"),
+        ).join(Campaign, Campaign.id == AdCountryMetric.campaign_id).filter(
+            AdCountryMetric.date >= df,
+            AdCountryMetric.date <= dt,
+        )
+
+        if platform:
+            q = q.filter(AdCountryMetric.platform == platform)
+
+        if country:
+            q = q.filter(AdCountryMetric.country == country.upper())
+
+        if branch:
+            canonical = canonical_branch(branch)
+            if canonical is None:
+                return _api_response(error=f"Unknown branch: {branch}")
+            account_ids = get_account_ids_for_branches(db, [canonical])
+            if not account_ids:
+                return _api_response(data=[])
+            q = q.filter(Campaign.account_id.in_(account_ids))
+
+        rows = (
+            q.group_by(
+                AdCountryMetric.date,
+                AdCountryMetric.platform,
+                Campaign.account_id,
+                AdCountryMetric.country,
+            )
+            .order_by(AdCountryMetric.date)
+            .all()
+        )
+
+        account_id_set = {r.account_id for r in rows if r.account_id}
+        accounts_by_id: dict[str, AdAccount] = {}
+        if account_id_set:
+            for a in db.query(AdAccount).filter(AdAccount.id.in_(account_id_set)).all():
+                accounts_by_id[a.id] = a
+
+        out = []
+        for row in rows:
+            acc = accounts_by_id.get(row.account_id)
+            account_name = acc.account_name if acc else None
+            out.append({
+                "date": row.date.isoformat(),
+                "platform": row.platform,
+                "account_id": str(row.account_id) if row.account_id else None,
+                "account_name": account_name,
+                "currency": acc.currency if acc else None,
+                "branch": resolve_branch_for_account_name(account_name),
+                "country": row.country,
+                "spend": float(row.spend or 0),
+                "impressions": int(row.impressions or 0),
+                "clicks": int(row.clicks or 0),
+                "conversions": int(row.conversions or 0),
+                "revenue": float(row.revenue or 0),
+            })
+        return _api_response(data=out)
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 def _resolve_booking_date_range(date_from: str | None, date_to: str | None) -> tuple[date, date]:
     if date_to:
         dt = date.fromisoformat(date_to)
