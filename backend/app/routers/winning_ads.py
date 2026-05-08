@@ -42,6 +42,7 @@ def list_winning_ads_endpoint(
     branch_id: str | None = None,
     target_audience: str | None = None,
     country: str | None = None,
+    verdict: str | None = None,
     sort_by: str = Query("roas"),
     sort_dir: str = Query("desc"),
     limit: int = Query(100, le=200),
@@ -62,6 +63,7 @@ def list_winning_ads_endpoint(
             branch_id=branch_id,
             target_audience=target_audience,
             country=country,
+            verdict=verdict,
             sort_by=sort_by,
             sort_dir=sort_dir,
             limit=limit,
@@ -69,6 +71,24 @@ def list_winning_ads_endpoint(
         )
         return _api_response(data=result)
     except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.post("/winning-ads/backfill-canva")
+def backfill_canva_endpoint(
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """One-shot: scan all combo_approvals for canva.* URLs and snapshot them
+    onto materials. Idempotent — skips materials that already have a canva_url.
+    Use this once after enabling the feature to backfill historical approvals.
+    """
+    try:
+        from app.services.canva_link_capture import backfill_from_existing_approvals
+        counts = backfill_from_existing_approvals(db)
+        return _api_response(data=counts)
+    except Exception as e:
+        db.rollback()
         return _api_response(error=str(e))
 
 

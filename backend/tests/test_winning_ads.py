@@ -174,6 +174,41 @@ def test_extract_canva_design_id_variants():
     assert extract_canva_design_id("https://drive.google.com/file/abc") is None
     assert extract_canva_design_id("") is None
     assert extract_canva_design_id(None) is None
+    # Short canva.link URLs have no embedded design id
+    assert extract_canva_design_id("https://canva.link/jk2ejuxzayy8tjc") is None
+
+
+def test_is_canva_url_recognizes_short_links():
+    from app.services.canva_link_capture import is_canva_url
+    assert is_canva_url("https://canva.link/jk2ejuxzayy8tjc")
+    assert is_canva_url("https://www.canva.com/design/DAF/edit")
+    assert is_canva_url("https://canva.com/abc")
+    assert not is_canva_url("https://drive.google.com/x")
+    assert not is_canva_url("")
+    assert not is_canva_url(None)
+
+
+def test_capture_handles_canva_link_short_url():
+    """canva.link/{slug} should populate canva_url but leave canva_design_id NULL."""
+    _, material, combo = _seed_winning_ad(with_canva=False)
+    db = TestSession()
+    approval = ComboApproval(
+        combo_id=combo.id,
+        round=1,
+        status="PENDING_APPROVAL",
+        submitted_by=None,
+        submitted_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        working_file_url="https://canva.link/abc123xyz",
+    )
+    db.add(approval)
+    db.commit()
+
+    updated = capture_canva_link_from_approval(db, approval)
+    assert updated is not None
+    assert updated.canva_url == "https://canva.link/abc123xyz"
+    assert updated.canva_design_id is None  # short link has no embedded id
+    db.commit()
+    db.close()
 
 
 def test_capture_skips_when_material_already_has_canva():

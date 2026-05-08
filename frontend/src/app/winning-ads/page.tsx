@@ -13,6 +13,7 @@ interface WinningAd {
   branch_name: string | null
   target_audience: string | null
   country: string | null
+  verdict: string
   spend: number | null
   roas: number | null
   conversions: number | null
@@ -32,6 +33,12 @@ interface WinningAd {
 interface Account { id: string; account_name: string; platform: string }
 
 const TA_LIST = ['Solo', 'Couple', 'Friend', 'Group', 'Business']
+const VERDICT_LIST = ['WIN', 'TEST', 'LOSE']
+const VERDICT_COLORS: Record<string, string> = {
+  WIN: 'bg-green-100 text-green-700',
+  TEST: 'bg-yellow-100 text-yellow-700',
+  LOSE: 'bg-red-100 text-red-700',
+}
 
 export default function WinningAdsPage() {
   const [items, setItems] = useState<WinningAd[]>([])
@@ -41,7 +48,10 @@ export default function WinningAdsPage() {
   const [fBranch, setFBranch] = useState('')
   const [fTA, setFTA] = useState('')
   const [fCountry, setFCountry] = useState('')
+  const [fVerdict, setFVerdict] = useState('')
   const [sortBy, setSortBy] = useState('roas')
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillMsg, setBackfillMsg] = useState('')
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
@@ -51,12 +61,13 @@ export default function WinningAdsPage() {
       })
   }, [])
 
-  useEffect(() => {
+  const load = () => {
     setLoading(true)
     const params = new URLSearchParams({ sort_by: sortBy, sort_dir: 'desc', limit: '100' })
     if (fBranch) params.set('branch_id', fBranch)
     if (fTA) params.set('target_audience', fTA)
     if (fCountry) params.set('country', fCountry)
+    if (fVerdict) params.set('verdict', fVerdict)
 
     fetch(`${API_BASE}/api/winning-ads?${params}`, { credentials: 'include' })
       .then(r => r.json())
@@ -67,21 +78,60 @@ export default function WinningAdsPage() {
         }
       })
       .finally(() => setLoading(false))
-  }, [fBranch, fTA, fCountry, sortBy])
+  }
+
+  useEffect(() => { load() }, [fBranch, fTA, fCountry, fVerdict, sortBy])
+
+  const runBackfill = async () => {
+    setBackfilling(true)
+    setBackfillMsg('')
+    try {
+      const r = await fetch(`${API_BASE}/api/winning-ads/backfill-canva`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      const d = await r.json()
+      if (d.success) {
+        const c = d.data
+        setBackfillMsg(`Scanned ${c.scanned} approvals — captured ${c.captured} new Canva links.`)
+        load()
+      } else {
+        setBackfillMsg(`Error: ${d.error}`)
+      }
+    } finally {
+      setBackfilling(false)
+    }
+  }
 
   return (
     <div className="p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Winning Ads</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Approved combos classified as WIN with a Canva working file captured. Click any row to clone or regenerate.
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Winning Ads</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Combos with a Canva working file captured (any verdict). Filter by verdict to find what to clone.
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <button
+            onClick={runBackfill}
+            disabled={backfilling}
+            className="px-3 py-1.5 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+          >
+            {backfilling ? 'Scanning…' : 'Backfill from approvals'}
+          </button>
+          {backfillMsg && <p className="text-xs text-gray-600">{backfillMsg}</p>}
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-3 mb-4 bg-white p-4 rounded-lg border border-gray-200">
         <select className="border border-gray-300 rounded px-3 py-2 text-sm" value={fBranch} onChange={e => setFBranch(e.target.value)}>
           <option value="">All branches</option>
           {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
+        </select>
+        <select className="border border-gray-300 rounded px-3 py-2 text-sm" value={fVerdict} onChange={e => setFVerdict(e.target.value)}>
+          <option value="">All verdicts</option>
+          {VERDICT_LIST.map(v => <option key={v} value={v}>{v}</option>)}
         </select>
         <select className="border border-gray-300 rounded px-3 py-2 text-sm" value={fTA} onChange={e => setFTA(e.target.value)}>
           <option value="">All TAs</option>
@@ -101,7 +151,7 @@ export default function WinningAdsPage() {
           <option value="captured_at">Sort: Captured at</option>
         </select>
         <div className="ml-auto text-xs text-gray-500 self-center">
-          {loading ? 'Loading…' : `${total} winning ad${total === 1 ? '' : 's'}`}
+          {loading ? 'Loading…' : `${total} ad${total === 1 ? '' : 's'} with Canva`}
         </div>
       </div>
 
@@ -110,6 +160,7 @@ export default function WinningAdsPage() {
           <thead className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wide">
             <tr>
               <th className="text-left px-4 py-3">Ad</th>
+              <th className="text-left px-4 py-3">Verdict</th>
               <th className="text-left px-4 py-3">Branch</th>
               <th className="text-left px-4 py-3">TA</th>
               <th className="text-left px-4 py-3">Country</th>
@@ -127,6 +178,11 @@ export default function WinningAdsPage() {
                     {ad.ad_name || ad.combo_id}
                   </Link>
                   <div className="text-xs text-gray-500 mt-0.5 line-clamp-1">{ad.headline}</div>
+                </td>
+                <td className="px-4 py-3">
+                  <span className={`text-xs px-2 py-0.5 rounded font-medium ${VERDICT_COLORS[ad.verdict] || 'bg-gray-100 text-gray-700'}`}>
+                    {ad.verdict}
+                  </span>
                 </td>
                 <td className="px-4 py-3 text-gray-700">{ad.branch_name || '—'}</td>
                 <td className="px-4 py-3 text-gray-700">{ad.target_audience || '—'}</td>
@@ -152,8 +208,9 @@ export default function WinningAdsPage() {
             ))}
             {!loading && items.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-gray-500">
-                  No winning ads with a Canva link yet. Approve a combo with a Canva working file to populate this list.
+                <td colSpan={9} className="px-4 py-12 text-center text-gray-500">
+                  No combos with a Canva link yet. Click "Backfill from approvals" to scan existing approvals,
+                  or submit a new combo for approval with a Canva working file URL.
                 </td>
               </tr>
             )}

@@ -109,6 +109,14 @@ def submit_for_approval(
             )
             email_tasks.append((reviewer.email, subject, html))
 
+    # Snapshot Canva working file → ad_materials at submit time so winning-ads
+    # surfaces it immediately (no need to wait for APPROVED). Idempotent —
+    # re-submits don't overwrite an already-captured URL.
+    try:
+        capture_canva_link_from_approval(db, approval)
+    except Exception:
+        logger.exception("Canva link capture failed at submit for approval %s", approval.id)
+
     db.commit()
 
     # Send emails async via Celery (after commit so data is persisted)

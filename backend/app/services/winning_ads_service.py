@@ -1,14 +1,12 @@
 """Winning ads service.
 
-Surfaces the combos worth cloning: verdict=WIN combos that have a Canva
-working file captured on their material. Joined output includes copy +
-material + combo metrics so the frontend can render with one fetch.
+Surfaces every combo whose material has a Canva working file captured —
+regardless of verdict. The user filters/sorts in the UI (verdict column +
+ROAS sort) to pick which winner to clone.
 
 Filtering rules (server-side):
-  - combo.verdict = 'WIN' (creative_service.classify_verdict already gates
-    this on clicks > 4500 OR conversions >= 5, so volume noise is excluded)
   - material.canva_url IS NOT NULL (no point listing combos we can't reuse)
-  - optional branch_id, target_audience, country filters
+  - optional verdict, branch_id, target_audience, country filters
   - sorted by ROAS desc by default
 
 Permissions: callers pass `scoped_account_ids` from the auth layer; this
@@ -33,12 +31,13 @@ def list_winning_ads(
     branch_id: Optional[str] = None,
     target_audience: Optional[str] = None,
     country: Optional[str] = None,
+    verdict: Optional[str] = None,
     sort_by: str = "roas",
     sort_dir: str = "desc",
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Return WIN combos joined with their material's Canva link.
+    """Return combos joined with their material's Canva link, regardless of verdict.
 
     `scoped_account_ids=None` means caller has global scope (admin); empty
     list means no access — return zero rows.
@@ -51,7 +50,6 @@ def list_winning_ads(
         .join(AdMaterial, AdMaterial.material_id == AdCombo.material_id)
         .join(AdCopy, AdCopy.copy_id == AdCombo.copy_id)
         .outerjoin(AdAccount, AdAccount.id == AdCombo.branch_id)
-        .filter(AdCombo.verdict == "WIN")
         .filter(AdMaterial.canva_url.isnot(None))
     )
 
@@ -63,6 +61,8 @@ def list_winning_ads(
         q = q.filter(AdCombo.target_audience == target_audience)
     if country:
         q = q.filter(AdCombo.country == country.upper())
+    if verdict:
+        q = q.filter(AdCombo.verdict == verdict.upper())
 
     total = q.count()
 
