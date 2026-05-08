@@ -1,130 +1,140 @@
-"""AI client: Claude API integration with hotel marketing context."""
+"""AI client: Claude tool-use chat for hotel marketing recommendations.
 
+The chat loop is multi-turn: Claude either streams a final answer or asks to
+call one of the tools defined in `ai_tools.TOOLS`. Tool results are fed back
+in a follow-up turn until the model emits a normal response.
+
+The system prompt teaches Claude the 6-step recommendation framework so any
+"chạy ads vào country X cho audience Y" question gets answered against live
+HID + ads-platform data instead of guesses.
+"""
+
+from __future__ import annotations
+
+import json
 import logging
 from collections.abc import Generator
-from datetime import date, timedelta
 
 from anthropic import Anthropic
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models.account import AdAccount
-from app.models.ad_angle import AdAngle
-from app.models.campaign import Campaign
-from app.models.keypoint import BranchKeypoint
-from app.models.metrics import MetricsCache
+from app.services.ai_tools import TOOLS, execute_tool
 
 logger = logging.getLogger(__name__)
 
-FX_TO_VND = {"VND": 1, "TWD": 800, "JPY": 170, "USD": 25500}
+MODEL = "claude-sonnet-4-20250514"
+MAX_TOKENS = 4096
+MAX_TOOL_TURNS = 8  # safety cap; framework needs ~3-5 tool calls in practice
 
-SYSTEM_PROMPT = """You are an expert hotel marketing analyst for MEANDER Group — a hospitality company with 5 hotel branches across Asia:
 
-- **MEANDER Saigon** (Ho Chi Minh City, Vietnam — VND)
-- **Oani** (Taipei, Taiwan — TWD, premium boutique hotel)
-- **MEANDER Taipei** (Taipei, Taiwan — TWD)
-- **MEANDER 1948** (Taipei, Taiwan — TWD)
-- **MEANDER Osaka** (Osaka, Japan — JPY)
+SYSTEM_PROMPT = """You are an expert hotel marketing analyst for MEANDER Group — 5 hotel/hostel branches across Asia + 1 restaurant:
 
-You deeply understand:
-- **Target Audiences (TA):** Solo travelers, Couples, Families, Groups — each has different booking behavior and ad performance
-- **Ad Angles:** Marketing angles classified as WIN (ROAS above benchmark), TEST (insufficient data or borderline), LOSE (ROAS below 0.6x benchmark)
-- **Branch Keypoints:** Unique selling points per property (location, amenities, experiences, value propositions)
-- **Booking Funnel:** Impression → Click → Search → Add to Cart → Checkout → Booking
-- **Key Metrics:** ROAS, CPC, CTR, Cost per Booking, ADR (Average Daily Rate), OCC (Occupancy Rate)
-- **Creative Library:** Ad copies (CPY), materials (MAT), combos (CMB) with WIN/TEST/LOSE verdicts
+- **Meander Saigon** (Ho Chi Minh City, Vietnam — VND)
+- **Meander Taipei** (Taipei, Taiwan — TWD)
+- **Meander 1948** (Taipei, Taiwan — TWD)
+- **Oani** (Taipei premium boutique — TWD)
+- **Meander Osaka** (Osaka, Japan — JPY)
+- **Bread** (Saigon restaurant — VND)
 
-When analyzing data:
-- Always consider currency differences (VND vs TWD vs JPY) — cross-branch comparisons should use VND equivalent
-- Be specific with numbers and percentages
-- Provide actionable recommendations, not just observations
-- When suggesting ad angles or creative strategies, reference the branch's keypoints and winning angles
-- Use Vietnamese or English based on the user's language
+You can call tools to pull live booking, occupancy, holiday, and ads data. Always prefer calling tools over guessing. When the user asks anything that depends on numbers — ROAS, OCC, lead time, country trend, holiday timing — call a tool first.
 
-Below is the current data context:
+# 6-STEP RECOMMENDATION FRAMEWORK
+
+When the user asks for an ad strategy, content brief, or budget recommendation for a country × branch, follow this framework end to end:
+
+1. **Lead Time** — call `get_target_period(branch, country)` to get the target stay window: today + lead_time ± 7 days.
+2. **Occupancy** — call `get_branch_metrics(branch, date_from, date_to)` for the target window. Also call `get_kpi_achievement(date_from, date_to, branch)` to see if the branch is on/ahead/behind plan.
+   - **High OCC (≥85%)** → reduce or stabilize budget; avoid over-selling.
+   - **Low OCC (<60%)** → increase budget and prioritize this market.
+3. **Demand drivers** — call `get_demand_drivers(branch, country, date_from, date_to)` to find holidays in the source country and local events at the branch city overlapping the target window.
+4. **Current setup** — call `get_campaign_setup(branch, country, ta?, funnel?)` for active campaigns, angles (WIN/TEST/LOSE), keypoints, and winning combos. Use `get_country_intel(branch)` for the cross-cut view (KOL coverage, ads coverage, gov forecast).
+5. **Performance** — call `get_ad_performance(branch, date_from, date_to, country, ta?, funnel?)` for spend / ROAS / CTR / CPA. Also `get_ota_mix` if the user asks about channel strategy.
+6. **Recommend** — synthesize the above into:
+   - **Messaging** — refine angle / hook / keypoints (cite WIN angles + winning combos by combo_id).
+   - **Creative** — propose new visuals/formats aligned with demand drivers + audience.
+   - **Budget** — concrete reallocation (% up/down, target country/audience to scale, what to cut). Tie every recommendation to a number you pulled.
+
+# OUTPUT STYLE
+
+- Use Vietnamese if the user wrote in Vietnamese; English otherwise.
+- Be concrete with numbers — every claim must trace to a tool call.
+- For brief-style requests (e.g. "brief để design làm ad cho ..."), structure the answer as:
+  - **Target audience & period**: TA + country + target stay window
+  - **Demand context**: OCC + holidays/events
+  - **Recommended angles**: 2-3 angles with hook examples (cite WIN angles + similar winning combos)
+  - **Visual direction**: location/mood/props derived from keypoints
+  - **Headlines / hooks**: 3-5 options
+  - **CTA + format**: per platform (Meta 1080x1080, TikTok 1080x1920, PMax multi-size)
+  - **Budget**: increase/hold/decrease with specific target and reason
+  - **Why** (one bullet per recommendation tying back to the data)
+
+- Don't dump raw tool output. Synthesize.
+- If a tool returns an error or empty data, say so plainly and propose what to do (e.g. "no lead-time data for KR — too few past bookings; recommend treating as new market").
+- If the user asks a quick question that doesn't need the full framework, just call the relevant tool(s) and answer directly.
 """
 
 
-def build_context(db: Session) -> str:
-    """Build real-time data context for Claude from the database."""
-    parts = []
-    d7 = date.today() - timedelta(days=7)
+def chat_stream(
+    db: Session,
+    history_messages: list[dict],
+) -> Generator[str, None, None]:
+    """Run a tool-use chat turn end to end. Yields text chunks for the SSE
+    stream (router wraps each in `data: ...\\n\\n`).
 
-    # 1. Branch summary with KPIs
-    accounts = db.query(AdAccount).filter(AdAccount.is_active.is_(True)).all()
-    parts.append("## Branch Performance (Last 7 Days)")
-    for acc in accounts:
-        fx = FX_TO_VND.get(acc.currency, 1)
-        row = db.query(
-            func.sum(MetricsCache.spend).label("spend"),
-            func.sum(MetricsCache.impressions).label("impressions"),
-            func.sum(MetricsCache.clicks).label("clicks"),
-            func.sum(MetricsCache.conversions).label("conversions"),
-            func.sum(MetricsCache.revenue).label("revenue"),
-        ).join(Campaign, MetricsCache.campaign_id == Campaign.id).filter(
-            Campaign.account_id == acc.id, MetricsCache.date >= d7,
-        ).one()
-
-        spend = float(row.spend or 0)
-        revenue = float(row.revenue or 0)
-        clicks = int(row.clicks or 0)
-        conversions = int(row.conversions or 0)
-        impressions = int(row.impressions or 0)
-        roas = revenue / spend if spend > 0 else 0
-
-        parts.append(f"**{acc.account_name}** ({acc.currency})")
-        parts.append(f"  Spend: {spend:,.0f} {acc.currency} ({spend * fx:,.0f} VND) | Revenue: {revenue:,.0f} {acc.currency}")
-        parts.append(f"  ROAS: {roas:.2f} | Clicks: {clicks:,} | Conversions: {conversions} | Impressions: {impressions:,}")
-        if clicks > 0:
-            parts.append(f"  CPC: {spend / clicks:,.0f} {acc.currency} | CTR: {clicks / impressions * 100:.2f}%")
-        parts.append("")
-
-    # 2. Active campaigns count
-    active_count = db.query(Campaign).filter(Campaign.status == "ACTIVE").count()
-    total_count = db.query(Campaign).count()
-    parts.append(f"## Campaigns: {active_count} active / {total_count} total\n")
-
-    # 3. Branch Keypoints
-    keypoints = db.query(BranchKeypoint).filter(BranchKeypoint.is_active.is_(True)).all()
-    if keypoints:
-        parts.append("## Branch Keypoints")
-        kp_map: dict[str, list] = {}
-        for kp in keypoints:
-            acc = db.query(AdAccount).filter(AdAccount.id == kp.branch_id).first()
-            name = acc.account_name if acc else "Unknown"
-            kp_map.setdefault(name, []).append(f"  - [{kp.category}] {kp.title}: {kp.description or ''}")
-        for name, items in kp_map.items():
-            parts.append(f"**{name}**")
-            parts.extend(items)
-        parts.append("")
-
-    # 4. Ad Angles summary
-    angles = db.query(AdAngle).all()
-    if angles:
-        parts.append("## Ad Angles")
-        for status in ["WIN", "TEST", "LOSE"]:
-            filtered = [a for a in angles if a.status == status]
-            if filtered:
-                parts.append(f"**{status}** ({len(filtered)} angles):")
-                for a in filtered[:5]:
-                    parts.append(f"  - {a.angle_id} [{a.target_audience}]: {a.angle_text[:80]}")
-        parts.append("")
-
-    return "\n".join(parts)
-
-
-def chat_stream(db: Session, messages: list[dict], context: str) -> Generator[str, None, None]:
-    """Stream a chat response from Claude with hotel marketing context."""
+    Tool calls emit a one-line marker so the user sees progress; the marker
+    text is part of the saved assistant message so replays look the same.
+    """
     client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    messages: list[dict] = list(history_messages)
 
-    system = SYSTEM_PROMPT + "\n" + context
+    for turn in range(MAX_TOOL_TURNS):
+        with client.messages.stream(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=SYSTEM_PROMPT,
+            tools=TOOLS,
+            messages=messages,
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+            final = stream.get_final_message()
 
-    with client.messages.stream(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
-        system=system,
-        messages=messages,
-    ) as stream:
-        for text in stream.text_stream:
-            yield text
+        if final.stop_reason != "tool_use":
+            return
+
+        # Append the assistant turn (text + tool_use blocks) so the next
+        # request keeps the same conversation state Anthropic expects.
+        assistant_blocks = []
+        for block in final.content:
+            if block.type == "text":
+                assistant_blocks.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                assistant_blocks.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+        messages.append({"role": "assistant", "content": assistant_blocks})
+
+        # Execute every tool_use block and collect results.
+        tool_results: list[dict] = []
+        for block in final.content:
+            if block.type != "tool_use":
+                continue
+            yield f"\n\n_Calling **{block.name}**..._\n\n"
+            try:
+                result = execute_tool(block.name, dict(block.input), db)
+            except Exception as exc:
+                logger.exception("Tool dispatch failed: %s", block.name)
+                result = {"error": f"{type(exc).__name__}: {exc}"}
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": json.dumps(result, default=str, ensure_ascii=False),
+            })
+
+        messages.append({"role": "user", "content": tool_results})
+
+    yield "\n\n_(Reached the tool-call limit — stopping here so I don't loop. Ask a follow-up if you want me to dig further.)_\n"

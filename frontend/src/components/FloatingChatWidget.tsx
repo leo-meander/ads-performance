@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Send, Plus, Trash2, MessageSquare, X, Sparkles, Maximize2, Minimize2 } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { useAuth } from '@/components/AuthContext'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -286,18 +288,28 @@ export default function FloatingChatWidget() {
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div
-                    className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words ${
+                    className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm break-words ${
                       msg.role === 'user'
-                        ? 'bg-blue-600 text-white rounded-br-sm'
+                        ? 'bg-blue-600 text-white rounded-br-sm whitespace-pre-wrap'
                         : msg.error
-                          ? 'bg-red-50 border border-red-200 text-red-700 rounded-bl-sm'
-                          : 'bg-white border border-gray-200 text-gray-800 rounded-bl-sm'
+                          ? 'bg-red-50 border border-red-200 text-red-700 rounded-bl-sm whitespace-pre-wrap'
+                          : 'bg-white border border-gray-200 text-gray-800 rounded-bl-sm chat-md'
                     }`}
                   >
-                    {msg.content || (
-                      streaming && i === messages.length - 1
-                        ? <span className="text-gray-400 animate-pulse">Thinking...</span>
-                        : ''
+                    {msg.role === 'assistant' && !msg.error ? (
+                      msg.content ? (
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {msg.content}
+                        </ReactMarkdown>
+                      ) : streaming && i === messages.length - 1 ? (
+                        <span className="text-gray-400 animate-pulse">Thinking...</span>
+                      ) : ''
+                    ) : (
+                      msg.content || (
+                        streaming && i === messages.length - 1
+                          ? <span className="text-gray-400 animate-pulse">Thinking...</span>
+                          : ''
+                      )
                     )}
                   </div>
                 </div>

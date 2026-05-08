@@ -14,7 +14,7 @@ from app.database import get_db
 from app.dependencies.auth import require_section
 from app.models.ai_conversation import AIConversation
 from app.models.user import User
-from app.services.ai_client import build_context, chat_stream
+from app.services.ai_client import chat_stream
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +58,13 @@ def chat(
     )
     messages = [{"role": r.role, "content": r.content} for r in history_rows]
 
-    # Build context from DB
-    context = build_context(db)
-
     # Collect full response for saving
     response_parts: list[str] = []
 
     def stream_and_save():
         errored = False
         try:
-            for chunk in chat_stream(db, messages, context):
+            for chunk in chat_stream(db, messages):
                 response_parts.append(chunk)
                 # SSE format — JSON-encode so embedded newlines survive transport
                 yield f"data: {json.dumps(chunk)}\n\n"
