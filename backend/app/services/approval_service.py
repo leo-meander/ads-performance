@@ -206,6 +206,161 @@ def record_decision(
     return approval
 
 
+def revise_pending_approval(
+    db: Session,
+    approval_id: str,
+    creator_id: str,
+    working_file_url: str | None = None,
+    working_file_label: str | None = None,
+    deadline: str | None = None,
+    angle_id: str | None = None,
+    keypoint_ids: list[str] | None = None,
+    reviewer_ids: list[str] | None = None,
+) -> ComboApproval:
+    """Edit a pending approval in place — bumps round, resets reviewers, re-notifies.
+
+    Use case: creator gets verbal feedback before reviewers click through, fixes
+    things directly. Same approval row stays (for URL stability); round bumps so
+    history is implied; all reviewers reset to PENDING because content changed.
+
+    Sentinel: pass empty string for working_file_url/working_file_label to clear,
+    None to leave unchanged. Same for angle_id (empty string clears).
+    """
+    approval = db.query(ComboApproval).filter(ComboApproval.id == approval_id).first()
+    if not approval:
+        raise ValueError("Approval not found")
+
+    if approval.status != "PENDING_APPROVAL":
+        raise ValueError(
+            f"Only PENDING_APPROVAL approvals can be revised in place; current status: {approval.status}"
+        )
+
+    if approval.submitted_by != creator_id:
+        raise ValueError("Only the original creator can revise this approval")
+
+    combo = db.query(AdCombo).filter(AdCombo.id == approval.combo_id).first()
+    if not combo:
+        raise ValueError("Combo not found")
+
+    now = datetime.now(timezone.utc)
+
+    # Bump round + refresh submission timestamp
+    approval.round = (approval.round or 0) + 1
+    approval.submitted_at = now
+
+    if working_file_url is not None:
+        approval.working_file_url = working_file_url or None
+    if working_file_label is not None:
+        approval.working_file_label = working_file_label or None
+    if deadline is not None:
+        from datetime import datetime as dt_cls
+        if deadline:
+            try:
+                approval.deadline = dt_cls.fromisoformat(deadline)
+            except (ValueError, TypeError):
+                pass
+        else:
+            approval.deadline = None
+
+    if angle_id is not None:
+        combo.angle_id = angle_id or None
+    if keypoint_ids is not None:
+        combo.keypoint_ids = keypoint_ids or None
+
+    # Reviewer set: replace if caller passed a non-empty list, else reset existing.
+    existing = (
+        db.query(ApprovalReviewer)
+        .filter(ApprovalReviewer.approval_id == approval_id)
+        .all()
+    )
+
+    if reviewer_ids:
+        new_ids = set(reviewer_ids)
+        if not new_ids:
+            raise ValueError("At least one reviewer is required")
+        existing_by_rid = {r.reviewer_id: r for r in existing}
+
+        for rid, row in existing_by_rid.items():
+            if rid not in new_ids:
+                db.delete(row)
+            else:
+                row.status = "PENDING"
+                row.decided_at = None
+                row.feedback = None
+                row.notified_email_at = None
+                row.notified_system_at = now
+
+        for rid in new_ids - set(existing_by_rid.keys()):
+            db.add(ApprovalReviewer(
+                approval_id=approval.id,
+                reviewer_id=rid,
+                status="PENDING",
+                notified_system_at=now,
+            ))
+    else:
+        for r in existing:
+            r.status = "PENDING"
+            r.decided_at = None
+            r.feedback = None
+            r.notified_email_at = None
+            r.notified_system_at = now
+
+    db.flush()
+
+    submitter = db.query(User).filter(User.id == creator_id).first()
+    submitter_name = submitter.full_name if submitter else "Unknown"
+    combo_name = combo.ad_name or combo.combo_id
+    branch = db.query(AdAccount).filter(AdAccount.id == combo.branch_id).first() if combo.branch_id else None
+    branch_name = branch.account_name if branch else None
+
+    # Re-snapshot Canva working file → ad_materials (idempotent)
+    try:
+        capture_canva_link_from_approval(db, approval)
+    except Exception:
+        logger.exception("Canva link capture failed at revise for approval %s", approval.id)
+
+    pending_reviewers = (
+        db.query(ApprovalReviewer)
+        .filter(
+            ApprovalReviewer.approval_id == approval.id,
+            ApprovalReviewer.status == "PENDING",
+        )
+        .all()
+    )
+
+    email_tasks = []
+    for ar in pending_reviewers:
+        reviewer = db.query(User).filter(User.id == ar.reviewer_id).first()
+        if not reviewer:
+            continue
+        create_notification(
+            db,
+            user_id=ar.reviewer_id,
+            type="REVIEW_REQUESTED",
+            title=f"Revised — please re-review: {combo_name}",
+            body=f"{submitter_name} updated {combo_name} (round {approval.round}). Please re-review.",
+            reference_id=approval.id,
+            reference_type="combo_approval",
+        )
+        if reviewer.notification_email and reviewer.email:
+            subject, html = render_review_request_email(
+                combo_name=combo_name,
+                reviewer_name=reviewer.full_name,
+                submitter_name=submitter_name,
+                working_file_url=approval.working_file_url,
+                approval_id=approval.id,
+                branch_name=branch_name,
+                deadline=approval.deadline,
+                platform_url=settings.FRONTEND_URL,
+            )
+            email_tasks.append((reviewer.email, subject, html))
+            ar.notified_email_at = now
+
+    db.commit()
+    _queue_emails(email_tasks)
+    return approval
+
+
 def resubmit(
     db: Session,
     approval_id: str,

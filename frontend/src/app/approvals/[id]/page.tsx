@@ -83,6 +83,19 @@ export default function ApprovalDetailPage() {
   const [resubmitDeadline, setResubmitDeadline] = useState('')
   const [resubmitError, setResubmitError] = useState('')
 
+  // Revise-while-pending state (creator-only edit panel)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editError, setEditError] = useState('')
+  const [editFile, setEditFile] = useState('')
+  const [editDeadline, setEditDeadline] = useState('')
+  const [editAngleId, setEditAngleId] = useState('')
+  const [editKeypointIds, setEditKeypointIds] = useState<string[]>([])
+  const [editReviewerIds, setEditReviewerIds] = useState<string[]>([])
+  const [reviewerOptions, setReviewerOptions] = useState<{ id: string; full_name: string; email: string }[]>([])
+  const [angleOptions, setAngleOptions] = useState<{ angle_id: string; angle_type: string; branch_id: string | null }[]>([])
+  const [keypointOptions, setKeypointOptions] = useState<{ id: string; title: string; category: string; branch_id: string }[]>([])
+
   const fetchApproval = () => {
     fetch(`${API_BASE}/api/approvals/${id}`, { credentials: 'include' })
       .then(r => r.json())
@@ -92,6 +105,43 @@ export default function ApprovalDetailPage() {
   }
 
   useEffect(() => { fetchApproval() }, [id])
+
+  const isCreatorPending =
+    approval && user?.id === approval.submitted_by && approval.status === 'PENDING_APPROVAL'
+
+  // Lazy-load reviewer/angle/keypoint options the first time the creator opens the edit panel
+  useEffect(() => {
+    if (!editOpen || !isCreatorPending) return
+    if (reviewerOptions.length === 0) {
+      fetch(`${API_BASE}/api/users/reviewers`, { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => { if (d.success) setReviewerOptions(d.data.items || []) })
+        .catch(() => {})
+    }
+    if (angleOptions.length === 0) {
+      fetch(`${API_BASE}/api/angles`, { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => { if (d.success) setAngleOptions(d.data || []) })
+        .catch(() => {})
+    }
+    if (keypointOptions.length === 0) {
+      fetch(`${API_BASE}/api/keypoints`, { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => { if (d.success) setKeypointOptions(d.data || []) })
+        .catch(() => {})
+    }
+  }, [editOpen, isCreatorPending, reviewerOptions.length, angleOptions.length, keypointOptions.length])
+
+  // Seed the edit form whenever the panel opens (or the underlying approval reloads)
+  useEffect(() => {
+    if (!editOpen || !approval) return
+    setEditFile(approval.working_file_url || '')
+    setEditDeadline(approval.deadline ? approval.deadline.slice(0, 16) : '')
+    setEditAngleId(approval.angle?.angle_id || '')
+    setEditKeypointIds(approval.keypoints.map(k => k.id))
+    setEditReviewerIds(approval.reviewers.map(r => r.reviewer_id))
+    setEditError('')
+  }, [editOpen, approval])
 
   const handleDecision = async (decision: string) => {
     const trimmed = feedback.trim()
@@ -119,6 +169,39 @@ export default function ApprovalDetailPage() {
       setDecisionError('Network error')
     }
     setDeciding(false)
+  }
+
+  const handleRevise = async () => {
+    if (editReviewerIds.length === 0) {
+      setEditError('Pick at least one reviewer.')
+      return
+    }
+    setEditing(true)
+    setEditError('')
+    try {
+      const res = await fetch(`${API_BASE}/api/approvals/${id}/revise`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          working_file_url: editFile,
+          deadline: editDeadline ? new Date(editDeadline).toISOString() : '',
+          angle_id: editAngleId,
+          keypoint_ids: editKeypointIds,
+          reviewer_ids: editReviewerIds,
+        }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setApproval(data.data)
+        setEditOpen(false)
+      } else {
+        setEditError(data.error || 'Revise failed')
+      }
+    } catch {
+      setEditError('Network error')
+    }
+    setEditing(false)
   }
 
   const handleResubmit = async () => {
@@ -439,6 +522,128 @@ export default function ApprovalDetailPage() {
               <p className="text-xs text-gray-400 mt-2">
                 Approve = ready to launch. Needs Revision = creator can fix and resubmit. Reject = combo dead.
               </p>
+            </div>
+          )}
+
+          {/* Creator: edit while pending — bumps round, resets reviewers */}
+          {isCreatorPending && (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="text-sm font-semibold text-blue-900">Edit while pending</h3>
+                <button
+                  onClick={() => setEditOpen(o => !o)}
+                  className="text-xs font-medium text-blue-700 hover:text-blue-800"
+                >
+                  {editOpen ? 'Cancel' : 'Edit →'}
+                </button>
+              </div>
+              <p className="text-xs text-blue-700">
+                Apply quick fixes (verbal feedback). Saving bumps to round {approval.round + 1} and asks all reviewers to re-review.
+              </p>
+
+              {editOpen && (
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">Working file URL</label>
+                    <input
+                      type="url"
+                      value={editFile}
+                      onChange={e => setEditFile(e.target.value)}
+                      placeholder="https://canva.com/design/..."
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">Deadline</label>
+                    <input
+                      type="datetime-local"
+                      value={editDeadline}
+                      onChange={e => setEditDeadline(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">Angle</label>
+                    <select
+                      value={editAngleId}
+                      onChange={e => setEditAngleId(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">— No angle —</option>
+                      {angleOptions
+                        .filter(a => !a.branch_id || a.branch_id === approval.branch?.id)
+                        .map(a => (
+                          <option key={a.angle_id} value={a.angle_id}>
+                            {a.angle_id} — {a.angle_type}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">
+                      Keypoints <span className="text-gray-400 font-normal">(click to toggle)</span>
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {keypointOptions
+                        .filter(k => k.branch_id === approval.branch?.id)
+                        .map(k => {
+                          const on = editKeypointIds.includes(k.id)
+                          return (
+                            <button
+                              key={k.id}
+                              type="button"
+                              onClick={() => setEditKeypointIds(prev =>
+                                on ? prev.filter(x => x !== k.id) : [...prev, k.id]
+                              )}
+                              className={`text-xs px-2 py-1 rounded-full border ${
+                                on ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                              }`}
+                            >
+                              {k.title}
+                            </button>
+                          )
+                        })}
+                      {keypointOptions.filter(k => k.branch_id === approval.branch?.id).length === 0 && (
+                        <span className="text-xs text-gray-400 italic">No keypoints for this branch.</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-600 mb-1">
+                      Reviewers <span className="text-gray-400 font-normal">(at least one)</span>
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {reviewerOptions.map(r => {
+                        const on = editReviewerIds.includes(r.id)
+                        return (
+                          <button
+                            key={r.id}
+                            type="button"
+                            onClick={() => setEditReviewerIds(prev =>
+                              on ? prev.filter(x => x !== r.id) : [...prev, r.id]
+                            )}
+                            className={`text-xs px-2 py-1 rounded-full border ${
+                              on ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                            }`}
+                          >
+                            {r.full_name}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                  {editError && (
+                    <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-xs">{editError}</div>
+                  )}
+                  <button
+                    onClick={handleRevise}
+                    disabled={editing}
+                    className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {editing ? 'Saving…' : `Save & re-notify (round ${approval.round + 1})`}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

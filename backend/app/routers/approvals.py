@@ -13,6 +13,7 @@ from app.services.approval_service import (
     record_decision,
     resend_review_request_emails,
     resubmit,
+    revise_pending_approval,
     submit_for_approval,
 )
 
@@ -49,6 +50,16 @@ class ResubmitRequest(BaseModel):
     working_file_url: str | None = None
     working_file_label: str | None = None
     deadline: str | None = None
+
+
+class ReviseRequest(BaseModel):
+    """In-place edit on a PENDING approval. Any field omitted (None) is left unchanged."""
+    working_file_url: str | None = None
+    working_file_label: str | None = None
+    deadline: str | None = None
+    angle_id: str | None = None
+    keypoint_ids: list[str] | None = None
+    reviewer_ids: list[str] | None = None
 
 
 # ── Endpoints ────────────────────────────────────────────────
@@ -227,6 +238,36 @@ def resend_request(
             requester_id=current_user.id,
         )
         return _api_response(data=result)
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.post("/approvals/{approval_id}/revise")
+def revise_approval(
+    approval_id: str,
+    body: ReviseRequest,
+    current_user: User = Depends(require_role(["creator", "admin"])),
+    _section: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """In-place edit while pending: bumps round, resets reviewer decisions, re-notifies."""
+    try:
+        approval = revise_pending_approval(
+            db=db,
+            approval_id=approval_id,
+            creator_id=current_user.id,
+            working_file_url=body.working_file_url,
+            working_file_label=body.working_file_label,
+            deadline=body.deadline,
+            angle_id=body.angle_id,
+            keypoint_ids=body.keypoint_ids,
+            reviewer_ids=body.reviewer_ids,
+        )
+        detail = get_approval_detail(db, approval.id)
+        return _api_response(data=detail)
     except ValueError as e:
         return _api_response(error=str(e))
     except Exception as e:
