@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.approval import ApprovalReviewer, ComboApproval
@@ -104,6 +105,7 @@ def submit_for_approval(
                 approval_id=approval.id,
                 branch_name=branch_name,
                 deadline=parsed_deadline,
+                platform_url=settings.FRONTEND_URL,
             )
             email_tasks.append((reviewer.email, subject, html))
 
@@ -524,6 +526,7 @@ def resend_review_request_emails(
             approval_id=approval.id,
             branch_name=branch_name,
             deadline=approval.deadline,
+            platform_url=settings.FRONTEND_URL,
         )
         email_tasks.append((reviewer.email, subject, html))
         ar.notified_email_at = now
@@ -597,6 +600,7 @@ def _notify_creator_of_result(
                 reviewer_name=rejector_name,
                 approval_id=approval.id,
                 branch_name=branch_name,
+                platform_url=settings.FRONTEND_URL,
             )
             email_tasks.append((creator.email, subject, html))
 
