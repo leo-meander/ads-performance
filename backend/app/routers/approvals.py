@@ -60,6 +60,12 @@ class ReviseRequest(BaseModel):
     angle_id: str | None = None
     keypoint_ids: list[str] | None = None
     reviewer_ids: list[str] | None = None
+    # Copy fields — clone-on-shared, in-place if exclusive
+    headline: str | None = None
+    body_text: str | None = None
+    cta: str | None = None
+    language: str | None = None
+    target_audience: str | None = None
 
 
 # ── Endpoints ────────────────────────────────────────────────
@@ -265,6 +271,11 @@ def revise_approval(
             angle_id=body.angle_id,
             keypoint_ids=body.keypoint_ids,
             reviewer_ids=body.reviewer_ids,
+            headline=body.headline,
+            body_text=body.body_text,
+            cta=body.cta,
+            language=body.language,
+            target_audience=body.target_audience,
         )
         detail = get_approval_detail(db, approval.id)
         return _api_response(data=detail)

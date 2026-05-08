@@ -92,6 +92,11 @@ export default function ApprovalDetailPage() {
   const [editAngleId, setEditAngleId] = useState('')
   const [editKeypointIds, setEditKeypointIds] = useState<string[]>([])
   const [editReviewerIds, setEditReviewerIds] = useState<string[]>([])
+  const [editHeadline, setEditHeadline] = useState('')
+  const [editBodyText, setEditBodyText] = useState('')
+  const [editCta, setEditCta] = useState('')
+  const [editLanguage, setEditLanguage] = useState('')
+  const [editTargetAudience, setEditTargetAudience] = useState('')
   const [reviewerOptions, setReviewerOptions] = useState<{ id: string; full_name: string; email: string }[]>([])
   const [angleOptions, setAngleOptions] = useState<{ angle_id: string; angle_type: string; branch_id: string | null }[]>([])
   const [keypointOptions, setKeypointOptions] = useState<{ id: string; title: string; category: string; branch_id: string }[]>([])
@@ -140,6 +145,11 @@ export default function ApprovalDetailPage() {
     setEditAngleId(approval.angle?.angle_id || '')
     setEditKeypointIds(approval.keypoints.map(k => k.id))
     setEditReviewerIds(approval.reviewers.map(r => r.reviewer_id))
+    setEditHeadline(approval.copy?.headline || '')
+    setEditBodyText(approval.copy?.body_text || '')
+    setEditCta(approval.copy?.cta || '')
+    setEditLanguage(approval.copy?.language || '')
+    setEditTargetAudience(approval.copy?.target_audience || '')
     setEditError('')
   }, [editOpen, approval])
 
@@ -189,6 +199,11 @@ export default function ApprovalDetailPage() {
           angle_id: editAngleId,
           keypoint_ids: editKeypointIds,
           reviewer_ids: editReviewerIds,
+          headline: editHeadline,
+          body_text: editBodyText,
+          cta: editCta,
+          language: editLanguage,
+          target_audience: editTargetAudience,
         }),
       })
       const data = await res.json()
@@ -562,6 +577,73 @@ export default function ApprovalDetailPage() {
                       className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
+                  <div className="bg-white border border-gray-200 rounded-lg p-3 space-y-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                      Ad copy {approval.copy_id ? <span className="font-mono normal-case font-normal text-gray-400">({approval.copy_id})</span> : null}
+                    </p>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Headline</label>
+                      <input
+                        type="text"
+                        value={editHeadline}
+                        onChange={e => setEditHeadline(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-600 mb-1">Body</label>
+                      <textarea
+                        value={editBodyText}
+                        onChange={e => setEditBodyText(e.target.value)}
+                        rows={5}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+                      />
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="block text-xs text-gray-600 mb-1">CTA</label>
+                        <input
+                          type="text"
+                          value={editCta}
+                          onChange={e => setEditCta(e.target.value)}
+                          placeholder="Book Now"
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-600 mb-1">Language</label>
+                        <select
+                          value={editLanguage}
+                          onChange={e => setEditLanguage(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="en">English</option>
+                          <option value="vi">Vietnamese</option>
+                          <option value="zh">Chinese</option>
+                          <option value="ja">Japanese</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-600 mb-1">Target audience</label>
+                        <select
+                          value={editTargetAudience}
+                          onChange={e => setEditTargetAudience(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="Solo">Solo</option>
+                          <option value="Couple">Couple</option>
+                          <option value="Friend">Friend</option>
+                          <option value="Group">Group</option>
+                          <option value="Family">Family</option>
+                          <option value="Business">Business</option>
+                        </select>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-gray-400 italic">
+                      If this copy is shared with other combos, a new copy_id is auto-cloned so the change doesn't leak.
+                    </p>
+                  </div>
+
                   <div>
                     <label className="block text-xs text-gray-600 mb-1">Angle</label>
                     <select

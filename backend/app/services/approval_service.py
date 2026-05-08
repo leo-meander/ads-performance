@@ -216,12 +216,22 @@ def revise_pending_approval(
     angle_id: str | None = None,
     keypoint_ids: list[str] | None = None,
     reviewer_ids: list[str] | None = None,
+    headline: str | None = None,
+    body_text: str | None = None,
+    cta: str | None = None,
+    language: str | None = None,
+    target_audience: str | None = None,
 ) -> ComboApproval:
     """Edit a pending approval in place — bumps round, resets reviewers, re-notifies.
 
     Use case: creator gets verbal feedback before reviewers click through, fixes
     things directly. Same approval row stays (for URL stability); round bumps so
     history is implied; all reviewers reset to PENDING because content changed.
+
+    Copy edits (headline/body_text/cta/language/target_audience): if the linked
+    AdCopy is shared with other combos, a fresh copy_id is cloned and the combo
+    re-pointed so the change does not leak. If exclusive to this combo, edited
+    in place.
 
     Sentinel: pass empty string for working_file_url/working_file_label to clear,
     None to leave unchanged. Same for angle_id (empty string clears).
@@ -266,6 +276,46 @@ def revise_pending_approval(
         combo.angle_id = angle_id or None
     if keypoint_ids is not None:
         combo.keypoint_ids = keypoint_ids or None
+
+    # Copy edits: clone-on-shared, edit-in-place if exclusive to this combo
+    copy_fields_changed = any(
+        x is not None for x in (headline, body_text, cta, language, target_audience)
+    )
+    if copy_fields_changed:
+        from app.models.ad_copy import AdCopy
+        from app.services.creative_service import next_copy_id
+
+        copy = db.query(AdCopy).filter(AdCopy.copy_id == combo.copy_id).first()
+        if copy:
+            shared_count = (
+                db.query(AdCombo).filter(AdCombo.copy_id == combo.copy_id).count()
+            )
+            if shared_count > 1:
+                new_id = next_copy_id(db)
+                clone = AdCopy(
+                    branch_id=copy.branch_id,
+                    copy_id=new_id,
+                    target_audience=target_audience if target_audience is not None else copy.target_audience,
+                    angle_id=copy.angle_id,
+                    headline=headline if headline is not None else copy.headline,
+                    body_text=body_text if body_text is not None else copy.body_text,
+                    cta=(cta if cta is not None else copy.cta) or None,
+                    language=language if language is not None else copy.language,
+                )
+                db.add(clone)
+                db.flush()
+                combo.copy_id = new_id
+            else:
+                if headline is not None:
+                    copy.headline = headline
+                if body_text is not None:
+                    copy.body_text = body_text
+                if cta is not None:
+                    copy.cta = cta or None
+                if language is not None:
+                    copy.language = language
+                if target_audience is not None:
+                    copy.target_audience = target_audience
 
     # Reviewer set: replace if caller passed a non-empty list, else reset existing.
     existing = (
