@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { API_BASE } from '@/lib/api'
 import { formatLocalDate } from '@/lib/dates'
+import { fmtMoney } from '@/components/dashboard/dashboardUtils'
 
 type BookingMatch = {
   id: string
@@ -37,13 +38,15 @@ type Summary = {
   total_matches: number
   total_revenue: number
   total_bookings: number
+  currency: string
   by_channel: ChannelKpi[]
   by_branch: BranchKpi[]
   by_result: ResultKpi[]
   period: { from: string; to: string }
 }
 
-const BRANCHES = ['Saigon', 'Taipei', '1948', 'Osaka', 'Oani']
+type Branch = { name: string; currency: string }
+
 const CHANNELS = ['meta', 'google']
 const MATCH_RESULTS = ['Matched', 'Matched (country)', 'Matched (combo)', 'Multiple']
 
@@ -87,8 +90,6 @@ function getDateRange(preset: string): { from: string; to: string } {
   }
 }
 
-const fmtNumber = (n: number) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(n)
-
 function rowBgColor(result: string): string {
   if (result === 'Matched' || result === 'Matched (country)' || result === 'Matched (combo)') {
     return 'bg-green-50'
@@ -112,7 +113,9 @@ export default function BookingMatchesDashboard() {
   const [datePreset, setDatePreset] = useState('30d')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
-  const [branch, setBranch] = useState('')
+  const [branches, setBranches] = useState<Branch[]>([])
+  const [selectedBranches, setSelectedBranches] = useState<string[]>([])
+  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
   const [channel, setChannel] = useState('')
   const [matchResult, setMatchResult] = useState('')
   const [purchaseKind, setPurchaseKind] = useState('')
@@ -125,9 +128,30 @@ export default function BookingMatchesDashboard() {
   }, [datePreset, customFrom, customTo])
   const [summary, setSummary] = useState<Summary | null>(null)
   const [matches, setMatches] = useState<BookingMatch[]>([])
+  const [listCurrency, setListCurrency] = useState<string>('VND')
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
   const [runMessage, setRunMessage] = useState<string | null>(null)
+
+  // Same rule as the dashboard: single branch (or several sharing one currency)
+  // shows that native currency; multi-branch / mixed / all-branches shows VND.
+  const activeCurrency = useMemo(() => {
+    if (selectedBranches.length === 0) return 'VND'
+    const currencies = [...new Set(
+      selectedBranches.map(b => branches.find(br => br.name === b)?.currency || 'VND')
+    )]
+    return currencies.length === 1 ? currencies[0] : 'VND'
+  }, [selectedBranches, branches])
+
+  const branchParam = selectedBranches.length > 0 ? selectedBranches.join(',') : ''
+
+  // Branches list for the dropdown.
+  useEffect(() => {
+    fetch(`${API_BASE}/api/branches`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => { if (d.success) setBranches(d.data) })
+      .catch(() => {})
+  }, [])
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -135,13 +159,13 @@ export default function BookingMatchesDashboard() {
       const { from, to } = resolveRange()
       if (!from || !to) { setLoading(false); return }
       const params = new URLSearchParams({ date_from: from, date_to: to })
-      if (branch) params.set('branch', branch)
+      if (branchParam) params.set('branches', branchParam)
       if (channel) params.set('channel', channel)
       if (matchResult) params.set('match_result', matchResult)
       if (purchaseKind) params.set('purchase_kind', purchaseKind)
 
       const summaryParams = new URLSearchParams({ date_from: from, date_to: to })
-      if (branch) summaryParams.set('branch', branch)
+      if (branchParam) summaryParams.set('branches', branchParam)
 
       const [summaryRes, listRes] = await Promise.all([
         fetch(`${API_BASE}/api/booking-matches/summary?${summaryParams}`, { credentials: 'include' }).then(r => r.json()),
@@ -149,13 +173,32 @@ export default function BookingMatchesDashboard() {
       ])
 
       if (summaryRes.success) setSummary(summaryRes.data)
-      if (listRes.success) setMatches(listRes.data.items)
+      if (listRes.success) {
+        setMatches(listRes.data.items)
+        setListCurrency(listRes.data.currency || 'VND')
+      }
     } finally {
       setLoading(false)
     }
-  }, [resolveRange, branch, channel, matchResult, purchaseKind])
+  }, [resolveRange, branchParam, channel, matchResult, purchaseKind])
 
   useEffect(() => { fetchData() }, [fetchData])
+
+  // Close branch dropdown on outside click.
+  const branchDropdownRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    function onClick(e: MouseEvent) {
+      if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
+        setBranchDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [])
+
+  const toggleBranch = (name: string) => {
+    setSelectedBranches(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name])
+  }
 
   const runManualMatch = async () => {
     setRunning(true)
@@ -188,6 +231,8 @@ export default function BookingMatchesDashboard() {
       setRunning(false)
     }
   }
+
+  const summaryCurrency = summary?.currency || activeCurrency
 
   return (
     <div className="p-6 space-y-6">
@@ -251,14 +296,43 @@ export default function BookingMatchesDashboard() {
           </>
         )}
 
-        <select
-          value={branch}
-          onChange={(e) => setBranch(e.target.value)}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
-        >
-          <option value="">All branches</option>
-          {BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
-        </select>
+        <div className="relative" ref={branchDropdownRef}>
+          <button
+            onClick={() => setBranchDropdownOpen(o => !o)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white min-w-[180px] text-left flex items-center justify-between gap-2"
+          >
+            <span className="truncate">
+              {selectedBranches.length === 0
+                ? `All branches (VND)`
+                : selectedBranches.length === 1
+                  ? `${selectedBranches[0]} (${activeCurrency})`
+                  : `${selectedBranches.length} branches (${activeCurrency})`}
+            </span>
+            <svg className={`w-4 h-4 text-gray-400 transition-transform ${branchDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+          </button>
+          {branchDropdownOpen && (
+            <div className="absolute z-50 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg py-1 left-0">
+              {selectedBranches.length > 0 && (
+                <button
+                  onClick={() => setSelectedBranches([])}
+                  className="w-full px-3 py-1.5 text-xs text-blue-600 hover:bg-gray-50 text-left"
+                >Clear all</button>
+              )}
+              {branches.map(b => (
+                <label key={b.name} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm">
+                  <input
+                    type="checkbox"
+                    checked={selectedBranches.includes(b.name)}
+                    onChange={() => toggleBranch(b.name)}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>{b.name}</span>
+                  <span className="text-gray-400 text-xs ml-auto">{b.currency}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
 
         <select
           value={channel}
@@ -293,12 +367,12 @@ export default function BookingMatchesDashboard() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white border border-gray-200 rounded-lg p-4">
           <p className="text-sm text-gray-500">Matched Bookings</p>
-          <p className="text-2xl font-bold mt-1">{summary ? fmtNumber(summary.total_bookings) : '--'}</p>
+          <p className="text-2xl font-bold mt-1">{summary ? summary.total_bookings.toLocaleString() : '--'}</p>
           <p className="text-xs text-gray-400 mt-1">{summary?.total_matches ?? 0} match rows</p>
         </div>
         <div className="bg-white border border-gray-200 rounded-lg p-4">
-          <p className="text-sm text-gray-500">Matched Revenue</p>
-          <p className="text-2xl font-bold mt-1">{summary ? fmtNumber(summary.total_revenue) : '--'}</p>
+          <p className="text-sm text-gray-500">Matched Revenue ({summaryCurrency})</p>
+          <p className="text-2xl font-bold mt-1">{summary ? fmtMoney(summary.total_revenue, summaryCurrency) : '--'}</p>
         </div>
         <div className="bg-white border border-gray-200 rounded-lg p-4">
           <p className="text-sm text-gray-500">By Result</p>
@@ -323,7 +397,7 @@ export default function BookingMatchesDashboard() {
                 <th className="text-left py-2">Channel</th>
                 <th className="text-right py-2">Matches</th>
                 <th className="text-right py-2">Bookings</th>
-                <th className="text-right py-2">Revenue</th>
+                <th className="text-right py-2">Revenue ({summaryCurrency})</th>
               </tr>
             </thead>
             <tbody>
@@ -332,7 +406,7 @@ export default function BookingMatchesDashboard() {
                   <td className="py-2 capitalize">{c.channel}</td>
                   <td className="text-right py-2">{c.matches}</td>
                   <td className="text-right py-2">{c.bookings}</td>
-                  <td className="text-right py-2">{fmtNumber(c.revenue)}</td>
+                  <td className="text-right py-2">{fmtMoney(c.revenue, summaryCurrency)}</td>
                 </tr>
               ))}
             </tbody>
@@ -347,7 +421,7 @@ export default function BookingMatchesDashboard() {
                 <th className="text-left py-2">Branch</th>
                 <th className="text-right py-2">Matches</th>
                 <th className="text-right py-2">Bookings</th>
-                <th className="text-right py-2">Revenue</th>
+                <th className="text-right py-2">Revenue ({summaryCurrency})</th>
               </tr>
             </thead>
             <tbody>
@@ -356,7 +430,7 @@ export default function BookingMatchesDashboard() {
                   <td className="py-2">{b.branch}</td>
                   <td className="text-right py-2">{b.matches}</td>
                   <td className="text-right py-2">{b.bookings}</td>
-                  <td className="text-right py-2">{fmtNumber(b.revenue)}</td>
+                  <td className="text-right py-2">{fmtMoney(b.revenue, summaryCurrency)}</td>
                 </tr>
               ))}
             </tbody>
@@ -366,15 +440,16 @@ export default function BookingMatchesDashboard() {
 
       {/* Matches Table */}
       <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-        <div className="px-4 py-3 border-b border-gray-200">
+        <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-gray-900">Matched Bookings</h3>
+          <span className="text-xs text-gray-400">Revenue in {listCurrency}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr className="text-xs text-gray-600">
                 <th className="text-left px-3 py-2">Date</th>
-                <th className="text-right px-3 py-2">Revenue</th>
+                <th className="text-right px-3 py-2">Revenue ({listCurrency})</th>
                 <th className="text-right px-3 py-2">Bookings</th>
                 <th className="text-left px-3 py-2">Branch</th>
                 <th className="text-left px-3 py-2">Channel</th>
@@ -402,7 +477,7 @@ export default function BookingMatchesDashboard() {
               {matches.map(m => (
                 <tr key={m.id} className={`border-t border-gray-100 ${rowBgColor(m.match_result)}`}>
                   <td className="px-3 py-2 whitespace-nowrap">{m.match_date}</td>
-                  <td className="px-3 py-2 text-right whitespace-nowrap">{fmtNumber(m.ads_revenue)}</td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">{fmtMoney(m.ads_revenue, listCurrency)}</td>
                   <td className="px-3 py-2 text-right">{m.ads_bookings}</td>
                   <td className="px-3 py-2">{m.branch}</td>
                   <td className="px-3 py-2 capitalize">{m.ads_channel}</td>

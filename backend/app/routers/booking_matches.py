@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import or_
 
+from app.core.branches import BRANCH_CURRENCY
 from app.core.permissions import accessible_branches, is_admin
 from app.database import get_db
 from app.dependencies.auth import get_current_user, require_section
@@ -33,6 +34,52 @@ from app.services.reservation_sync import (
 router = APIRouter()
 
 
+# Mirror of dashboard FX (routers/country.py). Booking revenue is stored in
+# the branch's native currency; we only convert when the response aggregates
+# across mixed currencies — same rule as the main dashboard.
+FX_TO_VND = {
+    "VND": 1,
+    "TWD": 800,
+    "JPY": 170,
+    "USD": 25500,
+}
+
+
+def _fx_to_vnd(currency: str) -> float:
+    return FX_TO_VND.get(currency or "VND", 1)
+
+
+def _parse_branches_param(branches: str | None, branch: str | None) -> list[str]:
+    """Accept either ?branches=Saigon,Taipei (new) or ?branch=Saigon (legacy)."""
+    if branches:
+        return [b.strip() for b in branches.split(",") if b.strip()]
+    if branch:
+        return [branch.strip()]
+    return []
+
+
+def _resolve_currency(branches_list: list[str]) -> tuple[str, bool]:
+    """Return (display_currency, convert_to_vnd) using the same rule as dashboard.
+
+    - 0 branches (admin all-branches): VND, convert.
+    - 1 branch: that branch's native currency, no conversion.
+    - >1 branches all sharing one currency: that currency, no conversion.
+    - >1 branches with mixed currencies: VND, convert.
+    """
+    if not branches_list:
+        return "VND", True
+    currencies = {BRANCH_CURRENCY.get(b, "VND") for b in branches_list}
+    if len(currencies) == 1:
+        return currencies.pop(), False
+    return "VND", True
+
+
+def _convert_revenue(branch_key: str | None, native_revenue: float, convert: bool) -> float:
+    if not convert:
+        return native_revenue
+    return native_revenue * _fx_to_vnd(BRANCH_CURRENCY.get(branch_key or "", "VND"))
+
+
 def _api_response(data=None, error=None):
     return {
         "success": error is None,
@@ -47,29 +94,34 @@ def _default_date_range() -> tuple[date, date]:
     return today - timedelta(days=29), today
 
 
-def _apply_branch_scope(q, column, user, db, requested_branch: str | None, exact_match: bool = False):
+def _apply_branch_scope(q, column, user, db, requested_branches: list[str] | None, exact_match: bool = False):
     """Restrict a query to the user's accessible branches for analytics.
 
     Returns (ok, query, error). When ok=False, caller should return _api_response(error=err).
-    When admin: no scope applied beyond the explicit `requested_branch` filter.
+    When admin: no scope applied beyond the explicit `requested_branches` filter.
 
     exact_match=True for columns that store the canonical branch key directly
     (e.g. BookingMatch.branch = "Taipei"). exact_match=False for columns that
     store full account/PMS names (e.g. Reservation.branch = "Meander Taipei"),
     where ilike against BRANCH_ACCOUNT_MAP patterns is needed.
+
+    requested_branches accepts a list so the dashboard can multi-select branches
+    and we still apply a single IN / OR filter.
     """
-    if requested_branch:
-        # Explicit branch from client — validate against permissions
+    requested_branches = [b for b in (requested_branches or []) if b]
+    if requested_branches:
+        # Explicit branches from client — validate each against permissions
         if not is_admin(user):
             allowed = accessible_branches(db, user, "analytics") or []
-            if requested_branch not in allowed and requested_branch not in BRANCH_ACCOUNT_MAP:
-                return False, q, f"No view access to branch '{requested_branch}'"
-            if requested_branch in BRANCH_ACCOUNT_MAP and requested_branch not in allowed:
-                return False, q, f"No view access to branch '{requested_branch}'"
+            for b in requested_branches:
+                if b not in allowed:
+                    return False, q, f"No view access to branch '{b}'"
         if exact_match:
-            q = q.filter(column == requested_branch)
+            q = q.filter(column.in_(requested_branches))
         else:
-            patterns = BRANCH_ACCOUNT_MAP.get(requested_branch, [requested_branch])
+            patterns: list[str] = []
+            for b in requested_branches:
+                patterns.extend(BRANCH_ACCOUNT_MAP.get(b, [b]))
             q = q.filter(or_(*[column.ilike(f"%{p}%") for p in patterns]))
         return True, q, None
 
@@ -120,7 +172,8 @@ def _serialize_match(m: BookingMatch) -> dict:
 def list_booking_matches(
     date_from: str = Query(None),
     date_to: str = Query(None),
-    branch: str = Query(None),
+    branch: str = Query(None, description="Legacy single-branch filter"),
+    branches: str = Query(None, description="Comma-separated branch names"),
     channel: str = Query(None),
     match_result: str = Query(None),
     purchase_kind: str = Query(None, description="website | offline"),
@@ -129,7 +182,12 @@ def list_booking_matches(
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
-    """List booking matches with filters, sorted by date desc (like the Sheet)."""
+    """List booking matches with filters, sorted by date desc (like the Sheet).
+
+    Revenue is returned in the active display currency: native when a single
+    branch (or several branches sharing one currency) is selected, VND with
+    FX conversion when the scope is mixed-currency or all-branches.
+    """
     try:
         if not date_from or not date_to:
             df, dt = _default_date_range()
@@ -139,11 +197,14 @@ def list_booking_matches(
         df = date.fromisoformat(date_from)
         dt = date.fromisoformat(date_to)
 
+        branches_list = _parse_branches_param(branches, branch)
+        display_currency, convert = _resolve_currency(branches_list)
+
         q = db.query(BookingMatch).filter(
             BookingMatch.match_date >= df,
             BookingMatch.match_date <= dt,
         )
-        ok, q, err = _apply_branch_scope(q, BookingMatch.branch, current_user, db, branch, exact_match=True)
+        ok, q, err = _apply_branch_scope(q, BookingMatch.branch, current_user, db, branches_list, exact_match=True)
         if not ok:
             return _api_response(error=err)
         if channel:
@@ -156,11 +217,18 @@ def list_booking_matches(
         total = q.count()
         rows = q.order_by(BookingMatch.match_date.desc()).offset(offset).limit(limit).all()
 
+        items = []
+        for m in rows:
+            payload = _serialize_match(m)
+            payload["ads_revenue"] = _convert_revenue(m.branch, payload["ads_revenue"], convert)
+            items.append(payload)
+
         return _api_response(data={
-            "items": [_serialize_match(m) for m in rows],
+            "items": items,
             "total": total,
             "limit": limit,
             "offset": offset,
+            "currency": display_currency,
             "period": {"from": date_from, "to": date_to},
         })
     except Exception as e:
@@ -171,11 +239,17 @@ def list_booking_matches(
 def booking_matches_summary(
     date_from: str = Query(None),
     date_to: str = Query(None),
-    branch: str = Query(None),
+    branch: str = Query(None, description="Legacy single-branch filter"),
+    branches: str = Query(None, description="Comma-separated branch names"),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
-    """KPI summary for the dashboard."""
+    """KPI summary for the dashboard.
+
+    Revenue follows the dashboard rule: native currency when the scope is one
+    branch (or several branches that share a currency), VND otherwise. Counts
+    (matches, bookings) are currency-independent.
+    """
     try:
         if not date_from or not date_to:
             df, dt = _default_date_range()
@@ -185,41 +259,23 @@ def booking_matches_summary(
         df = date.fromisoformat(date_from)
         dt = date.fromisoformat(date_to)
 
+        branches_list = _parse_branches_param(branches, branch)
+        display_currency, convert = _resolve_currency(branches_list)
+
         base = db.query(BookingMatch).filter(
             BookingMatch.match_date >= df,
             BookingMatch.match_date <= dt,
         )
-        ok, base, err = _apply_branch_scope(base, BookingMatch.branch, current_user, db, branch, exact_match=True)
+        ok, base, err = _apply_branch_scope(base, BookingMatch.branch, current_user, db, branches_list, exact_match=True)
         if not ok:
             return _api_response(error=err)
 
-        # Total KPIs
+        # Counts don't depend on currency.
         total_matches = base.count()
-        total_revenue = float(base.with_entities(func.sum(BookingMatch.ads_revenue)).scalar() or 0)
         total_bookings = int(base.with_entities(func.sum(BookingMatch.ads_bookings)).scalar() or 0)
 
-        # By channel
-        by_channel_rows = (
-            base.with_entities(
-                BookingMatch.ads_channel,
-                func.count(BookingMatch.id).label("matches"),
-                func.sum(BookingMatch.ads_revenue).label("revenue"),
-                func.sum(BookingMatch.ads_bookings).label("bookings"),
-            )
-            .group_by(BookingMatch.ads_channel)
-            .all()
-        )
-        by_channel = [
-            {
-                "channel": r.ads_channel or "unknown",
-                "matches": int(r.matches or 0),
-                "revenue": float(r.revenue or 0),
-                "bookings": int(r.bookings or 0),
-            }
-            for r in by_channel_rows
-        ]
-
-        # By branch
+        # Revenue must be aggregated per branch first so we can apply the
+        # right FX rate per branch when converting to VND.
         by_branch_rows = (
             base.with_entities(
                 BookingMatch.branch,
@@ -230,15 +286,43 @@ def booking_matches_summary(
             .group_by(BookingMatch.branch)
             .all()
         )
+        total_revenue = sum(
+            _convert_revenue(r.branch, float(r.revenue or 0), convert)
+            for r in by_branch_rows
+        )
         by_branch = [
             {
                 "branch": r.branch or "unknown",
                 "matches": int(r.matches or 0),
-                "revenue": float(r.revenue or 0),
+                "revenue": _convert_revenue(r.branch, float(r.revenue or 0), convert),
                 "bookings": int(r.bookings or 0),
             }
             for r in by_branch_rows
         ]
+
+        # By channel — group by (branch, channel) so we can FX-convert per
+        # branch, then collapse across branches into channel totals.
+        by_channel_raw = (
+            base.with_entities(
+                BookingMatch.branch,
+                BookingMatch.ads_channel,
+                func.count(BookingMatch.id).label("matches"),
+                func.sum(BookingMatch.ads_revenue).label("revenue"),
+                func.sum(BookingMatch.ads_bookings).label("bookings"),
+            )
+            .group_by(BookingMatch.branch, BookingMatch.ads_channel)
+            .all()
+        )
+        by_channel_agg: dict[str, dict] = {}
+        for r in by_channel_raw:
+            key = r.ads_channel or "unknown"
+            cur = by_channel_agg.setdefault(
+                key, {"channel": key, "matches": 0, "revenue": 0.0, "bookings": 0}
+            )
+            cur["matches"] += int(r.matches or 0)
+            cur["bookings"] += int(r.bookings or 0)
+            cur["revenue"] += _convert_revenue(r.branch, float(r.revenue or 0), convert)
+        by_channel = list(by_channel_agg.values())
 
         # By result
         by_result_rows = (
@@ -258,6 +342,7 @@ def booking_matches_summary(
             "total_matches": total_matches,
             "total_revenue": total_revenue,
             "total_bookings": total_bookings,
+            "currency": display_currency,
             "by_channel": by_channel,
             "by_branch": by_branch,
             "by_result": by_result,
@@ -367,7 +452,10 @@ def list_reservations(
             Reservation.reservation_date >= df,
             Reservation.reservation_date <= dt,
         )
-        ok, q, err = _apply_branch_scope(q, Reservation.branch, current_user, db, branch)
+        ok, q, err = _apply_branch_scope(
+            q, Reservation.branch, current_user, db,
+            [branch] if branch else None,
+        )
         if not ok:
             return _api_response(error=err)
         if source:
