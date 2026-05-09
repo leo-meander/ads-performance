@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal, get_db
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
-from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata, parse_country
+from app.services.parse_utils import (
+    parse_adset_metadata,
+    parse_campaign_metadata,
+    parse_country,
+    parse_google_country,
+)
 from app.services.sync_engine import sync_all_platforms
 
 logger = logging.getLogger(__name__)
@@ -334,6 +339,10 @@ def reparse_names(body: ReparseBody = ReparseBody(), db: Session = Depends(get_d
                 parsed = parse_campaign_metadata(c.name)
                 c.ta = parsed["ta"]
                 c.funnel_stage = parsed["funnel_stage"]
+                # Country lives on Campaign for Google (PMax has no AdSet to
+                # carry it). Re-derive whenever names or the parser change.
+                if c.platform == "google":
+                    c.country = parse_google_country(c.name or "")
                 reparsed += 1
                 if parsed["ta"] == "Unknown":
                     unknown_ta += 1
@@ -356,8 +365,10 @@ def reparse_names(body: ReparseBody = ReparseBody(), db: Session = Depends(get_d
 
             for a in adsets:
                 if a.platform == "google":
+                    # Google adgroups inherit country from parent campaign's
+                    # trailing token, NOT the Meta-style first-segment prefix.
                     source_name = campaign_names.get(a.campaign_id, "")
-                    country = parse_country(source_name)
+                    country = parse_google_country(source_name)
                 else:
                     source_name = a.name
                     country = parse_adset_metadata(a.name)["country"]
