@@ -1,6 +1,10 @@
 """Tests for name parsing engine."""
 
-from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
+from app.services.parse_utils import (
+    parse_adset_metadata,
+    parse_campaign_metadata,
+    parse_google_country,
+)
 
 
 class TestParseCampaignMetadata:
@@ -125,3 +129,34 @@ class TestParseAdsetMetadata:
     def test_all_lowercase(self):
         result = parse_adset_metadata("all_broad")
         assert result["country"] == "ALL"
+
+
+class TestParseGoogleCountry:
+    def test_iso_suffix_vn(self):
+        assert parse_google_country("Mason_SGN_[TOF] Sales_PMax Hotel ENG VN") == "VN"
+
+    def test_iso_suffix_jp(self):
+        assert parse_google_country("Mason_SGN_[TOF]_PMax_JP") == "JP"
+
+    def test_iso_suffix_uk(self):
+        assert parse_google_country("Mason_SGN_[TOF] PMax Hotel UK") == "UK"
+
+    def test_all_suffix_space_separated(self):
+        assert parse_google_country(
+            "Mason_SGN_[TOF] Sales_Landing Page_Direct Booking All"
+        ) == "ALL"
+
+    def test_all_suffix_underscore_separated(self):
+        assert parse_google_country("Mason_SGN_[MOF] Direct Booking_All") == "ALL"
+
+    def test_all_lowercase(self):
+        assert parse_google_country("Mason_SGN_[TOF] Direct Booking all") == "ALL"
+
+    def test_unknown_suffix(self):
+        assert parse_google_country("Random campaign name 123") == "Unknown"
+
+    def test_empty_name(self):
+        assert parse_google_country("") == "Unknown"
+
+    def test_none_name(self):
+        assert parse_google_country(None) == "Unknown"

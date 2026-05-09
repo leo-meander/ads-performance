@@ -64,12 +64,19 @@ def parse_google_country(name: str) -> str:
     """Extract ISO country code from the LAST 2 characters of a Google campaign name.
 
     Google campaigns at MEANDER follow the convention `..._XX` where XX is the
-    ISO 3166-1 alpha-2 code. Returns "Unknown" if the trailing 2 chars aren't
-    a recognised ISO code (e.g. campaign name ends in digits or unknown letters).
+    ISO 3166-1 alpha-2 code. A trailing "All" token (after space or underscore)
+    means the campaign targets multiple countries → return the "ALL" marker so
+    downstream filters keep these rows. Returns "Unknown" otherwise.
     """
     if not name:
         return "Unknown"
-    tail = name.strip()[-2:].upper()
+    stripped = name.strip()
+
+    last_token = re.split(r"[\s_]+", stripped)[-1] if stripped else ""
+    if last_token.upper() == "ALL":
+        return "ALL"
+
+    tail = stripped[-2:].upper()
     if tail in _GOOGLE_VALID_ISO:
         return tail
     logger.warning("Could not parse Google country from name: %s", name)
