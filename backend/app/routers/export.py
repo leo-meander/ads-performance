@@ -12,10 +12,30 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.branches import (
+    BRANCH_CURRENCY,
     canonical_branch,
     get_account_ids_for_branches,
     resolve_branch_for_account_name,
 )
+
+# Mirror of routers/booking_matches.py FX rule. Booking revenue is stored in
+# the branch's native currency on BookingMatch.ads_revenue; export endpoints
+# expose the native value verbatim AND a VND-converted value so consumers can
+# pick whichever they need without maintaining their own FX map.
+_FX_TO_VND = {
+    "VND": 1,
+    "TWD": 800,
+    "JPY": 170,
+    "USD": 25500,
+}
+
+
+def _booking_match_currency(branch_key: str | None) -> str:
+    return BRANCH_CURRENCY.get(branch_key or "", "VND")
+
+
+def _booking_match_revenue_vnd(branch_key: str | None, native_revenue: float) -> float:
+    return native_revenue * _FX_TO_VND.get(_booking_match_currency(branch_key), 1)
 from app.database import get_db
 from app.dependencies.auth import require_role
 from app.models.account import AdAccount
@@ -957,7 +977,16 @@ def export_booking_matches(
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
-    """Export Booking from Ads rows for external systems. Requires X-API-Key."""
+    """Export Booking from Ads rows for external systems. Requires X-API-Key.
+
+    Schema notes for consumers:
+      - ``ads_revenue`` is in the branch's native currency (per ``currency``).
+      - ``ads_revenue_vnd`` is the same value FX-converted to VND.
+      - The canonical date column is ``match_date`` — there is no
+        ``booking_date`` field. Filter by ``match_date`` for date windows.
+      - Channel/bookings fields use the ``ads_`` prefix
+        (``ads_channel``, ``ads_bookings``) — no aliases without the prefix.
+    """
     try:
         df, dt = _resolve_booking_date_range(date_from, date_to)
 
@@ -987,6 +1016,8 @@ def export_booking_matches(
                 "id": str(m.id),
                 "match_date": m.match_date.isoformat() if m.match_date else None,
                 "ads_revenue": float(m.ads_revenue or 0),
+                "ads_revenue_vnd": _booking_match_revenue_vnd(m.branch, float(m.ads_revenue or 0)),
+                "currency": _booking_match_currency(m.branch),
                 "ads_bookings": m.ads_bookings,
                 "ads_country": m.ads_country,
                 "ads_channel": m.ads_channel,
@@ -1029,7 +1060,16 @@ def export_booking_matches_summary(
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
-    """KPI roll-up for Booking from Ads."""
+    """KPI roll-up for Booking from Ads.
+
+    Revenue is FX-converted to VND per branch before aggregation. Mirrors the
+    rule used by the dashboard's /booking-matches/summary endpoint, so that
+    consumer apps see the same totals as the dashboard.
+
+    Per-branch rows keep both ``revenue_native`` (in the branch's currency)
+    and ``revenue_vnd`` so consumers can choose which to use without their
+    own FX map.
+    """
     try:
         df, dt = _resolve_booking_date_range(date_from, date_to)
 
@@ -1041,45 +1081,58 @@ def export_booking_matches_summary(
             base = base.filter(BookingMatch.branch == branch)
 
         total_matches = base.count()
-        total_revenue = float(base.with_entities(func.sum(BookingMatch.ads_revenue)).scalar() or 0)
         total_bookings = int(base.with_entities(func.sum(BookingMatch.ads_bookings)).scalar() or 0)
 
-        by_channel = [
-            {
-                "channel": r.ads_channel or "unknown",
-                "matches": int(r.matches or 0),
-                "revenue": float(r.revenue or 0),
-                "bookings": int(r.bookings or 0),
-            }
-            for r in base.with_entities(
-                BookingMatch.ads_channel,
-                func.count(BookingMatch.id).label("matches"),
-                func.sum(BookingMatch.ads_revenue).label("revenue"),
-                func.sum(BookingMatch.ads_bookings).label("bookings"),
-            ).group_by(BookingMatch.ads_channel).all()
-        ]
+        # Aggregate per (branch, channel) so we can FX-convert each branch's
+        # revenue with its own rate before summing.
+        per_branch_channel = base.with_entities(
+            BookingMatch.branch,
+            BookingMatch.ads_channel,
+            func.count(BookingMatch.id).label("matches"),
+            func.sum(BookingMatch.ads_revenue).label("revenue_native"),
+            func.sum(BookingMatch.ads_bookings).label("bookings"),
+        ).group_by(BookingMatch.branch, BookingMatch.ads_channel).all()
 
-        by_branch = [
-            {
-                "branch": r.branch or "unknown",
-                "matches": int(r.matches or 0),
-                "revenue": float(r.revenue or 0),
-                "bookings": int(r.bookings or 0),
-            }
-            for r in base.with_entities(
-                BookingMatch.branch,
-                func.count(BookingMatch.id).label("matches"),
-                func.sum(BookingMatch.ads_revenue).label("revenue"),
-                func.sum(BookingMatch.ads_bookings).label("bookings"),
-            ).group_by(BookingMatch.branch).all()
-        ]
+        by_branch_agg: dict[str, dict] = {}
+        by_channel_agg: dict[str, dict] = {}
+        total_revenue_vnd = 0.0
+        for r in per_branch_channel:
+            branch_key = r.branch
+            channel_key = r.ads_channel or "unknown"
+            native_rev = float(r.revenue_native or 0)
+            vnd_rev = _booking_match_revenue_vnd(branch_key, native_rev)
+            total_revenue_vnd += vnd_rev
+
+            b = by_branch_agg.setdefault(branch_key or "unknown", {
+                "branch": branch_key or "unknown",
+                "currency": _booking_match_currency(branch_key),
+                "matches": 0,
+                "revenue_native": 0.0,
+                "revenue_vnd": 0.0,
+                "bookings": 0,
+            })
+            b["matches"] += int(r.matches or 0)
+            b["revenue_native"] += native_rev
+            b["revenue_vnd"] += vnd_rev
+            b["bookings"] += int(r.bookings or 0)
+
+            c = by_channel_agg.setdefault(channel_key, {
+                "channel": channel_key,
+                "matches": 0,
+                "revenue_vnd": 0.0,
+                "bookings": 0,
+            })
+            c["matches"] += int(r.matches or 0)
+            c["revenue_vnd"] += vnd_rev
+            c["bookings"] += int(r.bookings or 0)
 
         return _api_response(data={
             "total_matches": total_matches,
-            "total_revenue": total_revenue,
+            "total_revenue_vnd": total_revenue_vnd,
             "total_bookings": total_bookings,
-            "by_channel": by_channel,
-            "by_branch": by_branch,
+            "currency": "VND",
+            "by_channel": list(by_channel_agg.values()),
+            "by_branch": list(by_branch_agg.values()),
             "period": {"from": df.isoformat(), "to": dt.isoformat()},
         })
     except Exception as e:
