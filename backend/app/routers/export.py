@@ -8,8 +8,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import exists, func, or_
+from sqlalchemy.orm import Session, aliased
 
 from app.core.branches import (
     BRANCH_CURRENCY,
@@ -42,6 +42,7 @@ from app.models.account import AdAccount
 from app.models.ad import Ad
 from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
+from app.models.ad_set import AdSet
 from app.models.ad_copy import AdCopy
 from app.models.ad_country_metric import AdCountryMetric
 from app.models.ad_material import AdMaterial
@@ -54,6 +55,7 @@ from app.models.metrics import MetricsCache
 from app.models.spy_saved_ad import SpySavedAd
 from app.models.user import User
 from app.services.budget_service import get_yearly_plan, list_monthly_splits
+from app.services.country_utils import COUNTRY_NAMES
 from app.services.export_auth import create_api_key, validate_api_key
 
 router = APIRouter()
@@ -773,6 +775,16 @@ def export_spend_daily(
         None,
         description="Filter by canonical branch (case-insensitive): saigon|taipei|1948|oani|osaka|bread",
     ),
+    valid_country_only: bool = Query(
+        False,
+        description=(
+            "Mirror the dashboard's KPI filter: drop ad-level rows, drop "
+            "campaign-level rows that have AdSets (anti-double-count for "
+            "Search-style platforms), and drop rows whose AdSet/Campaign "
+            "country didn't parse to a known ISO-2 code or 'ALL'. Set true "
+            "for parity with /api/dashboard/country aggregate.conversions."
+        ),
+    ),
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
@@ -780,6 +792,10 @@ def export_spend_daily(
 
     Each row = (date × platform × account). The `account_id` and `branch`
     fields let consumers re-aggregate by branch without parsing account_name.
+
+    Default behaviour SUMs across all metric grain levels (campaign, ad-set,
+    ad) which Meta and Google Search both populate — this inflates totals
+    vs. the dashboard. Pass ``valid_country_only=true`` for dashboard parity.
     """
     try:
         df = date.fromisoformat(date_from)
@@ -800,6 +816,20 @@ def export_spend_daily(
             MetricsCache.date >= df,
             MetricsCache.date <= dt,
         )
+
+        if valid_country_only:
+            # Mirror dashboard's _apply_common_filters logic so external
+            # consumers can hit dashboard-parity numbers without duplicating
+            # the join-and-filter dance themselves.
+            adset_alias = aliased(AdSet)
+            q = q.outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
+            has_adset = exists().where(adset_alias.campaign_id == MetricsCache.campaign_id)
+            country_col = func.coalesce(AdSet.country, Campaign.country)
+            q = q.filter(
+                MetricsCache.ad_id.is_(None),
+                or_(MetricsCache.ad_set_id.isnot(None), ~has_adset),
+                country_col.in_(list(COUNTRY_NAMES.keys())),
+            )
 
         if platform:
             q = q.filter(MetricsCache.platform == platform)
