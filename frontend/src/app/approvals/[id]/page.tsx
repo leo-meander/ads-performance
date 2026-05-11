@@ -248,10 +248,11 @@ export default function ApprovalDetailPage() {
   if (!approval) return <p className="text-red-500">Approval not found</p>
 
   const isCreator = user?.id === approval.submitted_by
+  const isAdmin = !!user && (user.is_admin === true || (user.roles || []).includes('admin'))
   const isAssignedReviewer = approval.reviewers.some(
     r => r.reviewer_id === user?.id && r.status === 'PENDING'
   )
-  const canLaunch = isCreator && approval.status === 'APPROVED' && !approval.launch_status
+  const canLaunch = (isCreator || isAdmin) && approval.status === 'APPROVED' && !approval.launch_status
 
   return (
     <div>
