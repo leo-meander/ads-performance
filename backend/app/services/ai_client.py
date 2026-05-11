@@ -23,9 +23,54 @@ from app.services.ai_tools import TOOLS, execute_tool
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-20250514"
+ROUTER_MODEL = "claude-haiku-4-5-20251001"   # cheap classifier (~$0.0002/call)
+SIMPLE_MODEL = "claude-haiku-4-5-20251001"   # single-tool lookups
+COMPLEX_MODEL = "claude-sonnet-4-6"          # 6-step framework / synthesis
 MAX_TOKENS = 4096
 MAX_TOOL_TURNS = 8  # safety cap; framework needs ~3-5 tool calls in practice
+
+ROUTER_SYSTEM = """Classify the user's message into exactly one of:
+
+- SIMPLE: a single lookup, one tool call usually suffices. Examples:
+  "ROAS Saigon tháng này?", "OCC Osaka tuần sau?", "lead time KR là bao nhiêu?",
+  "holidays VN tháng 6", "list active campaigns Taipei", "what's the spend on X?".
+
+- COMPLEX: strategy, brief, or synthesis across multiple data sources. Examples:
+  "brief design ad cho VN Meander Saigon", "should I increase budget for Osaka?",
+  "recommend angles for ...", "make me a content brief", anything needing the
+  6-step framework or combining holidays + occupancy + ads + angles.
+
+Reply with exactly one word: SIMPLE or COMPLEX. No explanation."""
+
+
+def _classify(client: Anthropic, message: str) -> str:
+    """Route a user query to SIMPLE or COMPLEX. Defaults to COMPLEX on error."""
+    try:
+        resp = client.messages.create(
+            model=ROUTER_MODEL,
+            max_tokens=4,
+            system=ROUTER_SYSTEM,
+            messages=[{"role": "user", "content": message[:1000]}],
+        )
+        text = (resp.content[0].text or "").strip().upper()
+        return "COMPLEX" if "COMPLEX" in text else "SIMPLE"
+    except Exception:
+        logger.exception("Router classify failed; defaulting to COMPLEX")
+        return "COMPLEX"
+
+
+def _tools_with_cache(tools: list[dict]) -> list[dict]:
+    """Mark the last tool with cache_control so the whole tools array is cached."""
+    if not tools:
+        return tools
+    cached = list(tools)
+    last = dict(cached[-1])
+    last["cache_control"] = {"type": "ephemeral"}
+    cached[-1] = last
+    return cached
+
+
+_CACHED_TOOLS = _tools_with_cache(TOOLS)
 
 
 SYSTEM_PROMPT = """You are an expert hotel marketing analyst for MEANDER Group — 5 hotel/hostel branches across Asia + 1 restaurant:
@@ -88,12 +133,29 @@ def chat_stream(
     client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     messages: list[dict] = list(history_messages)
 
+    # Route the latest user query: SIMPLE → Haiku, COMPLEX → Sonnet.
+    # Router cost is ~$0.0002 per chat; saves ~3x on the bulk of single-lookup queries.
+    last_user_text = ""
+    for m in reversed(messages):
+        if m["role"] == "user" and isinstance(m.get("content"), str):
+            last_user_text = m["content"]
+            break
+    complexity = _classify(client, last_user_text) if last_user_text else "COMPLEX"
+    model = COMPLEX_MODEL if complexity == "COMPLEX" else SIMPLE_MODEL
+    logger.info("AI chat routed: %s → %s", complexity, model)
+
+    cached_system = [{
+        "type": "text",
+        "text": SYSTEM_PROMPT,
+        "cache_control": {"type": "ephemeral"},
+    }]
+
     for turn in range(MAX_TOOL_TURNS):
         with client.messages.stream(
-            model=MODEL,
+            model=model,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
+            system=cached_system,
+            tools=_CACHED_TOOLS,
             messages=messages,
         ) as stream:
             for text in stream.text_stream:
