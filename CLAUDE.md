@@ -6,10 +6,11 @@ Consolidates Meta, Google, TikTok Ads with rule automation, budget tracking,
 country/TA analytics, AI creative suggestions, and Figma integration.
 
 ## Tech Stack
-- Backend: Python FastAPI + Celery + Redis
+- Backend: Python FastAPI + Celery + Redis (Zeabur cron is preferred for new
+  schedulers — see /api/internal/tasks/* + INTERNAL_TASK_SECRET)
 - Frontend: Next.js 14 (TypeScript) + shadcn/ui + Recharts + Tailwind
-- Database: PostgreSQL 16 (Zeabur managed)
-- External: Claude API, Figma API, Meta/Google/TikTok Ads APIs
+- Database: PostgreSQL 16 (Supabase managed) + pgvector for creative embeddings
+- External: Claude API, Voyage AI (embeddings), Figma API, Meta/Google/TikTok Ads APIs
 - Deployment: Zeabur (all services)
 
 ## Architecture Overview
@@ -62,11 +63,17 @@ NOTE: /campaigns is REMOVED — do not recreate it
 - Migration: cd backend && alembic upgrade head
 
 ## Current Phase
-Phase 7: Google Ads Integration
-Google Ads API client (PMax + Search), sync engine, 2 new tables
-(google_asset_groups, google_assets), 9 new API endpoints,
-5 frontend pages (Google Dashboard, PMax list/detail, Search list/detail).
-Migration: 006_google_ads.
+Phase 8: Creative Intelligence (migrations 033-036)
+- Canva integration removed; Figma is the variant-generation surface.
+- Visual tagging: Claude Sonnet vision scores ad_materials across 7
+  dimensions; tags stored on creative_visual_tags.
+- Semantic search: Voyage voyage-3-large embeddings on combos / copies /
+  materials; cosine search via pgvector. Routes: /api/creative/search,
+  /api/creative/similar/{combo_id}.
+- AI brief generator: /api/creative/brief — given a branch/TA/vibe, emits
+  N grounded brief variants + recommended Figma templates.
+- Figma surface: /api/figma/templates + /api/figma/jobs. Cron pollers:
+  /api/internal/tasks/{vision-tag-materials,embed-creatives,figma-job-poll}.
 
 ## Branches (6 total)
 5 hotels + 1 restaurant — each maps to one or more ad_accounts.

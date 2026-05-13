@@ -18,6 +18,7 @@ from app.routers import (
     creative,
     creative_intelligence,
     export,
+    figma,
     funnel_recommendations,
     google_campaigns,
     google_recommendations,
@@ -62,6 +63,7 @@ app.include_router(rules.router, prefix="/api", tags=["rules"])
 app.include_router(tactics.router, prefix="/api", tags=["tactics"])
 app.include_router(creative.router, prefix="/api", tags=["creative"])
 app.include_router(creative_intelligence.router, prefix="/api", tags=["creative-intelligence"])
+app.include_router(figma.router, prefix="/api", tags=["figma"])
 app.include_router(ai.router, prefix="/api", tags=["ai"])
 app.include_router(sync.router, prefix="/api", tags=["sync"])
 app.include_router(budget.router, prefix="/api", tags=["budget"])

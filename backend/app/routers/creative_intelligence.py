@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.permissions import scoped_account_ids
@@ -334,6 +335,51 @@ def semantic_search(
             "query": q,
             "engine": "voyage",
         })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+class BriefRequest(BaseModel):
+    branch_id: str
+    target_audience: str | None = None
+    country: str | None = None
+    vibe: str | None = None
+    n_variants: int = 3
+    performance_goal: str = "roas"
+
+
+@router.post("/creative/brief")
+def generate_brief_endpoint(
+    body: BriefRequest,
+    current_user: User = Depends(require_section("meta_ads")),
+    db: Session = Depends(get_db),
+):
+    """Produce N AI-generated brief variants grounded in the branch's winners.
+
+    Returns the briefs + the pattern summary that fed the model + a short list
+    of recommended Figma templates ready to clone.
+    """
+    try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=body.branch_id
+        )
+        if not ok:
+            return _api_response(error=err)
+
+        from app.services.creative_brief_service import generate_brief
+
+        result = generate_brief(
+            db,
+            branch_id=body.branch_id,
+            target_audience=body.target_audience,
+            country=body.country,
+            vibe=body.vibe,
+            n_variants=body.n_variants,
+            performance_goal=body.performance_goal,
+        )
+        return _api_response(data=result)
+    except ValueError as e:
+        return _api_response(error=str(e))
     except Exception as e:
         return _api_response(error=str(e))
 

@@ -234,6 +234,21 @@ def _do_embed_creatives(db, limit_per_table: int = 32):
     return counts
 
 
+def _do_figma_job_poll(db, limit: int = 25):
+    """Walk PENDING/RUNNING figma_jobs, export the master frame, mark COMPLETED.
+
+    Cheap path — one Figma /images call per job. Templates that have moved or
+    been deleted in Figma surface as FAILED with the API error message.
+    """
+    from app.services.figma_service import poll_pending_jobs
+    counts = poll_pending_jobs(db, limit=limit)
+    logger.info(
+        "[figma-job-poll] polled=%d completed=%d failed=%d",
+        counts["polled"], counts["completed"], counts["failed"],
+    )
+    return counts
+
+
 @router.post("/internal/tasks/sync-all-platforms", status_code=202)
 def trigger_sync_all_platforms(
     background_tasks: BackgroundTasks,
@@ -361,6 +376,24 @@ def trigger_embed_creatives(
     db = SessionLocal()
     try:
         counts = _do_embed_creatives(db, limit_per_table=limit_per_table)
+    finally:
+        db.close()
+    return _api_response(data={"status": "ok", **counts})
+
+
+@router.post("/internal/tasks/figma-job-poll", status_code=200)
+def trigger_figma_job_poll(
+    x_internal_secret: str | None = Header(default=None),
+    limit: int = 25,
+):
+    """Every ~2 min: complete PENDING figma_jobs by exporting their master
+    frame as PNG. Inline (work is bounded to limit × 1 HTTP call)."""
+    _require_secret(x_internal_secret)
+    if limit <= 0 or limit > 50:
+        raise HTTPException(status_code=400, detail="limit must be 1..50")
+    db = SessionLocal()
+    try:
+        counts = _do_figma_job_poll(db, limit=limit)
     finally:
         db.close()
     return _api_response(data={"status": "ok", **counts})

@@ -8,6 +8,7 @@ from app.models.budget import BudgetAllocation, BudgetMonthlySplit, BudgetPlan, 
 from app.models.campaign import Campaign
 from app.models.creative_visual_tag import CreativeVisualTag
 from app.models.currency_rate import CurrencyRate
+from app.models.figma import FigmaJob, FigmaTemplate
 from app.models.metrics import MetricsCache
 from app.models.reservation import Reservation
 from app.models.rule import AutomationRule
@@ -47,6 +48,8 @@ __all__ = [
     "Campaign",
     "CreativeVisualTag",
     "CurrencyRate",
+    "FigmaJob",
+    "FigmaTemplate",
     "GoogleAssetGroup",
     "GoogleAsset",
     "GoogleRecommendation",
