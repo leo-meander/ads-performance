@@ -16,3 +16,11 @@ class AdAccount(TimestampMixin, Base):
     # (e.g. "514380737") — the GA4 SDK expects "properties/{id}" which we
     # prefix at query time.
     ga4_property_id = Column(String(50), nullable=True)
+    # Facebook Page the ads are published from. Required by Meta when
+    # building an AdCreative with link_data — every link ad ships under a
+    # Page. Stored per-branch because each property has its own Page.
+    meta_page_id = Column(String(50), nullable=True)
+    # Fallback landing URL used by AdCreative.link_data.link when the combo
+    # has no explicit destination. Typically the branch homepage or default
+    # booking page.
+    default_destination_url = Column(Text, nullable=True)

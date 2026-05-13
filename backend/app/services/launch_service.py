@@ -10,6 +10,7 @@ from app.models.campaign import Campaign
 from app.models.campaign_auto_config import CampaignAutoConfig
 from app.models.user import User
 from app.services.changelog import log_change
+from app.services.meta_creative_builder import build_or_get_meta_creative
 from app.services.notification_service import create_notification
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def launch_to_existing_campaign(
 
     try:
         account = _get_account_for_campaign(db, campaign)
-        meta_ad_id = _create_meta_ad_from_ids(account, adset.platform_adset_id, combo)
+        meta_ad_id = _create_meta_ad_from_ids(account, adset.platform_adset_id, combo, db=db)
 
         approval.launch_campaign_id = campaign_id
         approval.launch_meta_ad_id = meta_ad_id
@@ -117,7 +118,7 @@ def launch_with_new_campaign(
         meta_adset_id = _create_meta_adset(account, meta_campaign_id, combo, config, country)
 
         # Step 3: Create ad
-        meta_ad_id = _create_meta_ad_from_ids(account, meta_adset_id, combo)
+        meta_ad_id = _create_meta_ad_from_ids(account, meta_adset_id, combo, db=db)
 
         approval.launch_meta_ad_id = meta_ad_id
         approval.launch_status = "LAUNCHED"
@@ -345,10 +346,18 @@ def _create_meta_adset(account, campaign_id: str, combo, config, country: str) -
     return result["id"]
 
 
-def _create_meta_ad_from_ids(account, adset_id: str, combo) -> str:
-    """Create an ad using platform adset ID."""
+def _create_meta_ad_from_ids(account, adset_id: str, combo, *, db: Session) -> str:
+    """Create an ad using platform adset ID.
+
+    Builds a real Meta AdCreative from the combo's material+copy first
+    (via meta_creative_builder) — passing combo.material_id straight in as
+    a creative_id is wrong; that field is an internal "MAT-001" short id,
+    not a Meta creative id.
+    """
     from facebook_business.adobjects.adaccount import AdAccount as FBAdAccount
     from facebook_business.api import FacebookAdsApi
+
+    creative_id = build_or_get_meta_creative(db, account, combo)
 
     FacebookAdsApi.init(access_token=account.access_token_enc)
     fb_account = FBAdAccount(f"act_{account.account_id}")
@@ -356,7 +365,7 @@ def _create_meta_ad_from_ids(account, adset_id: str, combo) -> str:
     params = {
         "name": combo.ad_name or combo.combo_id,
         "adset_id": adset_id,
-        "creative": {"creative_id": combo.material_id},
+        "creative": {"creative_id": creative_id},
         "status": "PAUSED",
     }
     result = fb_account.create_ad(params=params)

@@ -27,3 +27,18 @@ class AdMaterial(TimestampMixin, Base):
     # Creative Intelligence Phase 2 — embedding bookkeeping (see ad_combo.py).
     embedded_at = Column(DateTime(timezone=True), nullable=True, index=True)
     embedding_model = Column(String(40), nullable=True)
+
+    # Figma source for the launch pipeline. When both are set, the meta
+    # creative builder renders the frame via /v1/images instead of falling
+    # back to file_url (Drive). file_url stays the canonical link the
+    # designer maintains; this just lets us re-render on demand without
+    # human intervention.
+    figma_file_key = Column(String(80), nullable=True)
+    figma_node_id = Column(String(80), nullable=True)
+
+    # Meta /act_xxx/adimages returns a hash after the first upload of a
+    # rendered PNG. We cache it here so subsequent launches of the same
+    # material skip the render+upload roundtrip. Designers can null it out
+    # via a future "force re-render" action when the underlying frame
+    # changes.
+    meta_image_hash = Column(String(128), nullable=True)
