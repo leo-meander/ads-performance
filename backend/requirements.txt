@@ -27,6 +27,10 @@ openai-whisper>=20240930
 yt-dlp>=2024.0.0
 requests>=2.31.0
 
+# Embeddings — Voyage AI client + pgvector SQLAlchemy type
+voyageai>=0.3.0
+pgvector>=0.3.6
+
 # HTTP Client
 httpx==0.28.1
 

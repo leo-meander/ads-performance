@@ -1,4 +1,4 @@
-from sqlalchemy import Column, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 
 from app.models.base import Base, JSONType, TimestampMixin, UUIDType
 
@@ -43,3 +43,10 @@ class AdCombo(TimestampMixin, Base):
     hook_rate = Column(Numeric(8, 6), nullable=True)  # video_play / impressions (3s view rate)
     thruplay_rate = Column(Numeric(8, 6), nullable=True)  # thruplay / video_plays
     video_complete_rate = Column(Numeric(8, 6), nullable=True)  # p100 / video_plays
+
+    # Creative Intelligence Phase 2 — embedding bookkeeping. The actual
+    # `embedding` column is pgvector(1024) and is read/written via raw SQL
+    # in embedding_service (kept off the SQLAlchemy schema so SQLite tests
+    # don't need the pgvector extension).
+    embedded_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    embedding_model = Column(String(40), nullable=True)

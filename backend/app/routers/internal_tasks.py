@@ -222,6 +222,18 @@ def _do_vision_tag_materials(db, limit: int = 25):
     return summary
 
 
+def _do_embed_creatives(db, limit_per_table: int = 32):
+    """Voyage AI embed the next batch of un-embedded combos/copies/materials.
+
+    Inline; one tick processes up to limit×3 rows. Voyage batch endpoint
+    handles 128/call so a single tick is one HTTP round-trip per table.
+    """
+    from app.services.embedding_service import embed_pending
+    counts = embed_pending(db, limit_per_table=limit_per_table)
+    logger.info("[embed-creatives] %s", counts)
+    return counts
+
+
 @router.post("/internal/tasks/sync-all-platforms", status_code=202)
 def trigger_sync_all_platforms(
     background_tasks: BackgroundTasks,
@@ -331,6 +343,27 @@ def trigger_vision_tag_materials(
     finally:
         db.close()
     return _api_response(data={"status": "ok", **{k: v for k, v in summary.items() if k != "results"}})
+
+
+@router.post("/internal/tasks/embed-creatives", status_code=200)
+def trigger_embed_creatives(
+    x_internal_secret: str | None = Header(default=None),
+    limit_per_table: int = 32,
+):
+    """Every ~10 min: embed the next un-embedded slice of combos/copies/materials.
+
+    `limit_per_table` capped at 128 (Voyage's per-call max). Returns per-table
+    counts inline. Cheap (~$0.001 per 100 rows) so safe to run frequently.
+    """
+    _require_secret(x_internal_secret)
+    if limit_per_table <= 0 or limit_per_table > 128:
+        raise HTTPException(status_code=400, detail="limit_per_table must be 1..128")
+    db = SessionLocal()
+    try:
+        counts = _do_embed_creatives(db, limit_per_table=limit_per_table)
+    finally:
+        db.close()
+    return _api_response(data={"status": "ok", **counts})
 
 
 # --------------------------------------------------- recommendation engines --

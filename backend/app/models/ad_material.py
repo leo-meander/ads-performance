@@ -23,3 +23,7 @@ class AdMaterial(TimestampMixin, Base):
     # constant; mismatches trigger a re-tag.
     vision_analyzed_at = Column(DateTime(timezone=True), nullable=True, index=True)
     vision_model = Column(String(40), nullable=True)
+
+    # Creative Intelligence Phase 2 — embedding bookkeeping (see ad_combo.py).
+    embedded_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    embedding_model = Column(String(40), nullable=True)

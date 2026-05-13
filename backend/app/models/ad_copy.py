@@ -1,4 +1,4 @@
-from sqlalchemy import Column, ForeignKey, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, String, Text
 
 from app.models.base import Base, TimestampMixin, UUIDType
 
@@ -15,3 +15,7 @@ class AdCopy(TimestampMixin, Base):
     cta = Column(String(200), nullable=True)  # Call to action
     language = Column(String(10), nullable=False, default="en")  # en | vi | zh | ja
     derived_verdict = Column(String(10), nullable=True)  # WIN | TEST | LOSE — READ-ONLY from combos
+
+    # Creative Intelligence Phase 2 — embedding bookkeeping (see ad_combo.py).
+    embedded_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    embedding_model = Column(String(40), nullable=True)
