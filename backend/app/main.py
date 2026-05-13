@@ -29,6 +29,7 @@ from app.routers import (
     rules,
     settings as settings_router,
     sync,
+    tactics,
     transcriptions,
     users,
     winning_ads,
@@ -57,6 +58,7 @@ app.add_middleware(
 app.include_router(accounts.router, prefix="/api", tags=["accounts"])
 app.include_router(campaigns.router, prefix="/api", tags=["campaigns"])
 app.include_router(rules.router, prefix="/api", tags=["rules"])
+app.include_router(tactics.router, prefix="/api", tags=["tactics"])
 app.include_router(creative.router, prefix="/api", tags=["creative"])
 app.include_router(ai.router, prefix="/api", tags=["ai"])
 app.include_router(sync.router, prefix="/api", tags=["sync"])

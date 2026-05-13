@@ -1,0 +1,365 @@
+"""Tactics: preset materialization, lifecycle, revert phase, sunsetting steps."""
+import uuid
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.models.account import AdAccount
+from app.models.action_log import ActionLog
+from app.models.ad import Ad
+# Force-import FK-target models so Base.metadata is complete before create_all.
+# The default app.models __init__ doesn't include these, so tests must pull
+# them in explicitly to avoid NoReferencedTableError during table creation.
+from app.models.ad_angle import AdAngle  # noqa: F401
+from app.models.ad_combo import AdCombo  # noqa: F401
+from app.models.ad_copy import AdCopy  # noqa: F401
+from app.models.ad_material import AdMaterial  # noqa: F401
+from app.models.ad_set import AdSet
+from app.models.base import Base
+from app.models.campaign import Campaign
+from app.models.rule import AutomationRule
+from app.models.tactic import Tactic
+from app.services import tactic_engine, tactic_service
+from app.services.tactic_presets import (
+    PRESETS,
+    REVERT_NEXT_DAY,
+    REVERT_NONE,
+    REVERT_ON_RECOVERY,
+)
+
+engine = create_engine(
+    "sqlite:///test_tactics.db", connect_args={"check_same_thread": False},
+)
+TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@pytest.fixture(autouse=True)
+def setup_db():
+    Base.metadata.create_all(bind=engine)
+    yield
+    Base.metadata.drop_all(bind=engine)
+
+
+def _seed_tree():
+    """Create AdAccount → Campaign → AdSet → Ad and return the IDs."""
+    db = TestSession()
+    acc = AdAccount(
+        id=str(uuid.uuid4()),
+        platform="meta",
+        account_id=f"act_{uuid.uuid4().hex[:6]}",
+        account_name="Saigon",
+        currency="VND",
+        is_active=True,
+        access_token_enc="token-x",
+    )
+    db.add(acc)
+    db.flush()
+    camp = Campaign(
+        id=str(uuid.uuid4()),
+        account_id=acc.id,
+        platform="meta",
+        platform_campaign_id=f"camp_{uuid.uuid4().hex[:6]}",
+        name="Test Campaign",
+        objective="OUTCOME_SALES",
+        status="ACTIVE",
+        daily_budget=500000,
+    )
+    db.add(camp)
+    db.flush()
+    adset = AdSet(
+        id=str(uuid.uuid4()),
+        campaign_id=camp.id,
+        account_id=acc.id,
+        platform="meta",
+        platform_adset_id=f"adset_{uuid.uuid4().hex[:6]}",
+        name="Test AdSet",
+        status="ACTIVE",
+        daily_budget=200000,
+    )
+    db.add(adset)
+    db.flush()
+    ad = Ad(
+        id=str(uuid.uuid4()),
+        ad_set_id=adset.id,
+        campaign_id=camp.id,
+        account_id=acc.id,
+        platform="meta",
+        platform_ad_id=f"ad_{uuid.uuid4().hex[:6]}",
+        name="Test Ad",
+        status="ACTIVE",
+    )
+    db.add(ad)
+    db.commit()
+    ids = {"acc": acc.id, "campaign": camp.id, "adset": adset.id, "ad": ad.id}
+    db.close()
+    return ids
+
+
+# ---------------------------------------------------------------------------
+# Preset → AutomationRule materialization
+# ---------------------------------------------------------------------------
+
+def test_create_from_preset_surf_adset_materializes_one_rule():
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db,
+        preset_type="surf_adset",
+        platform="meta",
+        account_id=ids["acc"],
+        config_overrides={"roas_min": 4.0, "budget_multiplier": 1.5},
+    )
+    assert t.preset_type == "surf_adset"
+    assert t.config["roas_min"] == 4.0
+    assert t.config["budget_multiplier"] == 1.5
+    assert t.config["_revert_policy"] == REVERT_NEXT_DAY
+
+    rules = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).all()
+    assert len(rules) == 1
+    rule = rules[0]
+    assert rule.entity_level == "ad_set"
+    assert rule.action == "adjust_budget"
+    # First condition is the user-tunable roas_min (after override).
+    assert rule.conditions[0]["threshold"] == 4.0
+    assert rule.action_params["budget_multiplier"] == 1.5
+    assert rule.action_params["max_budget_cap_multiplier"] == 2.0  # preset default
+    db.close()
+
+
+def test_toggle_cascades_to_linked_rules():
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="stop_loss_ad", platform="meta", account_id=ids["acc"],
+    )
+    tactic_service.toggle_tactic(db, t.id, False)
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+    assert rule.is_active is False
+    tactic_service.toggle_tactic(db, t.id, True)
+    db.refresh(rule)
+    assert rule.is_active is True
+    db.close()
+
+
+def test_update_config_rewrites_rules():
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="stop_loss_ad", platform="meta", account_id=ids["acc"],
+    )
+    tactic_service.update_tactic_config(db, t.id, {"roas_min": 0.5})
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+    # First condition is roas; the threshold should reflect the override.
+    roas_cond = next(c for c in rule.conditions if c["metric"] == "roas")
+    assert roas_cond["threshold"] == 0.5
+    db.close()
+
+
+def test_delete_cascades_rules():
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="surf_campaign", platform="meta", account_id=ids["acc"],
+    )
+    tactic_id = t.id
+    tactic_service.delete_tactic(db, tactic_id)
+    remaining = (
+        db.query(AutomationRule).filter(AutomationRule.tactic_id == tactic_id).count()
+    )
+    assert remaining == 0
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Tactic budget computation
+# ---------------------------------------------------------------------------
+
+def test_surf_compute_applies_multiplier_and_cap():
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="surf_adset", platform="meta", account_id=ids["acc"],
+        config_overrides={"budget_multiplier": 5.0, "max_budget_cap_multiplier": 2.0},
+    )
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+    adset = db.query(AdSet).filter(AdSet.id == ids["adset"]).first()
+    out = tactic_engine.compute_tactic_budget(db, rule, adset, "ad_set")
+    # current=200000, 5x=1000000, cap at 2x=400000 → expect 400000
+    assert out["new_budget"] == 400000
+    assert out["cap_applied"] is True
+    assert out["should_pause"] is False
+    db.close()
+
+
+def test_sunsetting_progresses_through_three_steps():
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="sunsetting", platform="meta", account_id=ids["acc"],
+    )
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+    adset = db.query(AdSet).filter(AdSet.id == ids["adset"]).first()
+
+    # Step 1: no prior logs → step=1, budget = 200000 * 0.75 = 150000.
+    out = tactic_engine.compute_tactic_budget(db, rule, adset, "ad_set")
+    assert out["sunsetting_step"] == 1
+    assert out["new_budget"] == 150000
+
+    # Simulate first sunsetting hit logged.
+    db.add(ActionLog(
+        rule_id=rule.id, campaign_id=adset.campaign_id, ad_set_id=adset.id, ad_id=None,
+        platform="meta", action="adjust_budget",
+        action_params={
+            "tactic_id": t.id, "sunsetting": True,
+            "original_state": {"daily_budget": 200000.0, "status": "ACTIVE"},
+            "new_state": {"daily_budget": 150000.0, "status": "ACTIVE"},
+        },
+        triggered_by="rule", metrics_snapshot=None, success=True,
+        executed_at=datetime.now(timezone.utc) - timedelta(days=2),
+    ))
+    db.commit()
+
+    # Step 2: budget = 200000 * 0.50 = 100000 (cumulative from origin).
+    out2 = tactic_engine.compute_tactic_budget(db, rule, adset, "ad_set")
+    assert out2["sunsetting_step"] == 2
+    assert out2["new_budget"] == 100000
+    assert out2["should_pause"] is False
+
+    # Simulate second sunsetting hit.
+    db.add(ActionLog(
+        rule_id=rule.id, campaign_id=adset.campaign_id, ad_set_id=adset.id, ad_id=None,
+        platform="meta", action="adjust_budget",
+        action_params={
+            "tactic_id": t.id, "sunsetting": True,
+            "original_state": {"daily_budget": 150000.0, "status": "ACTIVE"},
+            "new_state": {"daily_budget": 100000.0, "status": "ACTIVE"},
+        },
+        triggered_by="rule", metrics_snapshot=None, success=True,
+        executed_at=datetime.now(timezone.utc) - timedelta(days=1),
+    ))
+    db.commit()
+
+    # Step 3: pause.
+    out3 = tactic_engine.compute_tactic_budget(db, rule, adset, "ad_set")
+    assert out3["sunsetting_step"] == 3
+    assert out3["should_pause"] is True
+    db.close()
+
+
+def test_scale_winning_ratchets_until_cap():
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="scale_winning_adset", platform="meta", account_id=ids["acc"],
+        config_overrides={"daily_step_pct": 0.20, "max_budget_cap_multiplier": 2.0},
+    )
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+    adset = db.query(AdSet).filter(AdSet.id == ids["adset"]).first()
+
+    # First fire: 200000 * 1.2 = 240000. origin = 200000 (no prior logs).
+    out1 = tactic_engine.compute_tactic_budget(db, rule, adset, "ad_set")
+    assert out1["new_budget"] == 240000
+    assert out1["cap_applied"] is False
+
+    # Seed first scale_winning log to anchor origin at 200000.
+    db.add(ActionLog(
+        rule_id=rule.id, campaign_id=adset.campaign_id, ad_set_id=adset.id, ad_id=None,
+        platform="meta", action="adjust_budget",
+        action_params={
+            "tactic_id": t.id, "scale_winning": True,
+            "original_state": {"daily_budget": 200000.0, "status": "ACTIVE"},
+            "new_state": {"daily_budget": 240000.0, "status": "ACTIVE"},
+        },
+        triggered_by="rule", metrics_snapshot=None, success=True,
+        executed_at=datetime.now(timezone.utc) - timedelta(days=3),
+    ))
+    db.commit()
+
+    # Simulate current budget after several ratchets — closer to cap.
+    adset.daily_budget = 380000
+    db.commit()
+
+    # 380000 * 1.2 = 456000, cap = 200000 * 2.0 = 400000 → 400000, cap_applied=True.
+    out2 = tactic_engine.compute_tactic_budget(db, rule, adset, "ad_set")
+    assert out2["new_budget"] == 400000
+    assert out2["cap_applied"] is True
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Revert phase
+# ---------------------------------------------------------------------------
+
+def test_revert_finds_yesterday_next_day_actions_and_skips_already_reverted():
+    ids = _seed_tree()
+    db = TestSession()
+    # One eligible mutation from yesterday + one identical mutation but flagged
+    # as already-reverted by a sister log entry.
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    log_eligible = ActionLog(
+        rule_id=None, campaign_id=ids["campaign"], ad_set_id=ids["adset"], ad_id=None,
+        platform="meta", action="adjust_budget",
+        action_params={
+            "tactic_id": "fake", "preset_type": "surf_adset", "revert_policy": "next_day",
+            "original_state": {"daily_budget": 200000.0, "status": "ACTIVE"},
+            "new_state": {"daily_budget": 250000.0, "status": "ACTIVE"},
+        },
+        triggered_by="rule", metrics_snapshot=None, success=True, executed_at=yesterday,
+    )
+    db.add(log_eligible)
+    db.commit()
+
+    # Patch Meta calls — we want to exercise the revert flow without touching the network.
+    with patch("app.services.tactic_engine.update_ad_set_budget", return_value=True):
+        summary = tactic_engine.revert_tactic_actions(db, lookback_days=2)
+    assert summary["candidates"] == 1
+    assert summary["reverted"] == 1
+
+    # Run again — the sister tactic_revert log should now block re-revert.
+    with patch("app.services.tactic_engine.update_ad_set_budget", return_value=True):
+        summary2 = tactic_engine.revert_tactic_actions(db, lookback_days=2)
+    assert summary2["candidates"] == 1
+    assert summary2["skipped_already_reverted"] == 1
+    assert summary2["reverted"] == 0
+    db.close()
+
+
+def test_revert_ignores_actions_without_next_day_policy():
+    ids = _seed_tree()
+    db = TestSession()
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    db.add(ActionLog(
+        rule_id=None, campaign_id=ids["campaign"], ad_set_id=ids["adset"], ad_id=None,
+        platform="meta", action="pause_adset",
+        action_params={
+            "tactic_id": "fake", "revert_policy": "none",
+            "original_state": {"daily_budget": 200000.0, "status": "ACTIVE"},
+            "new_state": {"daily_budget": 200000.0, "status": "PAUSED"},
+        },
+        triggered_by="rule", metrics_snapshot=None, success=True, executed_at=yesterday,
+    ))
+    db.commit()
+    summary = tactic_engine.revert_tactic_actions(db, lookback_days=2)
+    assert summary["candidates"] == 0
+    assert summary["reverted"] == 0
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Preset registry sanity
+# ---------------------------------------------------------------------------
+
+def test_all_presets_have_required_fields():
+    for key, preset in PRESETS.items():
+        assert preset.name
+        assert preset.default_config
+        assert preset.revert_policy in (REVERT_NEXT_DAY, REVERT_NONE, REVERT_ON_RECOVERY)
+        # rule_specs_fn must accept the default config and return at least one spec.
+        specs = preset.rule_specs_fn({**preset.default_config, "_preset_type": key})
+        assert specs, f"preset {key} produced no rule specs"
+        for s in specs:
+            assert s.entity_level in ("campaign", "ad_set", "ad")
+            assert s.action

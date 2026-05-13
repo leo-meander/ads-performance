@@ -153,6 +153,36 @@ def _do_daily_rule_cycle(db):
     sync_all_platforms(db)
 
 
+def _do_run_daily_tactics(db):
+    """Daily tactics cron: revert yesterday's REVERT_NEXT_DAY mutations,
+    sync (which evaluates all rules at the tail), then stamp tactic.last_run_at.
+
+    Schedule at 17:00 UTC (= 00:00 VN / 01:00 TW / 02:00 JP — start of a new
+    day across all MEANDER branches).
+    """
+    from app.services.rule_engine import reenable_paused_ads
+    from app.services.sync_engine import sync_all_platforms
+    from app.services.tactic_engine import revert_tactic_actions, stamp_last_run
+
+    # 1) Revert tactic-driven mutations from yesterday (SURF budget surges,
+    #    Pause-Today resumes, etc.). Runs BEFORE legacy reenable_paused_ads so
+    #    tactic-paused ads come back via the tactic_revert log entry — the
+    #    legacy fn then no-ops on them because status is already ACTIVE.
+    revert_summary = revert_tactic_actions(db)
+    logger.info("[run-daily-tactics] revert_summary=%s", revert_summary)
+
+    # 2) Legacy daily reenable (untouched — handles standalone /rules UI pauses).
+    reenable_paused_ads(db)
+
+    # 3) Sync + evaluate all rules (tactic rules included; sync_all_platforms
+    #    fires evaluate_all_rules at the tail).
+    sync_all_platforms(db)
+
+    # 4) Stamp last_run_at on every active tactic for the UI's "Last run" column.
+    stamped = stamp_last_run(db)
+    logger.info("[run-daily-tactics] stamped last_run_at on %d tactics", stamped)
+
+
 def _do_sync_reservations_and_match(db, days_back: int = 30):
     from app.services.booking_match_service import run_matching
     from app.services.reservation_sync import sync_reservations
@@ -233,6 +263,23 @@ def trigger_daily_rule_cycle(
     """Daily: re-enable paused ads, sync all platforms, eval rules (eval runs inside sync)."""
     _require_secret(x_internal_secret)
     _run_in_thread(_do_daily_rule_cycle, "daily-rule-cycle")
+    return _api_response(data={"status": "started"})
+
+
+@router.post("/internal/tasks/run-daily-tactics", status_code=202)
+def trigger_run_daily_tactics(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Once-per-day tactics cycle. Schedule at 17:00 UTC.
+
+    Pipeline: revert yesterday's REVERT_NEXT_DAY mutations → legacy reenable
+    (standalone pause_ad rules) → sync all platforms (rule eval runs in tail)
+    → stamp tactic.last_run_at. Idempotent across re-runs in the same day —
+    revert dedupes via existing tactic_revert log lookups, evaluate dedupes
+    via condition checks against fresh metrics.
+    """
+    _require_secret(x_internal_secret)
+    _run_in_thread(_do_run_daily_tactics, "run-daily-tactics")
     return _api_response(data={"status": "started"})
 
 

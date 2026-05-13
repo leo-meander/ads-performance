@@ -10,6 +10,7 @@ from app.models.currency_rate import CurrencyRate
 from app.models.metrics import MetricsCache
 from app.models.reservation import Reservation
 from app.models.rule import AutomationRule
+from app.models.tactic import Tactic
 from app.models.action_log import ActionLog
 from app.models.change_log_entry import ChangeLogEntry
 from app.models.ai_conversation import AIConversation
@@ -62,6 +63,7 @@ __all__ = [
     "MetricsCache",
     "Reservation",
     "AutomationRule",
+    "Tactic",
     "ActionLog",
     "ChangeLogEntry",
     "AIConversation",

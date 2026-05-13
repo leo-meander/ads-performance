@@ -23,3 +23,11 @@ class AutomationRule(TimestampMixin, Base):
     is_active = Column(Boolean, nullable=False, default=True, index=True)
     last_evaluated_at = Column(DateTime(timezone=True), nullable=True)
     created_by = Column(String(100), nullable=True)
+    # Links this rule to a Tactic preset (NULL = standalone rule from /rules UI).
+    # Tactics own and cascade-delete their rules.
+    tactic_id = Column(
+        UUIDType,
+        ForeignKey("tactics.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )

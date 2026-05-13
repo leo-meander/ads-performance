@@ -14,6 +14,7 @@ from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
 from app.models.rule import AutomationRule
+from app.models.tactic import Tactic
 from app.services import google_actions as google_act
 from app.services.changelog import describe_diff, log_change
 from app.services.meta_actions import (
@@ -23,7 +24,9 @@ from app.services.meta_actions import (
     pause_ad,
     pause_ad_set,
     pause_campaign,
+    update_ad_set_budget,
     update_budget,
+    update_campaign_budget,
 )
 from app.services.metrics_snapshot import get_metrics_snapshot
 
@@ -304,15 +307,34 @@ def execute_action(
     max_days = max((c.get("days", 7) for c in rule.conditions), default=7)
     snapshot = get_metrics_snapshot(db, entity.id, entity_level, days=max_days)
 
-    # Capture pre-mutation state for change log diff.
+    # Capture pre-mutation state — used both for change_log diffs and for the
+    # tactic revert phase tomorrow.
     pre_status = getattr(entity, "status", None)
     pre_budget = (
         float(entity.daily_budget or 0) if hasattr(entity, "daily_budget") else None
     )
+    original_state: dict = {"status": pre_status}
+    if pre_budget is not None:
+        original_state["daily_budget"] = pre_budget
+
+    # If this rule belongs to a tactic, load it so we can stamp revert_policy +
+    # branch to tactic-specific budget logic (SURF cap, SUNSETTING, Scale Winning).
+    tactic: Tactic | None = None
+    if rule.tactic_id:
+        tactic = db.query(Tactic).filter(Tactic.id == rule.tactic_id).first()
 
     success = False
     error_message = None
     action = rule.action
+
+    # Tactic-specific extras stamped onto the action log for the revert phase.
+    tactic_log_extras: dict = {}
+    if tactic:
+        tactic_log_extras = {
+            "tactic_id": tactic.id,
+            "preset_type": (tactic.config or {}).get("_preset_type") or tactic.preset_type,
+            "revert_policy": (tactic.config or {}).get("_revert_policy", "none"),
+        }
 
     is_google = getattr(entity, "platform", None) == "google"
     customer_id = account.account_id.replace("-", "") if account and is_google else None
@@ -401,23 +423,92 @@ def execute_action(
             success = True
 
         elif action == "adjust_budget":
+            # Tactic-aware budget resolution handles SURF cap, SUNSETTING steps,
+            # and Scale Winning ratchets. Standalone rules fall through to plain
+            # multiplier behavior for backward compat with the /rules UI.
             params = rule.action_params or {}
-            multiplier = params.get("budget_multiplier", 1.0)
             current_budget = float(entity.daily_budget or 0)
-            new_budget = int(current_budget * multiplier)
-            if new_budget <= 0:
-                raise ValueError(f"Invalid new budget: {new_budget}")
-            if is_google:
-                if not customer_id:
-                    raise ValueError("No customer_id for Google account")
-                new_budget_micros = new_budget * 1_000_000
-                google_act.update_campaign_budget(customer_id, entity.platform_campaign_id, new_budget_micros)
+
+            new_budget: int | None = None
+            should_pause = False
+            tactic_compute_extras: dict = {}
+
+            if rule.tactic_id:
+                # Lazy import to avoid circular deps (tactic_engine imports rule_engine indirectly).
+                from app.services import tactic_engine as te
+                compute = te.compute_tactic_budget(db, rule, entity, entity_level)
+                new_budget = compute["new_budget"]
+                should_pause = compute["should_pause"]
+                tactic_compute_extras = {
+                    "sunsetting": params.get("sunsetting", False),
+                    "scale_winning": params.get("scale_winning", False),
+                    "sunsetting_step": compute["sunsetting_step"],
+                    "origin_budget": compute["origin_budget"],
+                    "cap_applied": compute["cap_applied"],
+                }
             else:
-                if not access_token:
-                    raise ValueError("No access token for account")
-                update_budget(access_token, entity.platform_campaign_id, new_budget)
-            entity.daily_budget = new_budget
-            success = True
+                multiplier = float(params.get("budget_multiplier", 1.0))
+                new_budget = int(current_budget * multiplier)
+
+            if should_pause:
+                # SUNSETTING step 3 — swap into pause path.
+                if entity_level != "ad_set":
+                    raise ValueError("Sunsetting pause only supported on ad_set level")
+                if is_google:
+                    if not customer_id:
+                        raise ValueError("No customer_id for Google account")
+                    google_act.pause_ad_group(customer_id, entity.platform_adset_id)
+                else:
+                    if not access_token:
+                        raise ValueError("No access token for account")
+                    pause_ad_set(access_token, entity.platform_adset_id)
+                entity.status = "PAUSED"
+                # Record the effective action for the log: caller wrote 'adjust_budget'
+                # but we executed a pause. Surface that.
+                action = "pause_adset"
+                success = True
+            else:
+                if new_budget is None or new_budget <= 0:
+                    raise ValueError(f"Invalid new budget: {new_budget}")
+                if entity_level == "ad_set":
+                    if is_google:
+                        # Google ad-group budget edits go through update_campaign_budget
+                        # on the parent campaign — not supported in this tactic path.
+                        raise ValueError("Google ad_set budget adjust not supported via tactics yet")
+                    if not access_token:
+                        raise ValueError("No access token for account")
+                    update_ad_set_budget(
+                        access_token, entity.platform_adset_id,
+                        current_daily_budget=current_budget,
+                        new_daily_budget=float(new_budget),
+                        # Tactic-driven moves enforce their own cap via
+                        # compute_tactic_budget; the 25% guard is for ad-hoc rules.
+                        force=bool(rule.tactic_id),
+                    )
+                else:
+                    if is_google:
+                        if not customer_id:
+                            raise ValueError("No customer_id for Google account")
+                        new_budget_micros = new_budget * 1_000_000
+                        google_act.update_campaign_budget(customer_id, entity.platform_campaign_id, new_budget_micros)
+                    else:
+                        if not access_token:
+                            raise ValueError("No access token for account")
+                        if rule.tactic_id:
+                            update_campaign_budget(
+                                access_token, entity.platform_campaign_id,
+                                current_daily_budget=current_budget,
+                                new_daily_budget=float(new_budget),
+                                force=True,  # tactic-managed cap
+                            )
+                        else:
+                            update_budget(access_token, entity.platform_campaign_id, new_budget)
+                entity.daily_budget = new_budget
+                success = True
+
+            # Stamp compute context onto extras so revert + observability work.
+            if tactic_compute_extras:
+                tactic_log_extras.update(tactic_compute_extras)
 
         else:
             raise ValueError(f"Unknown action: {action}")
@@ -425,6 +516,25 @@ def execute_action(
     except Exception as e:
         error_message = str(e)
         logger.exception("Action failed for rule '%s' on %s '%s'", rule.name, entity_level, entity.name)
+
+    # Capture post-mutation state for the revert phase.
+    post_status = getattr(entity, "status", None)
+    post_budget = (
+        float(entity.daily_budget or 0) if hasattr(entity, "daily_budget") else None
+    )
+    new_state: dict = {"status": post_status}
+    if post_budget is not None:
+        new_state["daily_budget"] = post_budget
+
+    # Build enriched action_params: keep the rule's raw config under rule_params
+    # so the engine can still read it, and add execution context for revert/UI.
+    log_action_params: dict = {
+        "rule_params": rule.action_params,
+        "original_state": original_state,
+        "new_state": new_state,
+    }
+    if tactic_log_extras:
+        log_action_params.update(tactic_log_extras)
 
     # Create immutable action log
     log = ActionLog(
@@ -434,7 +544,7 @@ def execute_action(
         ad_id=_resolve_ad_id(entity, entity_level),
         platform=entity.platform,
         action=action,
-        action_params=rule.action_params,
+        action_params=log_action_params,
         triggered_by="rule",
         metrics_snapshot=snapshot,
         success=success,
@@ -629,9 +739,14 @@ def reenable_paused_ads(db: Session) -> list[dict]:
         .all()
     )
 
-    # Deduplicate by ad_id (only re-enable each ad once)
-    ad_ids_to_reenable = set()
+    # Skip tactic-driven pauses — those are owned by tactic_engine.revert_tactic_actions
+    # which honors the tactic's revert_policy (REVERT_NEXT_DAY vs REVERT_NONE).
+    # Without this filter we'd resurrect ads that a PAUSE_PERMANENT tactic just killed.
+    ad_ids_to_reenable: set = set()
     for log in paused_logs:
+        ap = log.action_params if isinstance(log.action_params, dict) else None
+        if ap and ap.get("tactic_id"):
+            continue
         ad_ids_to_reenable.add(log.ad_id)
 
     if not ad_ids_to_reenable:

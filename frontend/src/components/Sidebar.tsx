@@ -62,6 +62,7 @@ const navSections: NavSection[] = [
   {
     label: 'Automation',
     items: [
+      { href: '/tactics', label: 'Tactics', section: 'automation' },
       { href: '/rules', label: 'Rules', section: 'automation' },
       { href: '/logs', label: 'Action Logs', section: 'automation' },
     ],
