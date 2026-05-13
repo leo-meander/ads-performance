@@ -1,9 +1,9 @@
 """Internal scheduled-task endpoints.
 
-Zeabur cron jobs hit these endpoints instead of Celery Beat. Each endpoint is
-protected by a shared secret (X-Internal-Secret header) and kicks off the work
-in a background thread so the cron request returns immediately (< 225s Zeabur
-ingress limit).
+GitHub Actions (.github/workflows/scheduled-tasks.yml) hits these endpoints
+on cron instead of Celery Beat. Each endpoint is protected by a shared secret
+(X-Internal-Secret header) and kicks off the work in a background thread so
+the request returns immediately (< 225s Zeabur ingress limit).
 
 The underlying service functions are the same ones Celery tasks wrapped — we
 just call them directly here.
@@ -25,7 +25,7 @@ router = APIRouter()
 
 
 def _require_secret(x_internal_secret: str | None) -> None:
-    """Verify the shared secret sent by Zeabur cron."""
+    """Verify the shared secret sent by the GitHub Actions cron workflow."""
     expected = settings.INTERNAL_TASK_SECRET
     if not expected:
         raise HTTPException(
@@ -154,31 +154,41 @@ def _do_daily_rule_cycle(db):
 
 
 def _do_run_daily_tactics(db):
-    """Daily tactics cron: revert yesterday's REVERT_NEXT_DAY mutations,
-    sync (which evaluates all rules at the tail), then stamp tactic.last_run_at.
+    """Once-per-day tactics cycle. Schedule at 17:00 UTC.
 
-    Schedule at 17:00 UTC (= 00:00 VN / 01:00 TW / 02:00 JP — start of a new
-    day across all MEANDER branches).
+    17:00 UTC = 00:00 VN / 01:00 TW / 02:00 JP — start of a new local day
+    across all MEANDER branches. Tactics evaluate once here; sync_all_platforms
+    on its own (03/13/23 UTC) skips tactic-linked rules to prevent budget
+    multiplier compounding across runs.
     """
-    from app.services.rule_engine import reenable_paused_ads
+    from app.services.rule_engine import evaluate_all_rules, reenable_paused_ads
     from app.services.sync_engine import sync_all_platforms
     from app.services.tactic_engine import revert_tactic_actions, stamp_last_run
 
-    # 1) Revert tactic-driven mutations from yesterday (SURF budget surges,
-    #    Pause-Today resumes, etc.). Runs BEFORE legacy reenable_paused_ads so
-    #    tactic-paused ads come back via the tactic_revert log entry — the
-    #    legacy fn then no-ops on them because status is already ACTIVE.
+    # 1) Revert yesterday's tactic mutations (SURF surges, Pause-Today resumes).
+    #    Runs BEFORE the legacy reenable so tactic-paused ads come back via the
+    #    tactic_revert log entry; the legacy fn then no-ops because status is
+    #    already ACTIVE.
     revert_summary = revert_tactic_actions(db)
     logger.info("[run-daily-tactics] revert_summary=%s", revert_summary)
 
-    # 2) Legacy daily reenable (untouched — handles standalone /rules UI pauses).
+    # 2) Legacy reenable for standalone /rules UI pauses (untouched).
     reenable_paused_ads(db)
 
-    # 3) Sync + evaluate all rules (tactic rules included; sync_all_platforms
-    #    fires evaluate_all_rules at the tail).
+    # 3) Sync platforms to get fresh metrics. sync_all_platforms evaluates
+    #    non-tactic rules at its tail (tactics_filter='no_tactics'); we'll
+    #    handle tactic rules explicitly in step 4.
     sync_all_platforms(db)
 
-    # 4) Stamp last_run_at on every active tactic for the UI's "Last run" column.
+    # 4) Evaluate tactic-linked rules exactly once per day.
+    tactic_results = evaluate_all_rules(db, tactics_filter="tactic_only")
+    total_tactic_actions = sum(r.get("actions_taken", 0) for r in tactic_results)
+    logger.info(
+        "[run-daily-tactics] tactic rules evaluated: %d rules, %d actions",
+        len(tactic_results), total_tactic_actions,
+    )
+
+    # 5) Stamp last_run_at on every active tactic for the UI's "Last run" column.
     stamped = stamp_last_run(db)
     logger.info("[run-daily-tactics] stamped last_run_at on %d tactics", stamped)
 
@@ -195,21 +205,6 @@ def _do_sync_reservations_and_match(db, days_back: int = 30):
 def _do_sync_material_urls(db):
     from app.services.material_url_sync import sync_material_urls
     sync_material_urls(db)
-
-
-def _do_canva_poll(db):
-    """Walk PENDING/RUNNING material_regenerations with a job_id; finish ready ones.
-
-    Inline (not background) — Canva job polling is fast (one HTTP call per row,
-    capped at 50 rows). Logs counts for observability.
-    """
-    from app.services.regenerate_service import poll_pending_regenerations
-    counts = poll_pending_regenerations(db)
-    logger.info(
-        "[canva-poll] polled=%d completed=%d failed=%d still_pending=%d",
-        counts["polled"], counts["completed"], counts["failed"], counts["still_pending"],
-    )
-    return counts
 
 
 @router.post("/internal/tasks/sync-all-platforms", status_code=202)
@@ -302,22 +297,6 @@ def trigger_sync_material_urls(
     _require_secret(x_internal_secret)
     _run_in_thread(_do_sync_material_urls, "sync-material-urls")
     return _api_response(data={"status": "started"})
-
-
-@router.post("/internal/tasks/canva-poll", status_code=200)
-def trigger_canva_poll(
-    x_internal_secret: str | None = Header(default=None),
-):
-    """Every ~2 min: advance PENDING/RUNNING material_regenerations whose Canva
-    job has completed. Returns counts inline (not threaded) — the work is
-    bounded (max 50 rows × 1 HTTP call each)."""
-    _require_secret(x_internal_secret)
-    db = SessionLocal()
-    try:
-        counts = _do_canva_poll(db)
-    finally:
-        db.close()
-    return _api_response(data={"status": "ok", **counts})
 
 
 # --------------------------------------------------- recommendation engines --

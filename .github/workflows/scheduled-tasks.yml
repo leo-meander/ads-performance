@@ -22,6 +22,12 @@ on:
     # 13:00 UTC = 20:00 VN / 21:00 TW / 22:00 JP (evening)
     - cron: "0 3 * * *"
     - cron: "0 13 * * *"
+    # Daily 17:00 UTC — Madgicx-style tactics cycle (= 00:00 VN / 01:00 TW /
+    # 02:00 JP, start of a new local day across all MEANDER branches).
+    # Reverts yesterday's REVERT_NEXT_DAY mutations, syncs, evaluates tactic
+    # rules exactly once/day. Non-tactic rules continue to fire on the 03/13/23
+    # syncs via tactics_filter='no_tactics'.
+    - cron: "0 17 * * *"
     # Daily 23:00 UTC — re-enable paused ads + full sync (Meta + Google + TikTok) + rule eval
     - cron: "0 23 * * *"
     # Daily 00:00 UTC — PMS reservations + booking match
@@ -100,6 +106,7 @@ jobs:
             case "${{ github.event.schedule }}" in
               "0 3 * * *")      ENDPOINT="sync-all-platforms" ;;
               "0 13 * * *")     ENDPOINT="sync-all-platforms" ;;
+              "0 17 * * *")     ENDPOINT="run-daily-tactics" ;;
               "0 23 * * *")     ENDPOINT="daily-rule-cycle" ;;
               "0 0 * * *")      ENDPOINT="sync-reservations-match" ;;
               "30 22 * * *")    ENDPOINT="google-recommendations/daily" ;;

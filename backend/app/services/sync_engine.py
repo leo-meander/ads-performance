@@ -593,9 +593,14 @@ def sync_all_platforms(
     except Exception:
         logger.exception("Angle/keypoint auto-assign failed after sync")
 
-    # After sync: evaluate automation rules
+    # After sync: evaluate automation rules.
+    # IMPORTANT: skip tactic-linked rules here — they're managed by the
+    # once-per-day /internal/tasks/run-daily-tactics cron. If we re-evaluated
+    # tactic rules on every intraday sync (03:00 / 13:00 / 23:00 UTC) the
+    # budget multipliers would compound across runs (1.25x × 1.25x × ... per
+    # day, blowing past the per-tactic cap).
     try:
-        rule_results = evaluate_all_rules(db)
+        rule_results = evaluate_all_rules(db, tactics_filter="no_tactics")
         total_actions = sum(r.get("actions_taken", 0) for r in rule_results)
         if total_actions > 0:
             logger.info("Rule evaluation complete: %d actions taken", total_actions)

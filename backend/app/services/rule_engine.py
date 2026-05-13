@@ -681,9 +681,29 @@ def evaluate_rule(db: Session, rule: AutomationRule) -> list[dict]:
     return results
 
 
-def evaluate_all_rules(db: Session) -> list[dict]:
-    """Evaluate all active rules. Called after sync."""
-    rules = db.query(AutomationRule).filter(AutomationRule.is_active.is_(True)).all()
+def evaluate_all_rules(
+    db: Session,
+    *,
+    tactics_filter: str = "all",
+) -> list[dict]:
+    """Evaluate all active rules. Called after sync.
+
+    tactics_filter:
+      - 'all' (default, /api/rules/evaluate-all): every active rule
+      - 'no_tactics': only rules where tactic_id IS NULL — used by sync_all_platforms
+        so tactic rules don't fire on every intraday sync (would compound budget
+        multipliers across runs).
+      - 'tactic_only': only rules where tactic_id IS NOT NULL — used by the
+        once-per-day run-daily-tactics cron.
+    """
+    q = db.query(AutomationRule).filter(AutomationRule.is_active.is_(True))
+    if tactics_filter == "no_tactics":
+        q = q.filter(AutomationRule.tactic_id.is_(None))
+    elif tactics_filter == "tactic_only":
+        q = q.filter(AutomationRule.tactic_id.isnot(None))
+    elif tactics_filter != "all":
+        raise ValueError(f"unknown tactics_filter: {tactics_filter}")
+    rules = q.all()
     all_results = []
 
     for rule in rules:

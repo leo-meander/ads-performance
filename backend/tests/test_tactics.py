@@ -23,6 +23,7 @@ from app.models.campaign import Campaign
 from app.models.rule import AutomationRule
 from app.models.tactic import Tactic
 from app.services import tactic_engine, tactic_service
+from app.services.rule_engine import evaluate_all_rules
 from app.services.tactic_presets import (
     PRESETS,
     REVERT_NEXT_DAY,
@@ -351,6 +352,59 @@ def test_revert_ignores_actions_without_next_day_policy():
 # ---------------------------------------------------------------------------
 # Preset registry sanity
 # ---------------------------------------------------------------------------
+
+def test_evaluate_all_rules_tactics_filter_segregates_correctly():
+    """Regression guard for the compound-multiplier bug.
+
+    sync_all_platforms now calls evaluate_all_rules(tactics_filter='no_tactics')
+    so tactic rules don't fire on every intraday sync. run-daily-tactics calls
+    with tactics_filter='tactic_only'. Verify both filters return disjoint sets.
+    """
+    ids = _seed_tree()
+    db = TestSession()
+    # Create one standalone rule + one tactic.
+    standalone = AutomationRule(
+        id=str(uuid.uuid4()),
+        name="standalone",
+        platform="meta",
+        account_id=ids["acc"],
+        entity_level="ad",
+        conditions=[{"metric": "roas", "operator": "<", "threshold": 0.5, "days": 1}],
+        action="send_alert",
+        is_active=True,
+    )
+    db.add(standalone)
+    db.commit()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="stop_loss_ad", platform="meta", account_id=ids["acc"],
+    )
+    # Use send_alert action so evaluation doesn't try to hit Meta API.
+    # The preset's conditions won't match (no metrics seeded) so we just count
+    # the rules that get evaluated, not their actions.
+    db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).update(
+        {"action": "send_alert"}, synchronize_session=False,
+    )
+    db.commit()
+
+    all_results = evaluate_all_rules(db, tactics_filter="all")
+    no_tactics = evaluate_all_rules(db, tactics_filter="no_tactics")
+    tactic_only = evaluate_all_rules(db, tactics_filter="tactic_only")
+
+    rule_ids_all = {r["rule_id"] for r in all_results}
+    rule_ids_no_tac = {r["rule_id"] for r in no_tactics}
+    rule_ids_tac = {r["rule_id"] for r in tactic_only}
+
+    assert standalone.id in rule_ids_no_tac
+    assert standalone.id not in rule_ids_tac
+    # Tactic-only set must include the tactic's rule.
+    tactic_rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+    assert tactic_rule.id in rule_ids_tac
+    assert tactic_rule.id not in rule_ids_no_tac
+    # Union check.
+    assert rule_ids_no_tac | rule_ids_tac == rule_ids_all
+    assert rule_ids_no_tac & rule_ids_tac == set()
+    db.close()
+
 
 def test_all_presets_have_required_fields():
     for key, preset in PRESETS.items():
