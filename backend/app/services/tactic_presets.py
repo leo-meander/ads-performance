@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.models.tactic import (
+    PRESET_CUSTOM_RULE,
     PRESET_PAUSE_PERMANENT,
     PRESET_PAUSE_TODAY,
     PRESET_REVIVE_AD,
@@ -251,6 +252,24 @@ def _scale_winning_adset_specs(cfg: dict[str, Any]) -> list[RuleSpec]:
     ]
 
 
+def _custom_rule_specs(cfg: dict[str, Any]) -> list[RuleSpec]:
+    """Custom-rule preset: a single rule built directly from user config.
+
+    Replaces the legacy /rules UI — users pick entity_level + conditions +
+    action, no preset constraint. No revert, no sunsetting, no step machine.
+    Fires once per day with the rest of the tactic cohort (17:00 UTC).
+    """
+    return [
+        RuleSpec(
+            name_suffix="custom",
+            entity_level=cfg.get("entity_level", "ad"),
+            action=cfg.get("action", "send_alert"),
+            conditions=cfg.get("conditions") or [],
+            action_params=cfg.get("action_params") or None,
+        ),
+    ]
+
+
 def _scale_winning_campaign_specs(cfg: dict[str, Any]) -> list[RuleSpec]:
     return [
         RuleSpec(
@@ -380,6 +399,20 @@ PRESETS: dict[str, TacticPreset] = {
             "max_budget_cap_multiplier": 3.0,
         },
         rule_specs_fn=_scale_winning_campaign_specs,
+        revert_policy=REVERT_NONE,
+    ),
+    PRESET_CUSTOM_RULE: TacticPreset(
+        name="Custom Rule",
+        description="Build your own condition → action. Use when no preset fits.",
+        default_config={
+            "entity_level": "ad",
+            "conditions": [
+                {"metric": "roas", "operator": "<", "threshold": 1.0, "days": 7},
+            ],
+            "action": "send_alert",
+            "action_params": None,
+        },
+        rule_specs_fn=_custom_rule_specs,
         revert_policy=REVERT_NONE,
     ),
 }

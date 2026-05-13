@@ -201,3 +201,54 @@ def count_rules_for_tactic(db: Session, tactic_id: str) -> int:
 
 def get_valid_preset_types() -> list[str]:
     return sorted(PRESETS.keys())
+
+
+def migrate_standalone_rules_to_custom_tactics(db: Session) -> dict:
+    """Wrap each existing standalone AutomationRule (tactic_id IS NULL) in a
+    Custom tactic and re-link the rule to it.
+
+    Idempotent: rules with tactic_id already set are skipped. Run once after
+    deploying the tactics-only-eval change so legacy rules continue firing
+    via the daily tactics cron.
+
+    Returns a summary dict for logging:
+        {"scanned": N, "migrated": M, "skipped_already_linked": K}
+    """
+    from app.models.tactic import PRESET_CUSTOM_RULE
+
+    standalone = (
+        db.query(AutomationRule)
+        .filter(AutomationRule.tactic_id.is_(None))
+        .all()
+    )
+    migrated = 0
+    for rule in standalone:
+        config = {
+            "entity_level": rule.entity_level,
+            "conditions": rule.conditions,
+            "action": rule.action,
+            "action_params": rule.action_params,
+            "_preset_type": PRESET_CUSTOM_RULE,
+            "_revert_policy": "none",
+        }
+        tactic = Tactic(
+            name=f"[Custom] {rule.name}"[:200],
+            preset_type=PRESET_CUSTOM_RULE,
+            platform=rule.platform,
+            account_id=rule.account_id,
+            config=config,
+            is_active=rule.is_active,
+            created_by=rule.created_by,
+        )
+        db.add(tactic)
+        db.flush()
+        rule.tactic_id = tactic.id
+        migrated += 1
+    db.commit()
+    summary = {
+        "scanned": len(standalone),
+        "migrated": migrated,
+        "skipped_already_linked": 0,
+    }
+    logger.info("migrate_standalone_rules_to_custom_tactics: %s", summary)
+    return summary

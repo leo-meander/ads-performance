@@ -630,8 +630,11 @@ def evaluate_rule(db: Session, rule: AutomationRule) -> list[dict]:
         entities = _get_matching_campaigns(db, rule)
 
     results = []
-    # Track failure reasons for summary
     fail_counts: dict[str, int] = {}  # metric -> count of entities that failed on it
+    # Track up to N concrete fail examples so the UI can show *why*, not just
+    # "X entities failed". Each entry: {entity_name, failed_at, reason}.
+    _MAX_FAIL_EXAMPLES = 5
+    fail_examples: list[dict] = []
 
     for entity in entities:
         detail = check_conditions_detailed(db, entity, rule.conditions, entity_level)
@@ -641,6 +644,13 @@ def evaluate_rule(db: Session, rule: AutomationRule) -> list[dict]:
         else:
             failed_at = detail["failed_at"] or "unknown"
             fail_counts[failed_at] = fail_counts.get(failed_at, 0) + 1
+            if len(fail_examples) < _MAX_FAIL_EXAMPLES:
+                fail_examples.append({
+                    "entity_id": getattr(entity, "id", None),
+                    "entity_name": getattr(entity, "name", None),
+                    "failed_at": failed_at,
+                    "reason": detail.get("reason"),
+                })
 
     # Always log an evaluation summary
     summary_snapshot = {
@@ -653,6 +663,7 @@ def evaluate_rule(db: Session, rule: AutomationRule) -> list[dict]:
         sorted_fails = sorted(fail_counts.items(), key=lambda x: -x[1])
         summary_snapshot["fail_breakdown"] = {k: v for k, v in sorted_fails}
         summary_snapshot["top_fail_reason"] = sorted_fails[0][0]
+        summary_snapshot["fail_examples"] = fail_examples
 
     log = ActionLog(
         rule_id=rule.id,

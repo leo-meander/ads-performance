@@ -406,6 +406,135 @@ def test_evaluate_all_rules_tactics_filter_segregates_correctly():
     db.close()
 
 
+def test_custom_rule_preset_materializes_from_overrides():
+    """The Custom preset passes the user's full rule definition straight
+    through to the AutomationRule — no preset-config merging or threshold
+    seeding."""
+    ids = _seed_tree()
+    db = TestSession()
+    conditions = [
+        {"metric": "spend", "operator": ">", "threshold": 50000, "days": 3},
+        {"metric": "roas", "operator": "<", "threshold": 1.5, "days": 7},
+    ]
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="custom_rule", platform="meta", account_id=ids["acc"],
+        config_overrides={
+            "entity_level": "ad_set",
+            "conditions": conditions,
+            "action": "send_alert",
+            "action_params": None,
+        },
+    )
+    rules = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).all()
+    assert len(rules) == 1
+    r = rules[0]
+    assert r.entity_level == "ad_set"
+    assert r.action == "send_alert"
+    assert r.conditions == conditions
+    assert r.action_params is None
+    db.close()
+
+
+def test_migrate_standalone_rules_wraps_each_in_custom_tactic():
+    """The one-shot migration should wrap each standalone rule in a Custom
+    tactic and re-link the rule — never duplicate or drop conditions."""
+    ids = _seed_tree()
+    db = TestSession()
+    # Two standalone rules + one already linked to a tactic.
+    pre_existing_tactic = tactic_service.create_tactic_from_preset(
+        db, preset_type="stop_loss_ad", platform="meta", account_id=ids["acc"],
+    )
+    standalone1 = AutomationRule(
+        id=str(uuid.uuid4()),
+        name="legacy rule A",
+        platform="meta",
+        account_id=ids["acc"],
+        entity_level="ad",
+        conditions=[{"metric": "roas", "operator": "<", "threshold": 0.5, "days": 7}],
+        action="send_alert",
+        is_active=True,
+    )
+    standalone2 = AutomationRule(
+        id=str(uuid.uuid4()),
+        name="legacy rule B",
+        platform="meta",
+        account_id=ids["acc"],
+        entity_level="campaign",
+        conditions=[{"metric": "spend", "operator": ">", "threshold": 1000000, "days": 1}],
+        action="pause_campaign",
+        is_active=False,
+    )
+    db.add_all([standalone1, standalone2])
+    db.commit()
+
+    summary = tactic_service.migrate_standalone_rules_to_custom_tactics(db)
+    assert summary["migrated"] == 2
+
+    # Both standalone rules now linked to a Custom tactic.
+    db.refresh(standalone1)
+    db.refresh(standalone2)
+    assert standalone1.tactic_id is not None
+    assert standalone2.tactic_id is not None
+
+    # is_active carries through.
+    t1 = db.query(Tactic).filter(Tactic.id == standalone1.tactic_id).first()
+    t2 = db.query(Tactic).filter(Tactic.id == standalone2.tactic_id).first()
+    assert t1.preset_type == "custom_rule"
+    assert t1.is_active is True
+    assert t2.is_active is False
+
+    # Re-run is idempotent (no further migrations).
+    summary2 = tactic_service.migrate_standalone_rules_to_custom_tactics(db)
+    assert summary2["migrated"] == 0
+
+    # Pre-existing tactic untouched.
+    pre_rule = (
+        db.query(AutomationRule)
+        .filter(AutomationRule.tactic_id == pre_existing_tactic.id)
+        .first()
+    )
+    assert pre_rule is not None
+    db.close()
+
+
+def test_evaluate_rule_summary_includes_fail_examples():
+    """The evaluation_summary action_log now includes a sample of concrete
+    failure reasons so the diagnostics UI can show *why* — not just metric
+    name + count."""
+    ids = _seed_tree()
+    db = TestSession()
+    # Tactic with a condition no entity can satisfy (we have an Ad but no
+    # metrics seeded, so 'no metrics data' is the expected fail reason).
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="custom_rule", platform="meta", account_id=ids["acc"],
+        config_overrides={
+            "entity_level": "ad",
+            "conditions": [{"metric": "roas", "operator": ">", "threshold": 999, "days": 7}],
+            "action": "send_alert",
+            "action_params": None,
+        },
+    )
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+
+    from app.services.rule_engine import evaluate_rule
+    evaluate_rule(db, rule)
+
+    summary_log = (
+        db.query(ActionLog)
+        .filter(ActionLog.rule_id == rule.id, ActionLog.action == "evaluation_summary")
+        .first()
+    )
+    assert summary_log is not None
+    snap = summary_log.metrics_snapshot
+    assert "fail_examples" in snap
+    assert len(snap["fail_examples"]) >= 1
+    # Each example carries the entity name + the failure reason text.
+    ex = snap["fail_examples"][0]
+    assert "entity_name" in ex
+    assert "reason" in ex
+    db.close()
+
+
 def test_all_presets_have_required_fields():
     for key, preset in PRESETS.items():
         assert preset.name

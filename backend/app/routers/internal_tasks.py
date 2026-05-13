@@ -320,6 +320,28 @@ def trigger_run_daily_tactics(
     return _api_response(data={"status": "started"})
 
 
+@router.post("/internal/tasks/migrate-rules-to-custom-tactics", status_code=200)
+def trigger_migrate_rules_to_custom_tactics(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """One-shot data migration: wrap each standalone AutomationRule in a Custom
+    tactic. Run once after deploying the tactics-unified eval pipeline so
+    legacy /rules-UI rules continue to fire via the daily tactics cron.
+
+    Idempotent — rules already linked to a tactic are skipped. Safe to re-run.
+    Synchronous (returns counts inline) because the operation is bounded
+    (one INSERT + one UPDATE per legacy rule, typically <100 rows).
+    """
+    _require_secret(x_internal_secret)
+    from app.services.tactic_service import migrate_standalone_rules_to_custom_tactics
+    db = SessionLocal()
+    try:
+        summary = migrate_standalone_rules_to_custom_tactics(db)
+    finally:
+        db.close()
+    return _api_response(data={"status": "ok", **summary})
+
+
 @router.post("/internal/tasks/sync-reservations-match", status_code=202)
 def trigger_sync_reservations_match(
     x_internal_secret: str | None = Header(default=None),

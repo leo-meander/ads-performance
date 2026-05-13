@@ -24,6 +24,10 @@ from sqlalchemy.orm import Session
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
 from app.dependencies.auth import require_section
+from app.models.action_log import ActionLog
+from app.models.ad import Ad
+from app.models.ad_set import AdSet
+from app.models.campaign import Campaign
 from app.models.rule import AutomationRule
 from app.models.tactic import Tactic
 from app.models.user import User
@@ -48,6 +52,9 @@ class TacticCreate(BaseModel):
     name: str | None = None
     platform: str = "meta"
     account_id: str | None = None
+    # For preset_type='custom_rule' the overrides ARE the rule definition:
+    # {entity_level, conditions, action, action_params}. For other presets
+    # they're threshold tweaks merged over the preset's default_config.
     config_overrides: dict[str, Any] | None = None
 
 
@@ -260,6 +267,128 @@ def toggle_tactic_endpoint(
         return _api_response(data=_tactic_to_dict(db, tactic))
     except Exception as e:
         db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.get("/tactics/{tactic_id}/diagnostics")
+def get_tactic_diagnostics(
+    tactic_id: str,
+    current_user: User = Depends(require_section("automation")),
+    db: Session = Depends(get_db),
+):
+    """Surface *why* a tactic did or didn't fire.
+
+    For each rule under this tactic, return:
+      - last_evaluation: most recent evaluation_summary action_log
+        (entities_checked, actions_taken, top_fail_reason, fail_examples)
+      - recent_actions: last few actual mutations + their success/error_message
+
+    This is the "why didn't it work" panel — every value pulled from existing
+    action_logs, no new write paths.
+    """
+    try:
+        tactic = tactic_service.get_tactic(db, tactic_id)
+        if not tactic:
+            return _api_response(error="Tactic not found")
+        if tactic.account_id:
+            ok, _ids, err = scoped_account_ids(
+                db, current_user, "automation", requested_account_id=tactic.account_id,
+            )
+            if not ok:
+                return _api_response(error=err)
+
+        rules = (
+            db.query(AutomationRule)
+            .filter(AutomationRule.tactic_id == tactic_id)
+            .all()
+        )
+
+        # Bulk fetch entity names so we can humanize "entity X" in logs.
+        entity_name_cache: dict[str, str] = {}
+
+        def _resolve_entity_name(log: ActionLog) -> str:
+            eid = log.ad_id or log.ad_set_id or log.campaign_id
+            if not eid:
+                return "—"
+            if eid in entity_name_cache:
+                return entity_name_cache[eid]
+            name = "—"
+            if log.ad_id:
+                row = db.query(Ad.name).filter(Ad.id == log.ad_id).scalar()
+                if row:
+                    name = row
+            elif log.ad_set_id:
+                row = db.query(AdSet.name).filter(AdSet.id == log.ad_set_id).scalar()
+                if row:
+                    name = row
+            elif log.campaign_id:
+                row = db.query(Campaign.name).filter(Campaign.id == log.campaign_id).scalar()
+                if row:
+                    name = row
+            entity_name_cache[eid] = name
+            return name
+
+        rules_data = []
+        for rule in rules:
+            last_eval = (
+                db.query(ActionLog)
+                .filter(
+                    ActionLog.rule_id == rule.id,
+                    ActionLog.action == "evaluation_summary",
+                )
+                .order_by(ActionLog.executed_at.desc())
+                .first()
+            )
+            recent_actions_q = (
+                db.query(ActionLog)
+                .filter(
+                    ActionLog.rule_id == rule.id,
+                    ActionLog.action != "evaluation_summary",
+                )
+                .order_by(ActionLog.executed_at.desc())
+                .limit(10)
+                .all()
+            )
+            recent_actions = [
+                {
+                    "executed_at": a.executed_at.isoformat() if a.executed_at else None,
+                    "action": a.action,
+                    "entity_name": _resolve_entity_name(a),
+                    "success": a.success,
+                    "error_message": a.error_message,
+                }
+                for a in recent_actions_q
+            ]
+            rules_data.append({
+                "rule_id": rule.id,
+                "rule_name": rule.name,
+                "entity_level": rule.entity_level,
+                "action": rule.action,
+                "is_active": rule.is_active,
+                "last_evaluated_at": rule.last_evaluated_at.isoformat() if rule.last_evaluated_at else None,
+                "last_evaluation": (
+                    {
+                        "executed_at": last_eval.executed_at.isoformat() if last_eval.executed_at else None,
+                        "entities_checked": (last_eval.metrics_snapshot or {}).get("entities_checked"),
+                        "actions_taken": (last_eval.metrics_snapshot or {}).get("actions_taken"),
+                        "top_fail_reason": (last_eval.metrics_snapshot or {}).get("top_fail_reason"),
+                        "fail_breakdown": (last_eval.metrics_snapshot or {}).get("fail_breakdown"),
+                        "fail_examples": (last_eval.metrics_snapshot or {}).get("fail_examples", []),
+                        "error_message": last_eval.error_message,
+                    }
+                    if last_eval else None
+                ),
+                "recent_actions": recent_actions,
+            })
+
+        return _api_response(data={
+            "tactic_id": tactic.id,
+            "tactic_name": tactic.name,
+            "is_active": tactic.is_active,
+            "last_run_at": tactic.last_run_at.isoformat() if tactic.last_run_at else None,
+            "rules": rules_data,
+        })
+    except Exception as e:
         return _api_response(error=str(e))
 
 
