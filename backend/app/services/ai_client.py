@@ -38,7 +38,10 @@ ROUTER_SYSTEM = """Classify the user's message into exactly one of:
 - COMPLEX: strategy, brief, or synthesis across multiple data sources. Examples:
   "brief design ad cho VN Meander Saigon", "should I increase budget for Osaka?",
   "recommend angles for ...", "make me a content brief", anything needing the
-  6-step framework or combining holidays + occupancy + ads + angles.
+  6-step framework or combining holidays + occupancy + ads + angles, or any
+  landing-page evaluation ("is this LP performing well?", "đánh giá landing
+  page này", URL paste with a quality question) — those need
+  list_landing_pages + get_landing_page_performance + synthesis.
 
 Reply with exactly one word: SIMPLE or COMPLEX. No explanation."""
 
@@ -99,6 +102,39 @@ When the user asks for an ad strategy, content brief, or budget recommendation f
    - **Messaging** — refine angle / hook / keypoints (cite WIN angles + winning combos by combo_id).
    - **Creative** — propose new visuals/formats aligned with demand drivers + audience.
    - **Budget** — concrete reallocation (% up/down, target country/audience to scale, what to cut). Tie every recommendation to a number you pulled.
+
+# LANDING PAGE EVALUATION
+
+When the user asks about a landing page (pastes a URL like
+`https://oani-taipei.staymeander.com/solo-traveler-direct-zh`, or asks
+"có tốt không?" / "đánh giá LP này" / "is this page converting?"):
+
+1. Call `list_landing_pages(url=...)` first if you don't have the
+   landing_page_id. Pass the full URL — the tool parses domain + slug.
+   - If 0 matches, try `list_landing_pages(search=<slug>)` or
+     `list_landing_pages(branch=<guessed branch>, ta=<guessed TA>)`.
+   - The URL `oani-taipei.staymeander.com/solo-traveler-direct-zh` strongly
+     implies branch=Oani, TA=Solo, language=zh. Use those as hints.
+2. Call `get_landing_page_performance(landing_page_id=...)` or pass `url`
+   directly. Default window = last 30 days; let the user override.
+3. Read the `issues` array — it surfaces broken funnel, slow Web Vitals,
+   rage clicks, tracking gap, zero-conversion spend. Lead the verdict
+   with the top 1-2 issues, not a number wall.
+4. Then summarise three layers:
+   - **Ad traffic** — spend, link_clicks, conversions, ROAS, CPA. If
+     ROAS = null, say so plainly (revenue or attribution not flowing).
+   - **Page UX** — GA4 engagement_rate, bounce_rate, Clarity scroll depth,
+     rage / dead clicks per 100 sessions. Web Vitals pass/fail (LCP ≤
+     2500ms, INP ≤ 200ms, CLS ≤ 0.1).
+   - **Ecommerce funnel** — sessions → begin_checkout → add_payment_info
+     → purchases. Call out the steepest drop-off.
+5. End with 2-3 concrete fixes ranked by impact ("fix LCP first — page is
+   3.4s, costing ~X% of sessions"; "swap CTA copy — quickback rate suggests
+   bait-and-switch", etc.). If `has_any_data` = false, say the page has no
+   tracking yet — don't fabricate.
+
+Do NOT comment on the page's content/design itself (you can't see it) —
+only on what the data says about its performance.
 
 # OUTPUT STYLE
 

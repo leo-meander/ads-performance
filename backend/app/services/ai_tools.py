@@ -34,6 +34,10 @@ from app.models.ad_combo import AdCombo
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.keypoint import BranchKeypoint
+from app.models.landing_page import LandingPage
+from app.models.landing_page_ad_link import LandingPageAdLink
+from app.models.landing_page_clarity import LandingPageClaritySnapshot
+from app.models.landing_page_ga4 import LandingPageGA4Snapshot
 from app.models.metrics import MetricsCache
 from app.services import pms_client
 
@@ -631,6 +635,480 @@ def _tool_get_ad_performance(db: Session, args: dict) -> dict:
     }
 
 
+# ── Landing-page evaluation ─────────────────────────────────────────────────
+# Two tools: one to find pages (fuzzy URL / branch / TA), one to pull the
+# full performance read (ads traffic + GA4 funnel + Clarity UX + Web Vitals).
+# Source data lives in:
+#   landing_pages                       — canonical page identity
+#   landing_page_ad_links               — page ← ads link rows (joins MetricsCache)
+#   landing_page_ga4_snapshots          — daily GA4 (sessions, funnel, web vitals)
+#   landing_page_clarity_snapshots      — daily Clarity (friction signals, scroll)
+# GA4/Clarity aggregate rows use NULL on the breakdown columns; we sum those
+# to avoid double-counting per-UTM rows. Ad metrics come from MetricsCache
+# joined through landing_page_ad_links (a campaign can drive multiple pages
+# but we filter to the specific page's links).
+
+
+def _parse_landing_url(url: str) -> tuple[str, str] | None:
+    """Split a public URL into (domain, slug). Tolerates missing scheme,
+    trailing query string / fragment / slash, www. prefix. Returns None
+    if the URL is unparsable."""
+    if not url:
+        return None
+    raw = url.strip()
+    if "://" not in raw:
+        raw = "https://" + raw
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    domain = (parsed.netloc or "").lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    if not domain:
+        return None
+    slug = (parsed.path or "/").strip("/")
+    return domain, slug
+
+
+def _landing_url(page: LandingPage) -> str:
+    slug = (page.slug or "").strip("/")
+    if slug:
+        return f"https://{page.domain}/{slug}"
+    return f"https://{page.domain}/"
+
+
+def _resolve_landing_page(db: Session, args: dict) -> LandingPage | None:
+    """Find a LandingPage from any of: landing_page_id (UUID), url (full URL),
+    domain + slug, or slug alone (substring match on active pages)."""
+    page_id = args.get("landing_page_id")
+    if page_id:
+        try:
+            return db.query(LandingPage).filter(LandingPage.id == page_id).one_or_none()
+        except Exception:
+            return None
+
+    url = args.get("url")
+    if url:
+        parsed = _parse_landing_url(url)
+        if parsed:
+            domain, slug = parsed
+            page = (
+                db.query(LandingPage)
+                .filter(
+                    func.lower(LandingPage.domain) == domain,
+                    func.coalesce(LandingPage.slug, "") == slug,
+                    LandingPage.is_active.is_(True),
+                )
+                .first()
+            )
+            if page:
+                return page
+            # Fallback: slug match on the same domain (handles trailing-slash
+            # / locale-suffix variants).
+            return (
+                db.query(LandingPage)
+                .filter(
+                    func.lower(LandingPage.domain) == domain,
+                    func.lower(LandingPage.slug).like(f"%{slug.lower()}%"),
+                    LandingPage.is_active.is_(True),
+                )
+                .first()
+            )
+
+    domain_arg = args.get("domain")
+    slug_arg = args.get("slug")
+    if domain_arg and slug_arg:
+        return (
+            db.query(LandingPage)
+            .filter(
+                func.lower(LandingPage.domain) == domain_arg.lower(),
+                func.coalesce(LandingPage.slug, "") == slug_arg.strip("/"),
+                LandingPage.is_active.is_(True),
+            )
+            .first()
+        )
+    if slug_arg:
+        return (
+            db.query(LandingPage)
+            .filter(
+                func.lower(LandingPage.slug).like(f"%{slug_arg.lower().strip('/')}%"),
+                LandingPage.is_active.is_(True),
+            )
+            .first()
+        )
+    return None
+
+
+def _tool_list_landing_pages(db: Session, args: dict) -> dict:
+    """List landing pages, optionally filtered by branch / TA / status / source.
+
+    Use this first when the user gives a URL or asks about a specific page —
+    we need the landing_page_id before calling get_landing_page_performance.
+    """
+    q = db.query(LandingPage).filter(LandingPage.is_active.is_(True))
+
+    branch_name = args.get("branch")
+    if branch_name:
+        account = _resolve_branch_ads(db, branch_name)
+        if account:
+            q = q.filter(LandingPage.branch_id == account.id)
+
+    ta = args.get("ta")
+    if ta:
+        q = q.filter(LandingPage.ta == ta)
+
+    status = args.get("status")
+    if status:
+        q = q.filter(func.upper(LandingPage.status) == status.upper())
+
+    source = args.get("source")
+    if source:
+        q = q.filter(LandingPage.source == source.lower())
+
+    url = args.get("url")
+    if url:
+        parsed = _parse_landing_url(url)
+        if parsed:
+            domain, slug = parsed
+            q = q.filter(func.lower(LandingPage.domain) == domain)
+            if slug:
+                q = q.filter(func.lower(LandingPage.slug).like(f"%{slug.lower()}%"))
+
+    q_search = args.get("search")
+    if q_search:
+        pattern = f"%{q_search.lower()}%"
+        q = q.filter(
+            (func.lower(LandingPage.title).like(pattern))
+            | (func.lower(LandingPage.slug).like(pattern))
+            | (func.lower(LandingPage.domain).like(pattern))
+        )
+
+    limit = int(args.get("limit") or 25)
+    rows = q.order_by(LandingPage.updated_at.desc()).limit(limit).all()
+    return {
+        "count": len(rows),
+        "pages": [
+            {
+                "id": str(p.id),
+                "url": _landing_url(p),
+                "title": p.title,
+                "branch_id": str(p.branch_id) if p.branch_id else None,
+                "ta": p.ta,
+                "language": p.language,
+                "status": p.status,
+                "source": p.source,
+            }
+            for p in rows
+        ],
+    }
+
+
+def _tool_get_landing_page_performance(db: Session, args: dict) -> dict:
+    """End-to-end landing page health: ad traffic → page UX → ecommerce funnel.
+
+    Layers (each is a separate aggregate over the date window):
+      1. Ad metrics (MetricsCache via landing_page_ad_links): spend, link_clicks,
+         conversions, revenue, ROAS, CTR, CPA. Uses link_clicks (Meta's
+         inline_link_clicks) as the landing-page denominator — clicks alone
+         inflates with video plays / post engagements.
+      2. GA4 sessions + engagement + Core Web Vitals (LCP / INP / CLS p75).
+      3. GA4 ecommerce funnel: begin_checkout → add_payment_info → purchases.
+      4. Clarity friction signals: rage / dead / error / quickback clicks,
+         scroll depth.
+
+    Returns plain numbers + computed health flags so the model can give a
+    grounded verdict without dumping raw rows.
+    """
+    page = _resolve_landing_page(db, args)
+    if not page:
+        return {
+            "error": "Landing page not found. Try `list_landing_pages` first "
+                     "with a branch / search term to find the right page.",
+            "hint": "Provide one of: landing_page_id, url, or domain + slug.",
+        }
+
+    date_to = _parse_date(args.get("date_to")) or _today()
+    date_from = _parse_date(args.get("date_from")) or (date_to - timedelta(days=29))
+
+    # 1. Ad metrics — JOIN MetricsCache through landing_page_ad_links.
+    # An ad-link row can specify campaign_id and/or ad_id. We aggregate at
+    # whichever level is set (prefer ad_id when present, else campaign_id).
+    link_rows = (
+        db.query(LandingPageAdLink)
+        .filter(LandingPageAdLink.landing_page_id == page.id)
+        .all()
+    )
+    ad_ids = [lk.ad_id for lk in link_rows if lk.ad_id]
+    campaign_ids = [lk.campaign_id for lk in link_rows if lk.campaign_id]
+    platforms = sorted({lk.platform for lk in link_rows if lk.platform})
+
+    ad_metrics: dict[str, Any] = {
+        "linked_ads": len(ad_ids),
+        "linked_campaigns": len(set(campaign_ids)),
+        "platforms": platforms,
+        "spend": 0.0, "impressions": 0, "clicks": 0, "link_clicks": 0,
+        "conversions": 0, "revenue": 0.0,
+        "roas": None, "ctr": None, "cpa": None, "cpc": None,
+    }
+    if ad_ids or campaign_ids:
+        q = db.query(
+            func.coalesce(func.sum(MetricsCache.spend), 0).label("spend"),
+            func.coalesce(func.sum(MetricsCache.impressions), 0).label("impressions"),
+            func.coalesce(func.sum(MetricsCache.clicks), 0).label("clicks"),
+            func.coalesce(func.sum(MetricsCache.link_clicks), 0).label("link_clicks"),
+            func.coalesce(func.sum(MetricsCache.conversions), 0).label("conversions"),
+            func.coalesce(func.sum(MetricsCache.revenue), 0).label("revenue"),
+        ).filter(
+            MetricsCache.date >= date_from,
+            MetricsCache.date <= date_to,
+        )
+        # Prefer ad-level join (avoids double-count when both columns set on
+        # one link row). Fall back to campaign-level for links without ad_id.
+        if ad_ids and campaign_ids:
+            q = q.filter(
+                (MetricsCache.ad_id.in_(ad_ids))
+                | (
+                    (MetricsCache.ad_id.is_(None))
+                    & (MetricsCache.campaign_id.in_(campaign_ids))
+                )
+            )
+        elif ad_ids:
+            q = q.filter(MetricsCache.ad_id.in_(ad_ids))
+        else:
+            q = q.filter(MetricsCache.campaign_id.in_(campaign_ids))
+        row = q.one()
+        spend = float(row.spend or 0)
+        impressions = int(row.impressions or 0)
+        clicks = int(row.clicks or 0)
+        link_clicks = int(row.link_clicks or 0)
+        conversions = int(row.conversions or 0)
+        revenue = float(row.revenue or 0)
+        ad_metrics.update({
+            "spend": round(spend, 2),
+            "impressions": impressions,
+            "clicks": clicks,
+            "link_clicks": link_clicks,
+            "conversions": conversions,
+            "revenue": round(revenue, 2),
+            "roas": round(revenue / spend, 4) if spend > 0 else None,
+            "ctr": round(clicks / impressions, 6) if impressions > 0 else None,
+            "cpa": round(spend / conversions, 2) if conversions > 0 else None,
+            "cpc": round(spend / link_clicks, 2) if link_clicks > 0 else None,
+        })
+
+    # 2/3. GA4 — aggregate row has source/medium/campaign all NULL.
+    ga4_row = (
+        db.query(
+            func.coalesce(func.sum(LandingPageGA4Snapshot.sessions), 0).label("sessions"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.engaged_sessions), 0).label("engaged"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.active_users), 0).label("active_users"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.new_users), 0).label("new_users"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.screen_page_views), 0).label("views"),
+            func.avg(LandingPageGA4Snapshot.engagement_rate).label("eng_rate"),
+            func.avg(LandingPageGA4Snapshot.bounce_rate).label("bounce_rate"),
+            func.avg(LandingPageGA4Snapshot.avg_session_duration_sec).label("avg_sd"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.begin_checkout), 0).label("begin_checkout"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.add_payment_info), 0).label("add_payment_info"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.purchases), 0).label("purchases"),
+            func.coalesce(func.sum(LandingPageGA4Snapshot.purchase_revenue), 0).label("ga_revenue"),
+            func.avg(LandingPageGA4Snapshot.lcp_p75_ms).label("lcp"),
+            func.avg(LandingPageGA4Snapshot.inp_p75_ms).label("inp"),
+            func.avg(LandingPageGA4Snapshot.cls_p75).label("cls"),
+            func.avg(LandingPageGA4Snapshot.fcp_p75_ms).label("fcp"),
+        )
+        .filter(
+            LandingPageGA4Snapshot.landing_page_id == page.id,
+            LandingPageGA4Snapshot.date >= date_from,
+            LandingPageGA4Snapshot.date <= date_to,
+            LandingPageGA4Snapshot.source.is_(None),
+            LandingPageGA4Snapshot.medium.is_(None),
+            LandingPageGA4Snapshot.campaign.is_(None),
+        )
+        .one()
+    )
+    ga4_sessions = int(ga4_row.sessions or 0)
+    ga4_engaged = int(ga4_row.engaged or 0)
+    begin_checkout = int(ga4_row.begin_checkout or 0)
+    add_payment = int(ga4_row.add_payment_info or 0)
+    purchases = int(ga4_row.purchases or 0)
+    ga4 = {
+        "has_data": ga4_sessions > 0,
+        "sessions": ga4_sessions,
+        "engaged_sessions": ga4_engaged,
+        "engagement_rate_pct": (
+            round(ga4_engaged / ga4_sessions * 100, 2) if ga4_sessions > 0 else None
+        ),
+        "active_users": int(ga4_row.active_users or 0),
+        "new_users": int(ga4_row.new_users or 0),
+        "screen_page_views": int(ga4_row.views or 0),
+        "avg_bounce_rate_pct": (
+            round(float(ga4_row.bounce_rate) * 100, 2)
+            if ga4_row.bounce_rate is not None else None
+        ),
+        "avg_session_duration_sec": (
+            round(float(ga4_row.avg_sd), 1) if ga4_row.avg_sd is not None else None
+        ),
+        "funnel": {
+            "sessions": ga4_sessions,
+            "begin_checkout": begin_checkout,
+            "add_payment_info": add_payment,
+            "purchases": purchases,
+            "purchase_revenue": float(ga4_row.ga_revenue or 0),
+            "session_to_checkout_pct": (
+                round(begin_checkout / ga4_sessions * 100, 2)
+                if ga4_sessions > 0 else None
+            ),
+            "checkout_to_purchase_pct": (
+                round(purchases / begin_checkout * 100, 2)
+                if begin_checkout > 0 else None
+            ),
+            "session_to_purchase_pct": (
+                round(purchases / ga4_sessions * 100, 2)
+                if ga4_sessions > 0 else None
+            ),
+        },
+        "web_vitals_p75": {
+            "lcp_ms": int(ga4_row.lcp) if ga4_row.lcp is not None else None,
+            "inp_ms": int(ga4_row.inp) if ga4_row.inp is not None else None,
+            "cls": round(float(ga4_row.cls), 3) if ga4_row.cls is not None else None,
+            "fcp_ms": int(ga4_row.fcp) if ga4_row.fcp is not None else None,
+            # Google Core Web Vitals pass thresholds
+            "lcp_pass": (int(ga4_row.lcp) <= 2500) if ga4_row.lcp is not None else None,
+            "inp_pass": (int(ga4_row.inp) <= 200) if ga4_row.inp is not None else None,
+            "cls_pass": (float(ga4_row.cls) <= 0.1) if ga4_row.cls is not None else None,
+        },
+    }
+
+    # 4. Clarity — aggregate row uses NULL UTM fields.
+    clarity_row = (
+        db.query(
+            func.coalesce(func.sum(LandingPageClaritySnapshot.sessions), 0).label("sessions"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.bot_sessions), 0).label("bots"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.distinct_users), 0).label("users"),
+            func.avg(LandingPageClaritySnapshot.pages_per_session).label("pages"),
+            func.avg(LandingPageClaritySnapshot.avg_scroll_depth).label("scroll"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.total_time_sec), 0).label("total_time"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.active_time_sec), 0).label("active_time"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.dead_clicks), 0).label("dead"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.rage_clicks), 0).label("rage"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.error_clicks), 0).label("err"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.quickback_clicks), 0).label("quickback"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.excessive_scrolls), 0).label("excessive"),
+            func.coalesce(func.sum(LandingPageClaritySnapshot.script_errors), 0).label("scripts"),
+        )
+        .filter(
+            LandingPageClaritySnapshot.landing_page_id == page.id,
+            LandingPageClaritySnapshot.date >= date_from,
+            LandingPageClaritySnapshot.date <= date_to,
+            LandingPageClaritySnapshot.utm_source.is_(None),
+            LandingPageClaritySnapshot.utm_campaign.is_(None),
+            LandingPageClaritySnapshot.utm_content.is_(None),
+        )
+        .one()
+    )
+    cl_sessions = int(clarity_row.sessions or 0)
+    rage = int(clarity_row.rage or 0)
+    dead = int(clarity_row.dead or 0)
+    err = int(clarity_row.err or 0)
+    quickback = int(clarity_row.quickback or 0)
+    clarity = {
+        "has_data": cl_sessions > 0,
+        "sessions": cl_sessions,
+        "bot_sessions": int(clarity_row.bots or 0),
+        "distinct_users": int(clarity_row.users or 0),
+        "avg_pages_per_session": (
+            round(float(clarity_row.pages), 2) if clarity_row.pages is not None else None
+        ),
+        "avg_scroll_depth_pct": (
+            round(float(clarity_row.scroll), 2) if clarity_row.scroll is not None else None
+        ),
+        "active_time_pct_of_total": (
+            round(int(clarity_row.active_time or 0) / int(clarity_row.total_time or 0) * 100, 2)
+            if int(clarity_row.total_time or 0) > 0 else None
+        ),
+        "friction_signals": {
+            "rage_clicks": rage,
+            "dead_clicks": dead,
+            "error_clicks": err,
+            "quickback_clicks": quickback,
+            "excessive_scrolls": int(clarity_row.excessive or 0),
+            "script_errors": int(clarity_row.scripts or 0),
+            # Rates per 100 sessions — playbook threshold: >5 rage/100s = bad
+            "rage_per_100_sessions": (
+                round(rage / cl_sessions * 100, 2) if cl_sessions > 0 else None
+            ),
+            "quickback_per_100_sessions": (
+                round(quickback / cl_sessions * 100, 2) if cl_sessions > 0 else None
+            ),
+        },
+    }
+
+    # ── Verdict — surface the headline issues so Claude doesn't have to
+    # re-derive them. Each flag includes the metric value that triggered it.
+    flags: list[str] = []
+    if ad_metrics["link_clicks"] > 0 and ga4_sessions > 0:
+        landing_rate = ga4_sessions / ad_metrics["link_clicks"]
+        if landing_rate < 0.5:
+            flags.append(
+                f"Heavy click→session drop: only {ga4_sessions} GA sessions "
+                f"from {ad_metrics['link_clicks']} ad link-clicks "
+                f"({round(landing_rate * 100, 1)}%). Check redirects / tracking."
+            )
+    if ga4_sessions >= 50 and purchases == 0:
+        flags.append(f"Zero purchases on {ga4_sessions} GA sessions — funnel broken.")
+    if begin_checkout > 0 and purchases / begin_checkout < 0.2 and begin_checkout >= 20:
+        flags.append(
+            f"Checkout abandons: {purchases}/{begin_checkout} purchases "
+            f"({round(purchases / begin_checkout * 100, 1)}%). Check payment UX."
+        )
+    if cl_sessions >= 50 and (rage / cl_sessions) * 100 > 5:
+        flags.append(
+            f"High rage clicks: {round(rage / cl_sessions * 100, 1)}/100 sessions. "
+            "UI element likely broken or misleading."
+        )
+    if ga4["web_vitals_p75"]["lcp_ms"] and not ga4["web_vitals_p75"]["lcp_pass"]:
+        flags.append(f"Slow LCP p75: {ga4['web_vitals_p75']['lcp_ms']}ms (>2500ms fails CWV).")
+    if ga4["web_vitals_p75"]["inp_ms"] and not ga4["web_vitals_p75"]["inp_pass"]:
+        flags.append(f"Sluggish INP p75: {ga4['web_vitals_p75']['inp_ms']}ms (>200ms fails CWV).")
+    if ga4["web_vitals_p75"]["cls"] is not None and not ga4["web_vitals_p75"]["cls_pass"]:
+        flags.append(f"Layout shift CLS p75: {ga4['web_vitals_p75']['cls']} (>0.1 fails CWV).")
+    if (
+        ad_metrics["spend"] > 0
+        and ad_metrics["conversions"] == 0
+        and ad_metrics["link_clicks"] >= 50
+    ):
+        flags.append(
+            f"Spend with zero conversions: {ad_metrics['spend']:.0f} spent, "
+            f"{ad_metrics['link_clicks']} link clicks, 0 conversions."
+        )
+
+    return {
+        "landing_page": {
+            "id": str(page.id),
+            "url": _landing_url(page),
+            "title": page.title,
+            "branch_id": str(page.branch_id) if page.branch_id else None,
+            "ta": page.ta,
+            "language": page.language,
+            "status": page.status,
+            "source": page.source,
+        },
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "days": (date_to - date_from).days + 1,
+        "ad_metrics": ad_metrics,
+        "ga4": ga4,
+        "clarity": clarity,
+        "issues": flags,
+        "has_any_data": (
+            ad_metrics["spend"] > 0 or ga4_sessions > 0 or cl_sessions > 0
+        ),
+    }
+
+
 # ── Tool registry ────────────────────────────────────────────────────────────
 
 _EXECUTORS = {
@@ -646,6 +1124,8 @@ _EXECUTORS = {
     "get_ota_mix": _tool_get_ota_mix,
     "get_campaign_setup": _tool_get_campaign_setup,
     "get_ad_performance": _tool_get_ad_performance,
+    "list_landing_pages": _tool_list_landing_pages,
+    "get_landing_page_performance": _tool_get_landing_page_performance,
 }
 
 
@@ -880,6 +1360,93 @@ TOOLS: list[dict] = [
                 "platform": {"type": "string", "enum": ["meta", "google", "tiktok"]},
             },
             "required": ["branch"],
+        },
+    },
+    {
+        "name": "list_landing_pages",
+        "description": (
+            "Find landing pages by branch / TA / status / source, or look up "
+            "a specific page by URL or search keyword. Returns id + url + "
+            "title for each match. Call this first when the user gives a "
+            "landing-page URL — you need the id before "
+            "get_landing_page_performance. Also useful to enumerate which "
+            "pages a branch has so you can suggest which to evaluate."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "description": _BRANCH_DESC},
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "Full landing-page URL (or partial). The tool parses "
+                        "domain + slug to find a match. Example: "
+                        "https://oani-taipei.staymeander.com/solo-traveler-direct-zh"
+                    ),
+                },
+                "search": {
+                    "type": "string",
+                    "description": "Substring match on title / slug / domain.",
+                },
+                "ta": {
+                    "type": "string",
+                    "enum": ["Solo", "Couple", "Friend", "Group", "Business"],
+                },
+                "status": {
+                    "type": "string",
+                    "description": (
+                        "Filter by status: DRAFT | PENDING_APPROVAL | APPROVED | "
+                        "PUBLISHED | REJECTED | DISCOVERED | ARCHIVED."
+                    ),
+                },
+                "source": {
+                    "type": "string",
+                    "enum": ["external", "managed"],
+                    "description": (
+                        "external = auto-discovered from ad destination URLs; "
+                        "managed = built in our CMS."
+                    ),
+                },
+                "limit": {"type": "integer", "default": 25, "maximum": 100},
+            },
+        },
+    },
+    {
+        "name": "get_landing_page_performance",
+        "description": (
+            "End-to-end landing page evaluation: ad traffic (spend, link "
+            "clicks, conversions, ROAS, CPA) + GA4 sessions / engagement / "
+            "ecommerce funnel (begin_checkout → add_payment_info → purchases) "
+            "+ Core Web Vitals (LCP / INP / CLS p75) + Clarity friction "
+            "signals (rage / dead / error clicks, scroll depth). Returns "
+            "computed conversion rates AND an `issues` list flagging the "
+            "biggest problems (slow page, dead funnel, rage clicks, "
+            "tracking gap). Identify the page by `landing_page_id` (UUID) "
+            "OR `url` (any full URL) OR domain + slug. If the page can't be "
+            "found, call list_landing_pages first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "landing_page_id": {
+                    "type": "string",
+                    "description": (
+                        "UUID from list_landing_pages. Use this when known."
+                    ),
+                },
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "Full URL of the landing page (eg "
+                        "https://oani-taipei.staymeander.com/solo-traveler-direct-zh). "
+                        "Tool will parse domain + slug to look up the page."
+                    ),
+                },
+                "domain": {"type": "string", "description": "host only, no scheme"},
+                "slug": {"type": "string", "description": "path with or without leading slash"},
+                "date_from": {"type": "string", "description": "YYYY-MM-DD; default 30d ago"},
+                "date_to": {"type": "string", "description": "YYYY-MM-DD; default today"},
+            },
         },
     },
 ]
