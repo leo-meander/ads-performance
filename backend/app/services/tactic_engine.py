@@ -12,6 +12,7 @@ Daily cron orchestration:
 """
 
 import logging
+import statistics
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -23,6 +24,7 @@ from app.models.action_log import ActionLog
 from app.models.ad import Ad
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
+from app.models.metrics import MetricsCache
 from app.models.rule import AutomationRule
 from app.models.tactic import Tactic
 from app.services.changelog import log_change
@@ -551,6 +553,106 @@ def _revert_single(
 # ---------------------------------------------------------------------------
 # Per-tactic last_run_at bookkeeping
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Dynamic threshold computation (per-branch, per-funnel percentile baselines)
+# ---------------------------------------------------------------------------
+
+# Metric → MetricsCache column for percentile aggregation. Kept in sync with
+# rule_engine.METRIC_COLUMNS but limited to the metrics that make sense for
+# branch-level baselining.
+_BASELINEABLE_METRICS = {
+    "roas": MetricsCache.roas,
+    "spend": MetricsCache.spend,
+    "cpa": MetricsCache.cpa,
+    "ctr": MetricsCache.ctr,
+    "cpc": MetricsCache.cpc,
+    "conversions": MetricsCache.conversions,
+    "revenue": MetricsCache.revenue,
+}
+
+
+def compute_branch_percentile(
+    db: Session,
+    *,
+    account_id: str,
+    entity_level: str,
+    funnel_stage: str | None,
+    metric: str,
+    percentile: int,
+    days: int,
+) -> float | None:
+    """Return the Nth percentile of per-entity avg `metric` over `days`,
+    filtered by account_id and (optionally) funnel_stage.
+
+    Used by tactics with threshold_mode='dynamic' so a SURF/STOP_LOSS bar
+    floats with each branch's own performance instead of being hardcoded.
+
+    Returns None when there aren't enough entities to baseline against (we
+    require ≥3 distinct entities to avoid noise). Caller falls back to the
+    safety_bound in that case.
+    """
+    col = _BASELINEABLE_METRICS.get(metric)
+    if col is None or not (0 < percentile < 100):
+        return None
+
+    date_from = date.today() - timedelta(days=days)
+
+    if entity_level == "ad":
+        q = (
+            db.query(MetricsCache.ad_id, func.avg(col))
+            .join(Ad, Ad.id == MetricsCache.ad_id)
+            .join(Campaign, Campaign.id == Ad.campaign_id)
+            .filter(
+                Ad.account_id == account_id,
+                MetricsCache.date >= date_from,
+                MetricsCache.ad_id.isnot(None),
+            )
+            .group_by(MetricsCache.ad_id)
+        )
+        if funnel_stage:
+            q = q.filter(Campaign.funnel_stage == funnel_stage)
+    elif entity_level == "ad_set":
+        q = (
+            db.query(MetricsCache.ad_set_id, func.avg(col))
+            .join(AdSet, AdSet.id == MetricsCache.ad_set_id)
+            .join(Campaign, Campaign.id == AdSet.campaign_id)
+            .filter(
+                AdSet.account_id == account_id,
+                MetricsCache.date >= date_from,
+                MetricsCache.ad_set_id.isnot(None),
+                MetricsCache.ad_id.is_(None),
+            )
+            .group_by(MetricsCache.ad_set_id)
+        )
+        if funnel_stage:
+            q = q.filter(Campaign.funnel_stage == funnel_stage)
+    else:  # campaign
+        q = (
+            db.query(MetricsCache.campaign_id, func.avg(col))
+            .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+            .filter(
+                Campaign.account_id == account_id,
+                MetricsCache.date >= date_from,
+                MetricsCache.campaign_id.isnot(None),
+                MetricsCache.ad_set_id.is_(None),
+                MetricsCache.ad_id.is_(None),
+            )
+            .group_by(MetricsCache.campaign_id)
+        )
+        if funnel_stage:
+            q = q.filter(Campaign.funnel_stage == funnel_stage)
+
+    rows = q.all()
+    values = [float(v) for _, v in rows if v is not None]
+    if len(values) < 3:
+        return None
+
+    # statistics.quantiles cuts into 100 buckets; the (P-1)th cut is the Pth percentile.
+    # method='inclusive' = closer to numpy's default; fine for small samples.
+    quants = statistics.quantiles(values, n=100, method="inclusive")
+    return float(quants[percentile - 1])
+
 
 def stamp_last_run(db: Session) -> int:
     """After a daily cron pass, mark every active tactic with last_run_at=now.

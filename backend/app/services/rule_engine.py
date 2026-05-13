@@ -225,7 +225,9 @@ def check_conditions_detailed(
 # Entity querying
 # ---------------------------------------------------------------------------
 
-def _get_matching_campaigns(db: Session, rule: AutomationRule) -> list[Campaign]:
+def _get_matching_campaigns(
+    db: Session, rule: AutomationRule, funnel_stage: str | None = None,
+) -> list[Campaign]:
     q = db.query(Campaign)
     if rule.platform != "all":
         q = q.filter(Campaign.platform == rule.platform)
@@ -233,10 +235,14 @@ def _get_matching_campaigns(db: Session, rule: AutomationRule) -> list[Campaign]
         q = q.filter(Campaign.account_id == rule.account_id)
     if rule.action != "enable_campaign":
         q = q.filter(Campaign.status == "ACTIVE")
+    if funnel_stage:
+        q = q.filter(Campaign.funnel_stage == funnel_stage)
     return q.all()
 
 
-def _get_matching_adsets(db: Session, rule: AutomationRule) -> list[AdSet]:
+def _get_matching_adsets(
+    db: Session, rule: AutomationRule, funnel_stage: str | None = None,
+) -> list[AdSet]:
     q = db.query(AdSet).join(Campaign, AdSet.campaign_id == Campaign.id)
     if rule.platform != "all":
         q = q.filter(AdSet.platform == rule.platform)
@@ -246,10 +252,14 @@ def _get_matching_adsets(db: Session, rule: AutomationRule) -> list[AdSet]:
     q = q.filter(Campaign.status == "ACTIVE")
     if rule.action not in ("enable_adset", "enable_ad_set"):
         q = q.filter(AdSet.status == "ACTIVE")
+    if funnel_stage:
+        q = q.filter(Campaign.funnel_stage == funnel_stage)
     return q.all()
 
 
-def _get_matching_ads(db: Session, rule: AutomationRule) -> list[Ad]:
+def _get_matching_ads(
+    db: Session, rule: AutomationRule, funnel_stage: str | None = None,
+) -> list[Ad]:
     q = db.query(Ad).join(Campaign, Ad.campaign_id == Campaign.id)
     if rule.platform != "all":
         q = q.filter(Ad.platform == rule.platform)
@@ -259,6 +269,8 @@ def _get_matching_ads(db: Session, rule: AutomationRule) -> list[Ad]:
     q = q.filter(Campaign.status == "ACTIVE")
     if rule.action not in ("enable_ad",):
         q = q.filter(Ad.status == "ACTIVE")
+    if funnel_stage:
+        q = q.filter(Campaign.funnel_stage == funnel_stage)
     return q.all()
 
 
@@ -613,6 +625,102 @@ def execute_action(
 # Rule evaluation
 # ---------------------------------------------------------------------------
 
+def _resolve_dynamic_conditions(
+    db: Session, rule: AutomationRule, tactic: Tactic | None,
+) -> tuple[list[dict], dict]:
+    """If this rule's tactic uses threshold_mode='dynamic', recompute each
+    condition's threshold from a rolling branch+funnel percentile.
+
+    Returns (patched_conditions, debug_info) where debug_info carries
+    `baselines` (raw percentile values) and `effective_thresholds`
+    (post-safety-bound values + human descriptions) for the diagnostics panel.
+
+    The dynamic config lives on tactic.config and uses these keys per metric:
+        <metric>_percentile      e.g. roas_percentile: 25  (bottom quartile)
+        <metric>_safety_bound    absolute fallback. Semantics depend on op:
+                                 - "<" / "<=": threshold = min(percentile, bound)
+                                   ("never pause an entity above the safety bound")
+                                 - ">" / ">=": threshold = max(percentile, bound)
+                                   ("never scale an entity below the safety bound")
+        lookback_days            default 30
+        funnel_stage             entity filter; the percentile is computed
+                                 over the same funnel cohort
+    """
+    if not tactic:
+        return rule.conditions, {}
+    cfg = tactic.config or {}
+    if cfg.get("threshold_mode") != "dynamic":
+        return rule.conditions, {}
+
+    funnel = cfg.get("funnel_stage")
+    lookback = int(cfg.get("lookback_days", 30))
+
+    # Lazy import — tactic_engine pulls from rule_engine indirectly.
+    from app.services.tactic_engine import compute_branch_percentile
+
+    baselines: dict[str, float] = {}
+    effective: dict[str, dict] = {}
+
+    patched: list[dict] = []
+    for raw_c in rule.conditions:
+        c = dict(raw_c)
+        metric = c.get("metric")
+        pct = cfg.get(f"{metric}_percentile")
+        if pct is None:
+            patched.append(c)
+            continue
+        baseline = compute_branch_percentile(
+            db,
+            account_id=tactic.account_id,
+            entity_level=rule.entity_level,
+            funnel_stage=funnel,
+            metric=metric,
+            percentile=int(pct),
+            days=lookback,
+        )
+        if baseline is None:
+            # Insufficient data — keep the static threshold the rule was created
+            # with (or the safety_bound if no static threshold). Log so the
+            # diagnostics panel surfaces this.
+            bound = cfg.get(f"{metric}_safety_bound")
+            if bound is not None:
+                c["threshold"] = float(bound)
+                effective[metric] = {
+                    "value": float(bound),
+                    "source": f"fallback to safety_bound (insufficient {funnel or 'branch'} {rule.entity_level} data for P{pct})",
+                }
+            patched.append(c)
+            continue
+
+        baselines[f"{metric}_p{pct}"] = baseline
+        bound = cfg.get(f"{metric}_safety_bound")
+        op = c.get("operator", "<")
+        if bound is not None:
+            if op in ("<", "<="):
+                resolved = min(baseline, float(bound))
+            else:
+                resolved = max(baseline, float(bound))
+        else:
+            resolved = baseline
+        c["threshold"] = resolved
+        effective[metric] = {
+            "value": resolved,
+            "source": (
+                f"P{pct} of branch {funnel or 'all'} {rule.entity_level}s over {lookback}d = {baseline:.4f}"
+                + (f" (bounded by safety={bound})" if bound is not None else "")
+            ),
+        }
+        patched.append(c)
+
+    return patched, {
+        "dynamic_mode": True,
+        "funnel_stage": funnel,
+        "lookback_days": lookback,
+        "baselines": baselines,
+        "effective_thresholds": effective,
+    }
+
+
 def evaluate_rule(db: Session, rule: AutomationRule) -> list[dict]:
     """Evaluate a rule against all matching entities.
 
@@ -622,12 +730,19 @@ def evaluate_rule(db: Session, rule: AutomationRule) -> list[dict]:
     now = datetime.now(timezone.utc)
     entity_level = getattr(rule, "entity_level", "campaign") or "campaign"
 
+    # Tactic-aware setup: funnel_stage filter + dynamic threshold resolution.
+    tactic: Tactic | None = None
+    if rule.tactic_id:
+        tactic = db.query(Tactic).filter(Tactic.id == rule.tactic_id).first()
+    funnel_stage = (tactic.config or {}).get("funnel_stage") if tactic else None
+    patched_conditions, dynamic_debug = _resolve_dynamic_conditions(db, rule, tactic)
+
     if entity_level == "ad":
-        entities = _get_matching_ads(db, rule)
+        entities = _get_matching_ads(db, rule, funnel_stage=funnel_stage)
     elif entity_level == "ad_set":
-        entities = _get_matching_adsets(db, rule)
+        entities = _get_matching_adsets(db, rule, funnel_stage=funnel_stage)
     else:
-        entities = _get_matching_campaigns(db, rule)
+        entities = _get_matching_campaigns(db, rule, funnel_stage=funnel_stage)
 
     results = []
     fail_counts: dict[str, int] = {}  # metric -> count of entities that failed on it
@@ -637,7 +752,7 @@ def evaluate_rule(db: Session, rule: AutomationRule) -> list[dict]:
     fail_examples: list[dict] = []
 
     for entity in entities:
-        detail = check_conditions_detailed(db, entity, rule.conditions, entity_level)
+        detail = check_conditions_detailed(db, entity, patched_conditions, entity_level)
         if detail["passed"]:
             result = execute_action(db, rule, entity, entity_level)
             results.append(result)
@@ -653,11 +768,17 @@ def evaluate_rule(db: Session, rule: AutomationRule) -> list[dict]:
                 })
 
     # Always log an evaluation summary
-    summary_snapshot = {
+    summary_snapshot: dict = {
         "entities_checked": len(entities),
         "actions_taken": len(results),
         "entity_level": entity_level,
     }
+    if funnel_stage:
+        summary_snapshot["funnel_stage"] = funnel_stage
+    if dynamic_debug:
+        # Dump the dynamic threshold context so the diagnostics UI can render
+        # "ROAS bar today = 3.2 (P75 of branch TOF over 30d = 2.8)".
+        summary_snapshot["dynamic"] = dynamic_debug
     if fail_counts:
         # Sort by count descending, show top reasons
         sorted_fails = sorted(fail_counts.items(), key=lambda x: -x[1])

@@ -74,6 +74,14 @@ type Diagnostics = {
         failed_at: string | null
         reason: string | null
       }>
+      funnel_stage: string | null
+      dynamic: {
+        dynamic_mode: boolean
+        funnel_stage: string | null
+        lookback_days: number
+        baselines: Record<string, number>
+        effective_thresholds: Record<string, { value: number; source: string }>
+      } | null
       error_message: string | null
     } | null
     recent_actions: Array<{
@@ -470,10 +478,29 @@ export default function TacticsPage() {
                                             ? new Date(r.last_evaluation.executed_at).toLocaleString()
                                             : '—'}
                                           {' · '}
+                                          {r.last_evaluation.funnel_stage && (
+                                            <>
+                                              funnel=<code className="bg-gray-100 px-1 rounded">{r.last_evaluation.funnel_stage}</code>{' · '}
+                                            </>
+                                          )}
                                           checked <b>{r.last_evaluation.entities_checked ?? 0}</b> entities · acted on{' '}
                                           <b>{r.last_evaluation.actions_taken ?? 0}</b>
                                         </span>
                                       </div>
+                                      {r.last_evaluation.dynamic && Object.keys(r.last_evaluation.dynamic.effective_thresholds || {}).length > 0 && (
+                                        <div className="mt-1 p-2 bg-blue-50 border border-blue-200 rounded">
+                                          <div className="text-blue-700 font-medium mb-1">Dynamic thresholds (today)</div>
+                                          <ul className="space-y-0.5">
+                                            {Object.entries(r.last_evaluation.dynamic.effective_thresholds).map(([metric, info]) => (
+                                              <li key={metric} className="text-gray-700">
+                                                <code className="bg-white px-1 rounded">{metric}</code>{' '}
+                                                threshold = <b>{info.value.toFixed(4)}</b>
+                                                <div className="text-gray-500 text-xs ml-4">{info.source}</div>
+                                              </li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      )}
                                       {r.last_evaluation.top_fail_reason && (
                                         <div className="text-gray-600">
                                           Top fail reason: <code className="bg-gray-100 px-1 rounded">{r.last_evaluation.top_fail_reason}</code>

@@ -374,6 +374,8 @@ def get_tactic_diagnostics(
                         "top_fail_reason": (last_eval.metrics_snapshot or {}).get("top_fail_reason"),
                         "fail_breakdown": (last_eval.metrics_snapshot or {}).get("fail_breakdown"),
                         "fail_examples": (last_eval.metrics_snapshot or {}).get("fail_examples", []),
+                        "funnel_stage": (last_eval.metrics_snapshot or {}).get("funnel_stage"),
+                        "dynamic": (last_eval.metrics_snapshot or {}).get("dynamic"),
                         "error_message": last_eval.error_message,
                     }
                     if last_eval else None

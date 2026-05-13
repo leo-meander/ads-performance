@@ -535,6 +535,180 @@ def test_evaluate_rule_summary_includes_fail_examples():
     db.close()
 
 
+def test_funnel_stage_filter_segregates_entities():
+    """Engine should only see entities whose parent Campaign matches the
+    tactic's funnel_stage filter."""
+    ids = _seed_tree()
+    db = TestSession()
+    # Existing seed campaign has no funnel_stage. Set it to TOF.
+    camp = db.query(Campaign).filter(Campaign.id == ids["campaign"]).first()
+    camp.funnel_stage = "TOF"
+    # Add a second campaign + adset under MOF for the same account so we can
+    # confirm only TOF entities show up under a TOF-filtered tactic.
+    mof_camp = Campaign(
+        id=str(uuid.uuid4()),
+        account_id=ids["acc"],
+        platform="meta",
+        platform_campaign_id="camp_mof",
+        name="MOF Campaign",
+        objective="OUTCOME_SALES",
+        status="ACTIVE",
+        funnel_stage="MOF",
+    )
+    db.add(mof_camp)
+    db.flush()
+    mof_adset = AdSet(
+        id=str(uuid.uuid4()),
+        campaign_id=mof_camp.id,
+        account_id=ids["acc"],
+        platform="meta",
+        platform_adset_id="adset_mof",
+        name="MOF AdSet",
+        status="ACTIVE",
+        daily_budget=300000,
+    )
+    db.add(mof_adset)
+    db.commit()
+
+    from app.services.rule_engine import _get_matching_adsets
+
+    # Tactic with funnel_stage=TOF — should only see the TOF adset.
+    t_tof = tactic_service.create_tactic_from_preset(
+        db, preset_type="stop_loss_adset", platform="meta", account_id=ids["acc"],
+        config_overrides={"funnel_stage": "TOF"},
+    )
+    rule_tof = db.query(AutomationRule).filter(AutomationRule.tactic_id == t_tof.id).first()
+    tof_matches = _get_matching_adsets(db, rule_tof, funnel_stage="TOF")
+    tof_ids = {a.id for a in tof_matches}
+    assert ids["adset"] in tof_ids
+    assert mof_adset.id not in tof_ids
+
+    # Same rule but funnel_stage=MOF → only the MOF adset.
+    mof_matches = _get_matching_adsets(db, rule_tof, funnel_stage="MOF")
+    mof_ids = {a.id for a in mof_matches}
+    assert mof_adset.id in mof_ids
+    assert ids["adset"] not in mof_ids
+
+    # No funnel filter → both.
+    all_matches = _get_matching_adsets(db, rule_tof, funnel_stage=None)
+    assert {ids["adset"], mof_adset.id}.issubset({a.id for a in all_matches})
+    db.close()
+
+
+def test_compute_branch_percentile_returns_none_when_insufficient_data():
+    """Percentile needs ≥3 distinct entities; otherwise fall through so the
+    safety_bound can act as the threshold."""
+    ids = _seed_tree()
+    db = TestSession()
+    # Only one entity in the DB — should return None.
+    result = tactic_engine.compute_branch_percentile(
+        db,
+        account_id=ids["acc"],
+        entity_level="ad",
+        funnel_stage=None,
+        metric="roas",
+        percentile=50,
+        days=30,
+    )
+    assert result is None
+    db.close()
+
+
+def test_dynamic_threshold_resolver_falls_back_to_safety_bound_on_insufficient_data():
+    """When there isn't enough branch data to compute the percentile, the
+    resolver should clamp to the safety_bound so the tactic can still fire."""
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="stop_loss_ad", platform="meta", account_id=ids["acc"],
+        config_overrides={
+            "funnel_stage": "TOF",
+            "threshold_mode": "dynamic",
+            "lookback_days": 30,
+            "days": 3,
+            "roas_percentile": 25,
+            "roas_safety_bound": 1.5,
+            "spend_min": 100,
+        },
+    )
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+
+    from app.services.rule_engine import _resolve_dynamic_conditions
+    patched, debug = _resolve_dynamic_conditions(db, rule, t)
+
+    # ROAS condition should now carry the safety_bound as its threshold.
+    roas_cond = next((c for c in patched if c["metric"] == "roas"), None)
+    assert roas_cond is not None
+    assert roas_cond["threshold"] == 1.5
+    # Effective thresholds include the metric with a "fallback to safety_bound" source.
+    assert "roas" in debug["effective_thresholds"]
+    assert "fallback" in debug["effective_thresholds"]["roas"]["source"].lower()
+    db.close()
+
+
+def test_dynamic_threshold_resolver_clamps_to_safety_bound_for_stop_loss():
+    """Stop-loss tactic (operator '<'): when computed percentile is HIGHER
+    than the safety bound, we use the lower (safer) of the two.
+
+    Ensures a thriving branch's P25 doesn't murder mid-pack ads. We mock
+    compute_branch_percentile so this test stays focused on the clamping
+    logic itself (the percentile SQL is exercised separately).
+    """
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="stop_loss_ad", platform="meta", account_id=ids["acc"],
+        config_overrides={
+            "funnel_stage": "TOF",
+            "threshold_mode": "dynamic",
+            "roas_percentile": 25,
+            "roas_safety_bound": 1.5,
+            "spend_min": 50,
+        },
+    )
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+
+    # Branch P25 is computed as 6.0 (high — branch thriving). Operator '<' must
+    # clamp DOWN to the 1.5 safety bound or we'd murder mid-pack ads.
+    from app.services import rule_engine as re_mod
+    with patch.object(re_mod, "_resolve_dynamic_conditions", wraps=re_mod._resolve_dynamic_conditions), \
+         patch("app.services.tactic_engine.compute_branch_percentile", return_value=6.0):
+        patched, debug = re_mod._resolve_dynamic_conditions(db, rule, t)
+
+    roas_cond = next(c for c in patched if c["metric"] == "roas")
+    assert roas_cond["threshold"] == 1.5
+    assert debug["baselines"]["roas_p25"] == 6.0
+    db.close()
+
+
+def test_dynamic_threshold_resolver_clamps_to_safety_bound_for_surf():
+    """Surf tactic (operator '>='): when computed percentile is LOWER than
+    the safety bound, we use the higher (more conservative) of the two."""
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="surf_adset", platform="meta", account_id=ids["acc"],
+        config_overrides={
+            "funnel_stage": "TOF",
+            "threshold_mode": "dynamic",
+            "roas_percentile": 75,
+            "roas_safety_bound": 3.0,
+            "spend_min": 50,
+        },
+    )
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+
+    # Branch P75 mocked as 1.2 (struggling branch). Operator '>=' must clamp
+    # UP to 3.0 so we don't scale losers.
+    from app.services import rule_engine as re_mod
+    with patch("app.services.tactic_engine.compute_branch_percentile", return_value=1.2):
+        patched, _ = re_mod._resolve_dynamic_conditions(db, rule, t)
+
+    roas_cond = next(c for c in patched if c["metric"] == "roas")
+    assert roas_cond["threshold"] == 3.0
+    db.close()
+
+
 def test_all_presets_have_required_fields():
     for key, preset in PRESETS.items():
         assert preset.name
