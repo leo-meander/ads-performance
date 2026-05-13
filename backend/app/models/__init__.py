@@ -6,6 +6,7 @@ from app.models.api_key import ApiKey
 from app.models.booking_match import BookingMatch
 from app.models.budget import BudgetAllocation, BudgetMonthlySplit, BudgetPlan, BudgetYearlyPlan
 from app.models.campaign import Campaign
+from app.models.creative_visual_tag import CreativeVisualTag
 from app.models.currency_rate import CurrencyRate
 from app.models.metrics import MetricsCache
 from app.models.reservation import Reservation
@@ -44,6 +45,7 @@ __all__ = [
     "BudgetPlan",
     "BudgetYearlyPlan",
     "Campaign",
+    "CreativeVisualTag",
     "CurrencyRate",
     "GoogleAssetGroup",
     "GoogleAsset",

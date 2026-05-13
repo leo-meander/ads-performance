@@ -16,6 +16,7 @@ from app.routers import (
     changelog,
     country,
     creative,
+    creative_intelligence,
     export,
     funnel_recommendations,
     google_campaigns,
@@ -60,6 +61,7 @@ app.include_router(campaigns.router, prefix="/api", tags=["campaigns"])
 app.include_router(rules.router, prefix="/api", tags=["rules"])
 app.include_router(tactics.router, prefix="/api", tags=["tactics"])
 app.include_router(creative.router, prefix="/api", tags=["creative"])
+app.include_router(creative_intelligence.router, prefix="/api", tags=["creative-intelligence"])
 app.include_router(ai.router, prefix="/api", tags=["ai"])
 app.include_router(sync.router, prefix="/api", tags=["sync"])
 app.include_router(budget.router, prefix="/api", tags=["budget"])

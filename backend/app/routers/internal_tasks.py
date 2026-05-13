@@ -207,6 +207,21 @@ def _do_sync_material_urls(db):
     sync_material_urls(db)
 
 
+def _do_vision_tag_materials(db, limit: int = 25):
+    """Score the next batch of un-tagged image materials with Claude vision.
+
+    Inline (not background) so the cron response carries the per-call counts;
+    work is bounded (limit × ~10s per material call ≈ 4 min on the high end).
+    """
+    from app.services.creative_vision_tagger import tag_pending_materials
+    summary = tag_pending_materials(db, limit=limit)
+    logger.info(
+        "[vision-tag] scanned=%d tagged=%d errors=%d skipped=%d",
+        summary["scanned"], summary["tagged"], summary["errors"], summary["skipped"],
+    )
+    return summary
+
+
 @router.post("/internal/tasks/sync-all-platforms", status_code=202)
 def trigger_sync_all_platforms(
     background_tasks: BackgroundTasks,
@@ -297,6 +312,25 @@ def trigger_sync_material_urls(
     _require_secret(x_internal_secret)
     _run_in_thread(_do_sync_material_urls, "sync-material-urls")
     return _api_response(data={"status": "started"})
+
+
+@router.post("/internal/tasks/vision-tag-materials", status_code=200)
+def trigger_vision_tag_materials(
+    x_internal_secret: str | None = Header(default=None),
+    limit: int = 25,
+):
+    """Every ~10 min: tag the next batch of un-scored image materials with
+    Claude vision. Inline so cron sees per-call counts. `limit` capped to 50
+    to stay under the 225s ingress budget (~10s per vision call)."""
+    _require_secret(x_internal_secret)
+    if limit <= 0 or limit > 50:
+        raise HTTPException(status_code=400, detail="limit must be 1..50")
+    db = SessionLocal()
+    try:
+        summary = _do_vision_tag_materials(db, limit=limit)
+    finally:
+        db.close()
+    return _api_response(data={"status": "ok", **{k: v for k, v in summary.items() if k != "results"}})
 
 
 # --------------------------------------------------- recommendation engines --

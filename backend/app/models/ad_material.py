@@ -1,4 +1,4 @@
-from sqlalchemy import Column, ForeignKey, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, String, Text
 
 from app.models.base import Base, TimestampMixin, UUIDType
 
@@ -16,3 +16,10 @@ class AdMaterial(TimestampMixin, Base):
     url_source = Column(String(10), nullable=False, default="auto", index=True)
     # url_source: 'auto' = synced from Meta (overwritable by sync task)
     #             'manual' = designer-input URL (sync task MUST skip)
+
+    # Creative Intelligence Phase 1 — vision tagging.
+    # NULL until the cron tagger scores this material. Re-runs after a model
+    # upgrade are gated by comparing vision_model with the current SONNET_VISION
+    # constant; mismatches trigger a re-tag.
+    vision_analyzed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    vision_model = Column(String(40), nullable=True)
