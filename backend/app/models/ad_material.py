@@ -1,6 +1,6 @@
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text
+from sqlalchemy import Column, ForeignKey, String, Text
 
-from app.models.base import Base, JSONType, TimestampMixin, UUIDType
+from app.models.base import Base, TimestampMixin, UUIDType
 
 
 class AdMaterial(TimestampMixin, Base):
@@ -16,19 +16,3 @@ class AdMaterial(TimestampMixin, Base):
     url_source = Column(String(10), nullable=False, default="auto", index=True)
     # url_source: 'auto' = synced from Meta (overwritable by sync task)
     #             'manual' = designer-input URL (sync task MUST skip)
-
-    # Canva link captured the moment a combo using this material is APPROVED.
-    # Source: combo_approvals.working_file_url. Persists across approval rounds
-    # so winning ads can be cloned later without re-asking the designer.
-    canva_url = Column(Text, nullable=True)
-    canva_design_id = Column(String(50), nullable=True, index=True)
-    canva_captured_at = Column(DateTime(timezone=True), nullable=True)
-    canva_source_approval_id = Column(UUIDType, nullable=True)
-
-    # Phase 2 — reusable template metadata. Designer wires named placeholders
-    # (e.g. {"headline": "...", "bg_image": "...", "cta": "..."}) on a Canva
-    # brand template; once is_template_ready=True, /regenerate can clone it
-    # and apply per-comment overrides via the Canva Connect API.
-    canva_template_id = Column(String(50), nullable=True)
-    canva_placeholder_schema = Column(JSONType, nullable=True)
-    is_template_ready = Column(Boolean, nullable=False, default=False)

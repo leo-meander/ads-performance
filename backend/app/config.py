@@ -62,17 +62,14 @@ class Settings(BaseSettings):
     NEXT_PUBLIC_API_BASE_URL: str = "http://localhost:8000"
     FRONTEND_URL: str = "http://localhost:3000"
 
-    # Figma API (Phase 6)
+    # Figma API
     FIGMA_ACCESS_TOKEN: str = ""
     FIGMA_TEAM_ID: str = ""
+    FIGMA_API_BASE_URL: str = "https://api.figma.com/v1"
 
-    # Canva Connect API (winning-ads regenerate flow)
-    # When CANVA_API_TOKEN is empty the client runs in stub mode: it returns
-    # a deterministic mock URL so the regenerate flow is testable end-to-end
-    # without OAuth setup. Production needs a Canva Enterprise org with the
-    # Connect app installed; the token is the org-scoped OAuth access token.
-    CANVA_API_TOKEN: str = ""
-    CANVA_API_BASE_URL: str = "https://api.canva.com/rest/v1"
+    # Voyage AI (creative embeddings — semantic search over combos/copies/materials)
+    VOYAGE_API_KEY: str = ""
+    VOYAGE_EMBED_MODEL: str = "voyage-3-large"
 
     # PMS (Reservation system)
     PMS_API_BASE_URL: str = "https://meander-hid-dashboard.zeabur.app"

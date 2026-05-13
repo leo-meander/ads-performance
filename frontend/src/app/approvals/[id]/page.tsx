@@ -565,7 +565,7 @@ export default function ApprovalDetailPage() {
                       type="url"
                       value={editFile}
                       onChange={e => setEditFile(e.target.value)}
-                      placeholder="https://canva.com/design/..."
+                      placeholder="https://figma.com/design/..."
                       className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
@@ -748,7 +748,7 @@ export default function ApprovalDetailPage() {
                     type="url"
                     value={resubmitFile}
                     onChange={e => setResubmitFile(e.target.value)}
-                    placeholder={approval.working_file_url || 'https://canva.com/design/...'}
+                    placeholder={approval.working_file_url || 'https://figma.com/design/...'}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
                   />
                   <p className="text-[11px] text-gray-400 mt-1">Leave empty to reuse the previous file.</p>

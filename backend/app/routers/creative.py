@@ -770,7 +770,7 @@ def update_verdict(
 class QuickComboCreate(BaseModel):
     branch_id: str
     ad_name: str
-    creative_url: str  # Canva / Figma link
+    creative_url: str  # Figma / Drive / external link
     creative_type: str = "image"  # image | video | carousel
     headline: str
     primary_text: str

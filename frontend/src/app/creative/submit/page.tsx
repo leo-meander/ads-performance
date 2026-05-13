@@ -52,7 +52,7 @@ export default function CreateAndSubmitPage() {
 
   // Approval fields
   const [workingFileUrl, setWorkingFileUrl] = useState('')
-  const [workingFileLabel, setWorkingFileLabel] = useState('Canva Design')
+  const [workingFileLabel, setWorkingFileLabel] = useState('Figma Frame')
   const [deadline, setDeadline] = useState('')
 
   useEffect(() => {
@@ -311,9 +311,9 @@ export default function CreateAndSubmitPage() {
               <h3 className="text-sm font-semibold text-gray-900 mb-4">Creative</h3>
               <div className="space-y-3">
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">Creative URL * (Canva / Figma / Drive)</label>
+                  <label className="block text-xs text-gray-500 mb-1">Creative URL * (Figma / Drive / external link)</label>
                   <input type="url" value={creativeUrl} onChange={e => setCreativeUrl(e.target.value)}
-                    placeholder="https://canva.com/design/..."
+                    placeholder="https://figma.com/design/..."
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
                 <div>
@@ -394,7 +394,7 @@ export default function CreateAndSubmitPage() {
               className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             <select value={workingFileLabel} onChange={e => setWorkingFileLabel(e.target.value)}
               className="px-3 py-2 border border-gray-200 rounded-lg text-sm">
-              <option value="Canva Design">Canva</option><option value="Figma Frame">Figma</option><option value="Google Sheet">GSheet</option><option value="Other">Other</option>
+              <option value="Figma Frame">Figma</option><option value="Google Sheet">GSheet</option><option value="Other">Other</option>
             </select>
           </div>
         </div>

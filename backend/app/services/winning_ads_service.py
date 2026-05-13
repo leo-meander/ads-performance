@@ -1,11 +1,11 @@
 """Winning ads service.
 
-Surfaces every combo whose material has a Canva working file captured —
-regardless of verdict. The user filters/sorts in the UI (verdict column +
-ROAS sort) to pick which winner to clone.
+Surfaces every combo joined with its material + copy. Default ordering is by
+ROAS desc so winners bubble to the top — the UI filters/sorts further. The
+"regenerate" pipeline that used to live here was Canva-specific and has been
+removed; Figma-based variant generation lives under /api/figma + /api/creative/brief.
 
 Filtering rules (server-side):
-  - material.canva_url IS NOT NULL (no point listing combos we can't reuse)
   - optional verdict, branch_id, target_audience, country filters
   - sorted by ROAS desc by default
 
@@ -37,7 +37,7 @@ def list_winning_ads(
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """Return combos joined with their material's Canva link, regardless of verdict.
+    """Return combos joined with their material + copy.
 
     `scoped_account_ids=None` means caller has global scope (admin); empty
     list means no access — return zero rows.
@@ -50,7 +50,6 @@ def list_winning_ads(
         .join(AdMaterial, AdMaterial.material_id == AdCombo.material_id)
         .join(AdCopy, AdCopy.copy_id == AdCombo.copy_id)
         .outerjoin(AdAccount, AdAccount.id == AdCombo.branch_id)
-        .filter(AdMaterial.canva_url.isnot(None))
     )
 
     if scoped_account_ids is not None:
@@ -71,7 +70,6 @@ def list_winning_ads(
         "spend": AdCombo.spend,
         "conversions": AdCombo.conversions,
         "ctr": AdCombo.ctr,
-        "captured_at": AdMaterial.canva_captured_at,
     }.get(sort_by, AdCombo.roas)
 
     q = q.order_by(sort_col.desc() if sort_dir == "desc" else sort_col.asc())
@@ -100,13 +98,10 @@ def list_winning_ads(
             "body_text": copy.body_text,
             "cta": copy.cta,
             "language": copy.language,
-            # Material + Canva link
+            # Material
             "material_id": material.material_id,
             "material_type": material.material_type,
             "file_url": material.file_url,
-            "canva_url": material.canva_url,
-            "canva_design_id": material.canva_design_id,
-            "canva_captured_at": material.canva_captured_at.isoformat() if material.canva_captured_at else None,
         })
 
     return {"items": items, "total": total}
@@ -118,7 +113,7 @@ def get_winning_ad_detail(
     *,
     scoped_account_ids: Optional[list[str]] = None,
 ) -> Optional[dict[str, Any]]:
-    """Detail view: one material + every WIN combo using it.
+    """Detail view: one material + every combo using it.
 
     Returns None when material doesn't exist or caller has no scope on it.
     """
@@ -167,8 +162,5 @@ def get_winning_ad_detail(
         "description": material.description,
         "target_audience": material.target_audience,
         "derived_verdict": material.derived_verdict,
-        "canva_url": material.canva_url,
-        "canva_design_id": material.canva_design_id,
-        "canva_captured_at": material.canva_captured_at.isoformat() if material.canva_captured_at else None,
         "combos": combo_list,
     }

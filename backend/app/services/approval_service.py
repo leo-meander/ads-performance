@@ -9,7 +9,6 @@ from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.approval import ApprovalReviewer, ComboApproval
 from app.models.user import User
-from app.services.canva_link_capture import capture_canva_link_from_approval
 from app.services.email_service import render_approval_result_email, render_review_request_email
 from app.services.notification_service import create_notification
 
@@ -109,14 +108,6 @@ def submit_for_approval(
             )
             email_tasks.append((reviewer.email, subject, html))
 
-    # Snapshot Canva working file → ad_materials at submit time so winning-ads
-    # surfaces it immediately (no need to wait for APPROVED). Idempotent —
-    # re-submits don't overwrite an already-captured URL.
-    try:
-        capture_canva_link_from_approval(db, approval)
-    except Exception:
-        logger.exception("Canva link capture failed at submit for approval %s", approval.id)
-
     db.commit()
 
     # Send emails async via Celery (after commit so data is persisted)
@@ -193,12 +184,6 @@ def record_decision(
         if all_decided and all_approved:
             approval.status = "APPROVED"
             approval.resolved_at = now
-            # Snapshot Canva working file → ad_materials so winning ads can
-            # later be regenerated without losing the source link.
-            try:
-                capture_canva_link_from_approval(db, approval)
-            except Exception:
-                logger.exception("Canva link capture failed for approval %s", approval.id)
             _notify_creator_of_result(db, approval, "APPROVED", None, email_tasks)
 
     db.commit()
@@ -362,12 +347,6 @@ def revise_pending_approval(
     combo_name = combo.ad_name or combo.combo_id
     branch = db.query(AdAccount).filter(AdAccount.id == combo.branch_id).first() if combo.branch_id else None
     branch_name = branch.account_name if branch else None
-
-    # Re-snapshot Canva working file → ad_materials (idempotent)
-    try:
-        capture_canva_link_from_approval(db, approval)
-    except Exception:
-        logger.exception("Canva link capture failed at revise for approval %s", approval.id)
 
     pending_reviewers = (
         db.query(ApprovalReviewer)

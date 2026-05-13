@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ExternalLink } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -25,9 +24,6 @@ interface WinningAd {
   material_id: string
   material_type: string
   file_url: string
-  canva_url: string
-  canva_design_id: string | null
-  canva_captured_at: string | null
 }
 
 interface Account { id: string; account_name: string; platform: string }
@@ -48,10 +44,8 @@ export default function WinningAdsPage() {
   const [fBranch, setFBranch] = useState('')
   const [fTA, setFTA] = useState('')
   const [fCountry, setFCountry] = useState('')
-  const [fVerdict, setFVerdict] = useState('')
+  const [fVerdict, setFVerdict] = useState('WIN')
   const [sortBy, setSortBy] = useState('roas')
-  const [backfilling, setBackfilling] = useState(false)
-  const [backfillMsg, setBackfillMsg] = useState('')
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
@@ -82,46 +76,13 @@ export default function WinningAdsPage() {
 
   useEffect(() => { load() }, [fBranch, fTA, fCountry, fVerdict, sortBy])
 
-  const runBackfill = async () => {
-    setBackfilling(true)
-    setBackfillMsg('')
-    try {
-      const r = await fetch(`${API_BASE}/api/winning-ads/backfill-canva`, {
-        method: 'POST',
-        credentials: 'include',
-      })
-      const d = await r.json()
-      if (d.success) {
-        const c = d.data
-        setBackfillMsg(`Scanned ${c.scanned} approvals — captured ${c.captured} new Canva links.`)
-        load()
-      } else {
-        setBackfillMsg(`Error: ${d.error}`)
-      }
-    } finally {
-      setBackfilling(false)
-    }
-  }
-
   return (
     <div className="p-6">
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Winning Ads</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Combos with a Canva working file captured (any verdict). Filter by verdict to find what to clone.
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-1">
-          <button
-            onClick={runBackfill}
-            disabled={backfilling}
-            className="px-3 py-1.5 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
-          >
-            {backfilling ? 'Scanning…' : 'Backfill from approvals'}
-          </button>
-          {backfillMsg && <p className="text-xs text-gray-600">{backfillMsg}</p>}
-        </div>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Winning Ads</h1>
+        <p className="text-sm text-gray-500 mt-1">
+          Combos sorted by ROAS. Filter by verdict, TA, branch, or country.
+        </p>
       </div>
 
       <div className="flex flex-wrap gap-3 mb-4 bg-white p-4 rounded-lg border border-gray-200">
@@ -148,10 +109,10 @@ export default function WinningAdsPage() {
           <option value="roas">Sort: ROAS</option>
           <option value="spend">Sort: Spend</option>
           <option value="conversions">Sort: Conversions</option>
-          <option value="captured_at">Sort: Captured at</option>
+          <option value="ctr">Sort: CTR</option>
         </select>
         <div className="ml-auto text-xs text-gray-500 self-center">
-          {loading ? 'Loading…' : `${total} ad${total === 1 ? '' : 's'} with Canva`}
+          {loading ? 'Loading…' : `${total} ad${total === 1 ? '' : 's'}`}
         </div>
       </div>
 
@@ -167,7 +128,6 @@ export default function WinningAdsPage() {
               <th className="text-right px-4 py-3">ROAS</th>
               <th className="text-right px-4 py-3">Spend</th>
               <th className="text-right px-4 py-3">Conv</th>
-              <th className="text-left px-4 py-3">Canva</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -194,23 +154,12 @@ export default function WinningAdsPage() {
                   {ad.spend != null ? ad.spend.toLocaleString() : '—'}
                 </td>
                 <td className="px-4 py-3 text-right font-mono text-gray-700">{ad.conversions ?? '—'}</td>
-                <td className="px-4 py-3">
-                  <a
-                    href={ad.canva_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs text-purple-700 hover:underline"
-                  >
-                    Open <ExternalLink className="w-3 h-3" />
-                  </a>
-                </td>
               </tr>
             ))}
             {!loading && items.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-12 text-center text-gray-500">
-                  No combos with a Canva link yet. Click "Backfill from approvals" to scan existing approvals,
-                  or submit a new combo for approval with a Canva working file URL.
+                <td colSpan={8} className="px-4 py-12 text-center text-gray-500">
+                  No combos match the current filters.
                 </td>
               </tr>
             )}
