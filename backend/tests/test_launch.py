@@ -161,6 +161,32 @@ def test_list_launch_campaigns():
     assert len(data["data"]["items"]) >= 1
 
 
+def test_list_launch_campaigns_excludes_non_meta():
+    """Regression: Google PMax / TikTok campaigns must not leak into the
+    Launch to Meta Ads campaign picker — they have no Meta ad sets."""
+    creator = _create_user(["creator"])
+    _combo, _campaign, account = _create_combo_and_account()
+
+    db = TestSession()
+    google_campaign = Campaign(
+        id=str(uuid.uuid4()),
+        account_id=account.id,
+        platform="google",
+        platform_campaign_id=f"g_{uuid.uuid4().hex[:8]}",
+        name="Mason_TPE_[TOF] PMax DE",
+        status="ACTIVE",
+    )
+    db.add(google_campaign)
+    db.commit()
+    db.close()
+
+    resp = client.get("/api/launch/campaigns", headers=_auth_headers(creator))
+    data = resp.json()
+    assert data["success"] is True
+    names = [c["name"] for c in data["data"]["items"]]
+    assert "Mason_TPE_[TOF] PMax DE" not in names
+
+
 @patch("app.services.launch_service._create_meta_ad_from_ids")
 def test_launch_to_existing_campaign(mock_create_ad):
     mock_create_ad.return_value = "ad_999"

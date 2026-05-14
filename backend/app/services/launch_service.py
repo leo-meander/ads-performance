@@ -186,8 +186,16 @@ def get_auto_config(
 
 
 def get_available_campaigns(db: Session, account_id: str | None = None) -> list[dict]:
-    """List active campaigns available for launching ads into."""
-    q = db.query(Campaign).filter(Campaign.status == "ACTIVE")
+    """List active campaigns available for launching ads into.
+
+    Meta-only: this is the Launch to Meta Ads surface, so Google PMax /
+    Search and TikTok campaigns are excluded — they have no Meta ad sets to
+    launch a combo into.
+    """
+    q = db.query(Campaign).filter(
+        Campaign.status == "ACTIVE",
+        Campaign.platform == "meta",
+    )
     if account_id:
         q = q.filter(Campaign.account_id == account_id)
     campaigns = q.order_by(Campaign.name).all()
