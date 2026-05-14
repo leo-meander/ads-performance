@@ -233,27 +233,30 @@ def _gather_patterns(
             if len(combos) >= MAX_PATTERNS:
                 break
 
-    # Add semantic neighbours when vibe is present (Postgres only — silently
-    # no-ops on SQLite tests).
-    if vibe and db.bind.dialect.name == "postgresql":
-        try:
-            from app.services.embedding_service import cosine_search, embed_text
-            qvec = embed_text(vibe, input_type="query")
-            neighbour_ids = [
-                pk for pk, _ in cosine_search(
-                    db, "ad_combos", "combo_id", qvec, limit=10,
-                    where_sql="branch_id = :b",
-                    where_params={"b": branch_id},
-                )
-            ]
-            seen_ids = {c.combo_id for c in combos}
-            extra = [
-                c for c in db.query(AdCombo).filter(AdCombo.combo_id.in_(neighbour_ids)).all()
-                if c.combo_id not in seen_ids
-            ]
-            combos.extend(extra[: max(0, MAX_PATTERNS - len(combos))])
-        except RuntimeError as e:
-            logger.warning("Vibe embedding skipped: %s", e)
+    # Top up with vibe-relevant combos via keyword match (no embeddings):
+    # ILIKE the vibe text over ad_name + headline + body_text. The vibe also
+    # flows into the model prompt directly, so this is just extra grounding.
+    if vibe and vibe.strip() and len(combos) < MAX_PATTERNS:
+        like = f"%{vibe.strip()}%"
+        seen_ids = {c.combo_id for c in combos}
+        vibe_q = (
+            db.query(AdCombo)
+            .outerjoin(AdCopy, AdCopy.copy_id == AdCombo.copy_id)
+            .filter(AdCombo.branch_id == branch_id)
+            .filter(AdCombo.verdict != "LOSE")
+            .filter(
+                (AdCombo.ad_name.ilike(like))
+                | (AdCopy.headline.ilike(like))
+                | (AdCopy.body_text.ilike(like))
+            )
+            .order_by(desc(sort_col))
+            .limit(MAX_PATTERNS)
+        )
+        for c in vibe_q.all():
+            if c.combo_id not in seen_ids:
+                combos.append(c)
+            if len(combos) >= MAX_PATTERNS:
+                break
 
     if not combos:
         return {

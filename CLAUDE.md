@@ -9,8 +9,8 @@ country/TA analytics, AI creative suggestions, and Figma integration.
 - Backend: Python FastAPI + Celery + Redis (Zeabur cron is preferred for new
   schedulers — see /api/internal/tasks/* + INTERNAL_TASK_SECRET)
 - Frontend: Next.js 14 (TypeScript) + shadcn/ui + Recharts + Tailwind
-- Database: PostgreSQL 16 (Supabase managed) + pgvector for creative embeddings
-- External: Claude API, Voyage AI (embeddings), Figma API, Meta/Google/TikTok Ads APIs
+- Database: PostgreSQL 16 (Supabase managed)
+- External: Claude API, Figma API, Meta/Google/TikTok Ads APIs
 - Deployment: Zeabur (all services)
 
 ## Architecture Overview
@@ -67,13 +67,16 @@ Phase 8: Creative Intelligence (migrations 033-036)
 - Canva integration removed; Figma is the variant-generation surface.
 - Visual tagging: Claude Sonnet vision scores ad_materials across 7
   dimensions; tags stored on creative_visual_tags.
-- Semantic search: Voyage voyage-3-large embeddings on combos / copies /
-  materials; cosine search via pgvector. Routes: /api/creative/search,
-  /api/creative/similar/{combo_id}.
+- Tag search: /api/creative/search filters combos by their material's
+  visual tags + optional ILIKE keyword (pure SQL, no embedding provider).
+  /api/creative/similar/{combo_id} ranks by shared-tag overlap.
 - AI brief generator: /api/creative/brief — given a branch/TA/vibe, emits
   N grounded brief variants + recommended Figma templates.
 - Figma surface: /api/figma/templates + /api/figma/jobs. Cron pollers:
-  /api/internal/tasks/{vision-tag-materials,embed-creatives,figma-job-poll}.
+  /api/internal/tasks/{vision-tag-materials,figma-job-poll}.
+- NOTE: migration 035 added dormant pgvector columns (embedding, embedded_at,
+  embedding_model). The Voyage embedding pipeline was dropped — these columns
+  are unused; do not wire new code to them.
 
 ## Branches (6 total)
 5 hotels + 1 restaurant — each maps to one or more ad_accounts.

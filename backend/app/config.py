@@ -67,10 +67,6 @@ class Settings(BaseSettings):
     FIGMA_TEAM_ID: str = ""
     FIGMA_API_BASE_URL: str = "https://api.figma.com/v1"
 
-    # Voyage AI (creative embeddings — semantic search over combos/copies/materials)
-    VOYAGE_API_KEY: str = ""
-    VOYAGE_EMBED_MODEL: str = "voyage-3-large"
-
     # PMS (Reservation system)
     PMS_API_BASE_URL: str = "https://meander-hid-dashboard.zeabur.app"
     PMS_API_KEY: str = ""

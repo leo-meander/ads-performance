@@ -1,11 +1,13 @@
-"""Creative Intelligence endpoints — visual tags, semantic search, AI brief.
+"""Creative Intelligence endpoints — visual tags, tag search, AI brief.
 
 Phase 1: visual tags read-only API + manual retag.
-Phase 2: /search (semantic by free-text query) + /similar/{combo_id}.
+Phase 2: /search (tag + keyword filter) + /similar/{combo_id} (shared-tag cluster).
 Phase 3: /brief generator + Figma variant launcher.
 
-The cron tagger lives at /api/internal/tasks/vision-tag-materials and the
-cron embedder at /api/internal/tasks/embed-creatives — both operator-triggered.
+Search is pure SQL — no embedding provider. Combos are matched on their
+material's creative_visual_tags (Claude-vision-derived) plus an optional
+ILIKE keyword over ad_name / headline / body_text. The cron tagger at
+/api/internal/tasks/vision-tag-materials keeps the tags fresh.
 """
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.permissions import scoped_account_ids
@@ -212,71 +215,102 @@ def retag_material(
         return _api_response(error=str(e))
 
 
-# ── Semantic search (Phase 2) ────────────────────────────────
+# ── Tag + keyword search (Phase 2) ───────────────────────────
 
 
-def _hydrate_combos(
-    db: Session, combo_ids: list[str], distances: dict[str, float]
-) -> list[dict]:
-    """Look up combos + joined copy/material/branch for the search response."""
-    if not combo_ids:
-        return []
-    rows = (
-        db.query(AdCombo, AdCopy, AdMaterial, AdAccount)
-        .outerjoin(AdCopy, AdCopy.copy_id == AdCombo.copy_id)
-        .outerjoin(AdMaterial, AdMaterial.material_id == AdCombo.material_id)
-        .outerjoin(AdAccount, AdAccount.id == AdCombo.branch_id)
-        .filter(AdCombo.combo_id.in_(combo_ids))
-        .all()
-    )
-    by_id = {r[0].combo_id: r for r in rows}
-    out = []
-    # Preserve cosine-distance order (best first)
-    for cid in combo_ids:
-        row = by_id.get(cid)
-        if not row:
+def _serialize_combo_row(combo, copy, material, branch, *, extra: dict | None = None) -> dict:
+    row = {
+        "combo_id": combo.combo_id,
+        "ad_name": combo.ad_name,
+        "branch_id": combo.branch_id,
+        "branch_name": branch.account_name if branch else None,
+        "verdict": combo.verdict,
+        "target_audience": combo.target_audience,
+        "country": combo.country,
+        "roas": float(combo.roas) if combo.roas is not None else None,
+        "spend": float(combo.spend) if combo.spend is not None else None,
+        "conversions": combo.conversions,
+        "headline": copy.headline if copy else None,
+        "cta": copy.cta if copy else None,
+        "material_id": material.material_id if material else None,
+        "file_url": material.file_url if material else None,
+    }
+    if extra:
+        row.update(extra)
+    return row
+
+
+def _parse_tag_pairs(tags: list[str]) -> list[tuple[str, str]]:
+    """Parse ['emotional_angle:aspirational', 'scene_type:room'] → [(cat, val), ...]."""
+    out: list[tuple[str, str]] = []
+    for raw in tags or []:
+        if ":" not in raw:
             continue
-        combo, copy, material, branch = row
-        out.append({
-            "combo_id": combo.combo_id,
-            "ad_name": combo.ad_name,
-            "branch_id": combo.branch_id,
-            "branch_name": branch.account_name if branch else None,
-            "verdict": combo.verdict,
-            "target_audience": combo.target_audience,
-            "country": combo.country,
-            "roas": float(combo.roas) if combo.roas is not None else None,
-            "spend": float(combo.spend) if combo.spend is not None else None,
-            "conversions": combo.conversions,
-            "headline": copy.headline if copy else None,
-            "cta": copy.cta if copy else None,
-            "material_id": material.material_id if material else None,
-            "file_url": material.file_url if material else None,
-            "distance": distances.get(cid),
-        })
+        cat, val = raw.split(":", 1)
+        cat, val = cat.strip(), val.strip()
+        if cat and val:
+            out.append((cat, val))
     return out
 
 
+def _material_ids_matching_tags(
+    db: Session, tag_pairs: list[tuple[str, str]], match: str
+) -> set[str] | None:
+    """Return the set of material_ids whose visual tags satisfy `tag_pairs`.
+
+    match='all' → material must carry every (category,value) pair.
+    match='any' → material carries at least one.
+    Returns None when no tag filter was requested (caller skips the filter).
+    """
+    if not tag_pairs:
+        return None
+
+    or_clauses = [
+        (CreativeVisualTag.tag_category == cat) & (CreativeVisualTag.tag_value == val)
+        for cat, val in tag_pairs
+    ]
+    base = (
+        db.query(CreativeVisualTag.material_id)
+        .filter(or_(*or_clauses))
+    )
+    if match == "all":
+        # Count distinct matched pairs per material; require == len(tag_pairs).
+        base = (
+            base.group_by(CreativeVisualTag.material_id)
+            .having(
+                func.count(
+                    func.distinct(
+                        CreativeVisualTag.tag_category + ":" + CreativeVisualTag.tag_value
+                    )
+                )
+                == len(tag_pairs)
+            )
+        )
+    rows = base.all()
+    return {r[0] for r in rows}
+
+
 @router.get("/creative/search")
-def semantic_search(
-    q: str = Query(..., min_length=2, description="Natural-language query, e.g. 'calm couple aspirational room'"),
+def tag_search(
+    q: str | None = Query(None, description="Keyword — ILIKE over ad_name / headline / body_text"),
+    tags: list[str] = Query(default=[], description="Repeated category:value, e.g. tags=scene_type:room"),
+    match: str = Query("all", description="'all' = combo must carry every tag; 'any' = at least one"),
     branch_id: str | None = None,
     target_audience: str | None = None,
     country: str | None = None,
     verdict: str | None = None,
+    sort_by: str = Query("roas", description="roas | spend | conversions"),
     limit: int = Query(25, le=100),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
 ):
-    """Cosine-similarity search over ad_combos using Voyage embeddings.
+    """Search combos by visual tags + optional keyword. Pure SQL — no embeddings.
 
-    Query is embedded with input_type='query' (asymmetric to the document-side
-    embeddings on storage, which improves retrieval quality). Filters are
-    applied as plain WHERE clauses on top of the vector match — branch /
-    audience / country / verdict scoping comes for free.
-
-    Returns combos sorted by ascending cosine distance. Postgres-only;
-    returns an empty list when run on SQLite (test path).
+    Tag matching runs against the combo's material's creative_visual_tags
+    (Claude-vision-derived). The keyword does a case-insensitive ILIKE over
+    ad_name, headline and body_text. Branch / TA / country / verdict scope as
+    plain filters. Results are sorted by the chosen performance column.
     """
     try:
         ok, scoped_ids, err = scoped_account_ids(
@@ -285,55 +319,66 @@ def semantic_search(
         if not ok:
             return _api_response(error=err)
 
-        from app.services.embedding_service import cosine_search, embed_text
+        tag_pairs = _parse_tag_pairs(tags)
+        match = "any" if match == "any" else "all"
+        matched_material_ids = _material_ids_matching_tags(db, tag_pairs, match)
+        if matched_material_ids is not None and not matched_material_ids:
+            # Tag filter requested but nothing matched — short-circuit.
+            return _api_response(data={"items": [], "total": 0, "tags": tags, "query": q})
 
-        try:
-            qvec = embed_text(q, input_type="query")
-        except RuntimeError as e:
-            return _api_response(error=str(e))
-
-        # Build the WHERE for the search SQL — must match the literal column
-        # names in ad_combos. We use named placeholders so cosine_search can
-        # bind them safely.
-        where_clauses = []
-        where_params: dict = {}
-        if branch_id:
-            where_clauses.append("branch_id = :branch_id")
-            where_params["branch_id"] = branch_id
-        elif scoped_ids is not None:
-            where_clauses.append("branch_id = ANY(:scoped_ids)")
-            where_params["scoped_ids"] = scoped_ids or ["__no_match__"]
-        if target_audience:
-            where_clauses.append("target_audience = :ta")
-            where_params["ta"] = target_audience
-        if country:
-            where_clauses.append("country = :country")
-            where_params["country"] = country.upper()
-        if verdict:
-            where_clauses.append("verdict = :verdict")
-            where_params["verdict"] = verdict.upper()
-
-        hits = cosine_search(
-            db,
-            "ad_combos",
-            "combo_id",
-            qvec,
-            limit=limit,
-            where_sql=" AND ".join(where_clauses),
-            where_params=where_params,
+        base = (
+            db.query(AdCombo, AdCopy, AdMaterial, AdAccount)
+            .outerjoin(AdCopy, AdCopy.copy_id == AdCombo.copy_id)
+            .outerjoin(AdMaterial, AdMaterial.material_id == AdCombo.material_id)
+            .outerjoin(AdAccount, AdAccount.id == AdCombo.branch_id)
         )
 
-        if not hits:
-            return _api_response(data={"items": [], "query": q, "engine": "voyage"})
+        if branch_id:
+            base = base.filter(AdCombo.branch_id == branch_id)
+        elif scoped_ids is not None:
+            base = base.filter(AdCombo.branch_id.in_(scoped_ids or ["__no_match__"]))
+        if target_audience:
+            base = base.filter(AdCombo.target_audience == target_audience)
+        if country:
+            base = base.filter(AdCombo.country == country.upper())
+        if verdict:
+            base = base.filter(AdCombo.verdict == verdict.upper())
+        if matched_material_ids is not None:
+            base = base.filter(AdCombo.material_id.in_(matched_material_ids))
+        if q:
+            like = f"%{q}%"
+            base = base.filter(
+                or_(
+                    AdCombo.ad_name.ilike(like),
+                    AdCopy.headline.ilike(like),
+                    AdCopy.body_text.ilike(like),
+                )
+            )
 
-        combo_ids = [pk for pk, _ in hits]
-        distances = {pk: dist for pk, dist in hits}
-        items = _hydrate_combos(db, combo_ids, distances)
+        total = base.count()
 
+        sort_col = {
+            "roas": AdCombo.roas,
+            "spend": AdCombo.spend,
+            "conversions": AdCombo.conversions,
+        }.get(sort_by, AdCombo.roas)
+        rows = (
+            base.order_by(sort_col.desc().nullslast())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        items = [
+            _serialize_combo_row(combo, copy, material, branch)
+            for combo, copy, material, branch in rows
+        ]
         return _api_response(data={
             "items": items,
+            "total": total,
+            "tags": tags,
             "query": q,
-            "engine": "voyage",
+            "match": match,
         })
     except Exception as e:
         return _api_response(error=str(e))
@@ -392,10 +437,11 @@ def find_similar_combos(
     current_user: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
 ):
-    """Nearest neighbours to a given combo by cosine distance on its stored embedding.
+    """Combos whose material shares the most visual tags with this one.
 
-    Useful for "show me other ads like this winner". Skips the source combo itself.
-    Postgres-only; empty result on SQLite.
+    "Show me other ads like this winner" — ranks by the count of overlapping
+    (category, value) visual tags, tie-broken by ROAS. Skips the source combo.
+    Works on any DB (pure SQL over creative_visual_tags).
     """
     try:
         combo = db.query(AdCombo).filter(AdCombo.combo_id == combo_id).first()
@@ -408,43 +454,83 @@ def find_similar_combos(
         if scoped_ids is not None and combo.branch_id not in scoped_ids:
             return _api_response(error="No access to this combo")
 
-        if db.bind.dialect.name != "postgresql":
-            return _api_response(data={"items": [], "source_combo_id": combo_id, "engine": "voyage"})
-
-        from sqlalchemy import text
-
-        # Skip self + apply optional branch / scope filters via WHERE.
-        where_clauses = ["combo_id != :self_id", "embedding IS NOT NULL"]
-        where_params: dict = {"self_id": combo_id}
-        if same_branch:
-            where_clauses.append("branch_id = :branch_id")
-            where_params["branch_id"] = combo.branch_id
-        elif scoped_ids is not None:
-            where_clauses.append("branch_id = ANY(:scoped_ids)")
-            where_params["scoped_ids"] = scoped_ids or ["__no_match__"]
-
-        sql = (
-            "SELECT combo_id, "
-            "       embedding <=> (SELECT embedding FROM ad_combos WHERE combo_id = :self_id) AS distance "
-            "FROM ad_combos "
-            "WHERE " + " AND ".join(where_clauses) + " "
-            "ORDER BY distance ASC LIMIT :limit"
-        )
-        where_params["limit"] = limit
-        hits = db.execute(text(sql), where_params).fetchall()
-        if not hits:
+        # Source material's tag set.
+        source_tags = {
+            (t.tag_category, t.tag_value)
+            for t in db.query(CreativeVisualTag).filter(
+                CreativeVisualTag.material_id == combo.material_id
+            ).all()
+        }
+        if not source_tags:
             return _api_response(data={
-                "items": [], "source_combo_id": combo_id, "engine": "voyage",
-                "note": "No similar combos found — make sure the source combo has been embedded.",
+                "items": [], "source_combo_id": combo_id,
+                "note": "Source material has no visual tags yet — wait for the vision tagger.",
             })
 
-        combo_ids = [r[0] for r in hits]
-        distances = {r[0]: float(r[1]) for r in hits}
-        items = _hydrate_combos(db, combo_ids, distances)
+        # Count overlapping tags per OTHER material.
+        or_clauses = [
+            (CreativeVisualTag.tag_category == cat) & (CreativeVisualTag.tag_value == val)
+            for cat, val in source_tags
+        ]
+        overlap_rows = (
+            db.query(
+                CreativeVisualTag.material_id,
+                func.count(
+                    func.distinct(
+                        CreativeVisualTag.tag_category + ":" + CreativeVisualTag.tag_value
+                    )
+                ).label("shared"),
+            )
+            .filter(or_(*or_clauses))
+            .filter(CreativeVisualTag.material_id != combo.material_id)
+            .group_by(CreativeVisualTag.material_id)
+            .all()
+        )
+        shared_by_material = {r[0]: r[1] for r in overlap_rows}
+        if not shared_by_material:
+            return _api_response(data={
+                "items": [], "source_combo_id": combo_id,
+                "note": "No combos share visual tags with this one.",
+            })
+
+        # Pull candidate combos (exclude self), apply scope.
+        cand = (
+            db.query(AdCombo, AdCopy, AdMaterial, AdAccount)
+            .outerjoin(AdCopy, AdCopy.copy_id == AdCombo.copy_id)
+            .outerjoin(AdMaterial, AdMaterial.material_id == AdCombo.material_id)
+            .outerjoin(AdAccount, AdAccount.id == AdCombo.branch_id)
+            .filter(AdCombo.material_id.in_(shared_by_material.keys()))
+            .filter(AdCombo.combo_id != combo_id)
+        )
+        if same_branch:
+            cand = cand.filter(AdCombo.branch_id == combo.branch_id)
+        elif scoped_ids is not None:
+            cand = cand.filter(AdCombo.branch_id.in_(scoped_ids or ["__no_match__"]))
+
+        rows = cand.all()
+        # Rank: shared-tag count desc, then ROAS desc.
+        rows.sort(
+            key=lambda r: (
+                shared_by_material.get(r[0].material_id, 0),
+                float(r[0].roas) if r[0].roas is not None else -1.0,
+            ),
+            reverse=True,
+        )
+
+        items = [
+            _serialize_combo_row(
+                combo_, copy, material, branch,
+                extra={
+                    "shared_tag_count": shared_by_material.get(combo_.material_id, 0),
+                    "source_tag_count": len(source_tags),
+                },
+            )
+            for combo_, copy, material, branch in rows[:limit]
+        ]
         return _api_response(data={
             "items": items,
             "source_combo_id": combo_id,
-            "engine": "voyage",
+            "source_tag_count": len(source_tags),
         })
     except Exception as e:
         return _api_response(error=str(e))
