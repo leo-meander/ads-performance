@@ -104,6 +104,40 @@ def create_template(
     return template
 
 
+def update_template(
+    db: Session,
+    template_id: str,
+    *,
+    name: Optional[str] = None,
+    placeholder_schema: Optional[dict] = None,
+    is_active: Optional[bool] = None,
+) -> FigmaTemplate:
+    """Patch an existing template.
+
+    The common case: the auto-inferred placeholder_schema was noisy (Figma
+    auto-names text layers after their content), so the designer supplies an
+    explicit {slug: {...}} mapping here instead of renaming layers in Figma.
+
+    Pass-through semantics — None leaves a field unchanged.
+    """
+    template = db.query(FigmaTemplate).filter(FigmaTemplate.id == template_id).first()
+    if not template:
+        raise FigmaServiceError(f"Template {template_id} not found")
+
+    if name is not None:
+        if not name.strip():
+            raise FigmaServiceError("Template name cannot be blank")
+        template.name = name.strip()
+    if placeholder_schema is not None:
+        template.placeholder_schema = placeholder_schema
+    if is_active is not None:
+        template.is_active = is_active
+
+    db.commit()
+    db.refresh(template)
+    return template
+
+
 def refresh_template_preview(
     db: Session,
     template: FigmaTemplate,

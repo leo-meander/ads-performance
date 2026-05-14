@@ -2,8 +2,22 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.config import settings
+
+
+class UTF8JSONResponse(JSONResponse):
+    """JSON response that declares charset=utf-8 in Content-Type.
+
+    FastAPI's default JSONResponse already encodes the body as UTF-8 but labels
+    it `application/json` with no charset. Strict clients (notably Windows
+    PowerShell 5.1's Invoke-RestMethod) then fall back to Latin-1 and mojibake
+    any non-ASCII text — e.g. Vietnamese hotel copy comes back as "BÃ¡nh mÃ¬".
+    Declaring the charset fixes every client at once.
+    """
+
+    media_type = "application/json; charset=utf-8"
 from app.routers import (
     accounts,
     ad_research,
@@ -41,6 +55,7 @@ app = FastAPI(
     title="Ads Automation Platform",
     description="Internal marketing automation for MEANDER Group",
     version="1.0.0",
+    default_response_class=UTF8JSONResponse,
 )
 
 # CORS

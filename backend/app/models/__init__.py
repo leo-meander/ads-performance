@@ -1,15 +1,23 @@
 from app.models.account import AdAccount
 from app.models.ad import Ad
+from app.models.ad_angle import AdAngle
+from app.models.ad_combo import AdCombo
+from app.models.ad_copy import AdCopy
 from app.models.ad_country_metric import AdCountryMetric
+from app.models.ad_material import AdMaterial
 from app.models.ad_set import AdSet
 from app.models.api_key import ApiKey
+from app.models.approval import ApprovalReviewer, ComboApproval
 from app.models.booking_match import BookingMatch
 from app.models.budget import BudgetAllocation, BudgetMonthlySplit, BudgetPlan, BudgetYearlyPlan
 from app.models.campaign import Campaign
 from app.models.creative_visual_tag import CreativeVisualTag
 from app.models.currency_rate import CurrencyRate
 from app.models.figma import FigmaJob, FigmaTemplate
+from app.models.keypoint import BranchKeypoint
 from app.models.metrics import MetricsCache
+from app.models.notification import Notification
+from app.models.video_transcript import VideoTranscript
 from app.models.reservation import Reservation
 from app.models.rule import AutomationRule
 from app.models.tactic import Tactic
@@ -37,15 +45,22 @@ from app.models.user_permission import UserPermission
 __all__ = [
     "AdAccount",
     "Ad",
+    "AdAngle",
+    "AdCombo",
+    "AdCopy",
     "AdCountryMetric",
+    "AdMaterial",
     "AdSet",
     "ApiKey",
+    "ApprovalReviewer",
     "BookingMatch",
+    "BranchKeypoint",
     "BudgetAllocation",
     "BudgetMonthlySplit",
     "BudgetPlan",
     "BudgetYearlyPlan",
     "Campaign",
+    "ComboApproval",
     "CreativeVisualTag",
     "CurrencyRate",
     "FigmaJob",
@@ -64,7 +79,9 @@ __all__ = [
     "LandingPageGA4Snapshot",
     "MetaRecommendation",
     "MetricsCache",
+    "Notification",
     "Reservation",
+    "VideoTranscript",
     "AutomationRule",
     "Tactic",
     "ActionLog",

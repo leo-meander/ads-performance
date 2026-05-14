@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import app.models  # noqa: F401 — register every table on Base.metadata before create_all
 from app.config import settings
 from app.models.account import AdAccount
 from app.models.base import Base
@@ -26,6 +27,7 @@ from app.services.figma_service import (
     create_template,
     poll_pending_jobs,
     refresh_template_preview,
+    update_template,
 )
 
 
@@ -121,6 +123,45 @@ def test_create_template_validates_required_fields():
         create_template(db, name="  ", file_key="FILE", node_id="2:1", branch_id=branch.id)
     with pytest.raises(FigmaServiceError, match="file_key"):
         create_template(db, name="Foo", file_key="", node_id="", branch_id=branch.id)
+    db.close()
+
+
+def test_update_template_replaces_noisy_schema():
+    """The common fix path: auto-inferred schema is noisy (layers named after
+    their content), designer PATCHes in an explicit slug mapping."""
+    branch = _seed_branch()
+    db = TestSession()
+    tpl = create_template(
+        db, name="Hero", file_key="FILE", node_id="2:1", branch_id=branch.id,
+    )
+    # Auto-inferred from stub = headline/subhead/cta (stub frame is clean), but
+    # imagine it was noisy — replace with an explicit mapping.
+    explicit = {
+        "headline": {"type": "text", "figma_layer": "THE MOST FUN HOSTEL"},
+        "cta": {"type": "text", "figma_layer": "BOOK NOW"},
+    }
+    updated = update_template(db, tpl.id, placeholder_schema=explicit, name="Hero v2")
+    assert updated.name == "Hero v2"
+    assert set(updated.placeholder_schema.keys()) == {"headline", "cta"}
+    assert updated.placeholder_schema["cta"]["figma_layer"] == "BOOK NOW"
+    db.close()
+
+
+def test_update_template_soft_delete():
+    branch = _seed_branch()
+    db = TestSession()
+    tpl = create_template(
+        db, name="Hero", file_key="FILE", node_id="2:1", branch_id=branch.id,
+    )
+    updated = update_template(db, tpl.id, is_active=False)
+    assert updated.is_active is False
+    db.close()
+
+
+def test_update_template_rejects_unknown_id():
+    db = TestSession()
+    with pytest.raises(FigmaServiceError, match="not found"):
+        update_template(db, "no-such-id", name="x")
     db.close()
 
 

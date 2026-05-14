@@ -20,6 +20,7 @@ from app.services.figma_service import (
     list_templates,
     refresh_template_preview,
     serialize_job,
+    update_template,
 )
 
 router = APIRouter()
@@ -101,6 +102,66 @@ def create_template_endpoint(
             "name": tpl.name,
             "placeholder_schema": tpl.placeholder_schema,
         })
+    except FigmaServiceError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+class TemplateUpdate(BaseModel):
+    name: str | None = None
+    placeholder_schema: dict[str, Any] | None = None
+    is_active: bool | None = None
+
+
+@router.patch("/figma/templates/{template_id}")
+def update_template_endpoint(
+    template_id: str,
+    body: TemplateUpdate,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Patch a template — typically to replace the noisy auto-inferred
+    placeholder_schema with an explicit {slug: {...}} mapping so the designer
+    doesn't have to rename layers in Figma.
+
+    Example placeholder_schema body:
+      {"headline": {"type": "text", "figma_layer": "THE MOST FUN HOSTEL"},
+       "cta": {"type": "text", "figma_layer": "BOOK NOW"}}
+    """
+    try:
+        tpl = update_template(
+            db,
+            template_id,
+            name=body.name,
+            placeholder_schema=body.placeholder_schema,
+            is_active=body.is_active,
+        )
+        return _api_response(data={
+            "id": tpl.id,
+            "name": tpl.name,
+            "placeholder_schema": tpl.placeholder_schema,
+            "is_active": tpl.is_active,
+        })
+    except FigmaServiceError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.delete("/figma/templates/{template_id}")
+def delete_template_endpoint(
+    template_id: str,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Soft-delete a template (is_active = False) — per the project's
+    DELETE-is-always-soft-delete rule."""
+    try:
+        tpl = update_template(db, template_id, is_active=False)
+        return _api_response(data={"id": tpl.id, "is_active": tpl.is_active})
     except FigmaServiceError as e:
         return _api_response(error=str(e))
     except Exception as e:
