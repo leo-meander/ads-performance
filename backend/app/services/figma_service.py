@@ -76,15 +76,11 @@ def create_template(
     if not schema:
         c = client or FigmaClient()
         try:
-            layers = c.get_text_layers(file_key, node_id)
+            placeholders = c.get_placeholders(file_key, node_id)
         except FigmaClientError as e:
             logger.warning("Failed to auto-infer placeholders: %s", e)
-            layers = []
-        schema = {
-            l.name: {"type": "text", "current": l.characters[:200]}
-            for l in layers
-            if l.name
-        }
+            placeholders = []
+        schema = _build_schema_from_placeholders(placeholders)
 
     template = FigmaTemplate(
         name=name.strip(),
@@ -99,6 +95,56 @@ def create_template(
         created_by=created_by,
     )
     db.add(template)
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+def _build_schema_from_placeholders(placeholders: list) -> dict[str, Any]:
+    """Turn FigmaPlaceholder rows into the stored placeholder_schema dict.
+
+    Text slots keep their `current` content (handy default in the UI); image
+    slots only record the source layer. The `$` prefix is already stripped by
+    the client's collector, so keys are clean slugs (`headline`, `hero_image`).
+    """
+    schema: dict[str, Any] = {}
+    for p in placeholders:
+        if not p.name:
+            continue
+        if p.slot_type == "text":
+            schema[p.name] = {
+                "type": "text",
+                "figma_layer": p.raw_name,
+                "current": (p.characters or "")[:200],
+            }
+        else:
+            schema[p.name] = {"type": "image", "figma_layer": p.raw_name}
+    return schema
+
+
+def refresh_template_schema(
+    db: Session,
+    template_id: str,
+    *,
+    client: Optional[FigmaClient] = None,
+) -> FigmaTemplate:
+    """Re-scan the template's Figma frame and rebuild placeholder_schema.
+
+    The path designers use after renaming layers in Figma — no need to delete
+    and re-register the template. Overwrites placeholder_schema wholesale with
+    whatever `$`-prefixed slots currently exist in the frame.
+    """
+    template = db.query(FigmaTemplate).filter(FigmaTemplate.id == template_id).first()
+    if not template:
+        raise FigmaServiceError(f"Template {template_id} not found")
+
+    c = client or FigmaClient()
+    try:
+        placeholders = c.get_placeholders(template.file_key, template.node_id)
+    except FigmaClientError as e:
+        raise FigmaServiceError(f"Figma re-scan failed: {e}") from e
+
+    template.placeholder_schema = _build_schema_from_placeholders(placeholders)
     db.commit()
     db.refresh(template)
     return template

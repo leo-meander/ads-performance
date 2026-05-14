@@ -19,6 +19,7 @@ from app.services.figma_service import (
     create_template,
     list_templates,
     refresh_template_preview,
+    refresh_template_schema,
     serialize_job,
     update_template,
 )
@@ -162,6 +163,27 @@ def delete_template_endpoint(
     try:
         tpl = update_template(db, template_id, is_active=False)
         return _api_response(data={"id": tpl.id, "is_active": tpl.is_active})
+    except FigmaServiceError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.post("/figma/templates/{template_id}/refresh-schema")
+def refresh_template_schema_endpoint(
+    template_id: str,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Re-scan the Figma frame and rebuild placeholder_schema from current
+    `$`-prefixed layers. Designers call this after renaming layers in Figma."""
+    try:
+        tpl = refresh_template_schema(db, template_id)
+        return _api_response(data={
+            "id": tpl.id,
+            "placeholder_schema": tpl.placeholder_schema,
+        })
     except FigmaServiceError as e:
         return _api_response(error=str(e))
     except Exception as e:

@@ -8,16 +8,21 @@ needs either the Figma plugin runtime (out-of-process) or the Variables API
 
   - get_file(file_key)              full file tree
   - get_node(file_key, node_id)     single node + descendants
-  - get_text_layers(...)            recursive walk yielding (id, name, characters)
+  - get_placeholders(...)           recursive walk yielding `$`-prefixed slots
   - export_images(file_key, ids)    render frames as PNG/SVG/PDF
 
+Placeholder convention: designers prefix DYNAMIC layers with `$`
+(`$headline`, `$cta`, `$hero_image`, `$sub_image_1`). Static layers (logos,
+decorative shapes) have no prefix and are ignored. A `$`-prefixed TEXT node is
+a text slot; any other `$`-prefixed node (rectangle/frame with an image fill,
+etc.) is an image slot.
+
 Stub mode: when FIGMA_ACCESS_TOKEN is empty the client returns deterministic
-fake responses so the regenerate flow is testable without OAuth setup.
+fake responses so the flow is testable without OAuth setup.
 """
 from __future__ import annotations
 
 import logging
-import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
@@ -27,17 +32,22 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Designers prefix dynamic layers with this character.
+PLACEHOLDER_PREFIX = "$"
+
 
 class FigmaClientError(RuntimeError):
     """Raised on any Figma API failure or invalid response."""
 
 
 @dataclass
-class FigmaTextLayer:
-    """A text node inside a Figma frame."""
+class FigmaPlaceholder:
+    """A `$`-prefixed placeholder node inside a Figma template frame."""
     node_id: str
-    name: str
-    characters: str
+    name: str          # slug WITHOUT the leading `$` (e.g. "headline")
+    raw_name: str      # original layer name (e.g. "$headline")
+    slot_type: str     # "text" | "image"
+    characters: str = ""   # current text content — empty for image slots
     parent_path: list[str] = field(default_factory=list)
 
 
@@ -105,16 +115,20 @@ class FigmaClient:
             }
         return self._get(f"/files/{file_key}/nodes", {"ids": node_id})
 
-    def get_text_layers(
+    def get_placeholders(
         self, file_key: str, node_id: str
-    ) -> list[FigmaTextLayer]:
-        """Walk the node tree returning every TEXT child with its text content."""
+    ) -> list[FigmaPlaceholder]:
+        """Walk the node tree returning every `$`-prefixed slot (text + image).
+
+        Static (non-prefixed) layers are ignored. Image slots are any
+        `$`-prefixed node that isn't a TEXT node.
+        """
         envelope = self.get_node(file_key, node_id)
         node_block = envelope.get("nodes", {}).get(node_id) or {}
         document = node_block.get("document") or {}
 
-        out: list[FigmaTextLayer] = []
-        _collect_text_layers(document, [], out)
+        out: list[FigmaPlaceholder] = []
+        _collect_placeholders(document, [], out)
         return out
 
     def export_images(
@@ -157,35 +171,44 @@ class FigmaClient:
 # ── Module-level helpers ─────────────────────────────────────
 
 
-def _collect_text_layers(
+def _collect_placeholders(
     node: dict[str, Any],
     parent_path: list[str],
-    out: list[FigmaTextLayer],
+    out: list[FigmaPlaceholder],
 ) -> None:
+    """Recurse the Figma node tree, collecting `$`-prefixed slots."""
     if not isinstance(node, dict):
         return
-    node_type = node.get("type")
     name = node.get("name") or ""
+    node_type = node.get("type")
 
-    if node_type == "TEXT":
-        out.append(FigmaTextLayer(
-            node_id=node.get("id") or "",
-            name=name,
-            characters=node.get("characters") or "",
-            parent_path=list(parent_path),
-        ))
+    if name.startswith(PLACEHOLDER_PREFIX):
+        slug = name[len(PLACEHOLDER_PREFIX):].strip()
+        if slug:
+            is_text = node_type == "TEXT"
+            out.append(FigmaPlaceholder(
+                node_id=node.get("id") or "",
+                name=slug,
+                raw_name=name,
+                slot_type="text" if is_text else "image",
+                characters=(node.get("characters") or "") if is_text else "",
+                parent_path=list(parent_path),
+            ))
 
     children = node.get("children") or []
     if isinstance(children, list):
         for child in children:
-            _collect_text_layers(child, parent_path + [name], out)
+            _collect_placeholders(child, parent_path + [name], out)
 
 
 # ── Stub fixtures ────────────────────────────────────────────
 
 
 def _stub_node(node_id: str) -> dict[str, Any]:
-    """A small frame with 3 named text layers used by tests + design previews."""
+    """A frame with 3 `$`-text slots + 1 `$`-image slot + 1 STATIC layer.
+
+    The static layer (no `$` prefix) verifies the collector ignores it.
+    """
     return {
         "id": node_id,
         "name": "Stub Frame",
@@ -193,21 +216,32 @@ def _stub_node(node_id: str) -> dict[str, Any]:
         "children": [
             {
                 "id": f"{node_id}:headline",
-                "name": "headline",
+                "name": "$headline",
                 "type": "TEXT",
                 "characters": "Stub Headline",
             },
             {
                 "id": f"{node_id}:subhead",
-                "name": "subhead",
+                "name": "$subhead",
                 "type": "TEXT",
                 "characters": "Stub subhead text.",
             },
             {
                 "id": f"{node_id}:cta",
-                "name": "cta",
+                "name": "$cta",
                 "type": "TEXT",
                 "characters": "Book Now",
+            },
+            {
+                "id": f"{node_id}:hero",
+                "name": "$hero_image",
+                "type": "RECTANGLE",
+            },
+            {
+                # No `$` prefix → static → must be ignored by the collector.
+                "id": f"{node_id}:logo",
+                "name": "Brand Logo",
+                "type": "RECTANGLE",
             },
         ],
     }

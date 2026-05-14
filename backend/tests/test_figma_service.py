@@ -20,13 +20,14 @@ from app.config import settings
 from app.models.account import AdAccount
 from app.models.base import Base
 from app.models.figma import FigmaJob, FigmaTemplate
-from app.services.figma_client import FigmaClient, _collect_text_layers, _stub_node
+from app.services.figma_client import FigmaClient, _collect_placeholders, _stub_node
 from app.services.figma_service import (
     FigmaServiceError,
     create_job,
     create_template,
     poll_pending_jobs,
     refresh_template_preview,
+    refresh_template_schema,
     update_template,
 )
 
@@ -73,20 +74,27 @@ def _seed_branch():
 # ── figma_client ─────────────────────────────────────────────
 
 
-def test_collect_text_layers_walks_children():
+def test_collect_placeholders_walks_children_and_ignores_static():
+    """Only `$`-prefixed layers are collected; the static 'Brand Logo' is skipped.
+    `$` prefix is stripped from the slug; image vs text is typed correctly."""
     node = _stub_node("2:1")
     out: list = []
-    _collect_text_layers(node, [], out)
-    names = {l.name for l in out}
-    assert {"headline", "subhead", "cta"} == names
+    _collect_placeholders(node, [], out)
+    by_name = {p.name: p for p in out}
+    assert set(by_name.keys()) == {"headline", "subhead", "cta", "hero_image"}
+    assert by_name["headline"].slot_type == "text"
+    assert by_name["headline"].raw_name == "$headline"
+    assert by_name["hero_image"].slot_type == "image"
+    assert by_name["hero_image"].characters == ""
 
 
-def test_get_text_layers_in_stub_mode():
+def test_get_placeholders_in_stub_mode():
     client = FigmaClient()
     assert client.is_stub
-    layers = client.get_text_layers("AnyFile", "2:1")
-    assert len(layers) == 3
-    assert {l.characters for l in layers} == {"Stub Headline", "Stub subhead text.", "Book Now"}
+    placeholders = client.get_placeholders("AnyFile", "2:1")
+    assert len(placeholders) == 4  # 3 text + 1 image, static ignored
+    text_chars = {p.characters for p in placeholders if p.slot_type == "text"}
+    assert text_chars == {"Stub Headline", "Stub subhead text.", "Book Now"}
 
 
 def test_export_images_in_stub_mode_returns_deterministic_urls():
@@ -111,9 +119,12 @@ def test_create_template_auto_infers_placeholders():
         platform="meta",
     )
     db.close()
-    assert set(tpl.placeholder_schema.keys()) == {"headline", "subhead", "cta"}
-    # Slot defaults capture the current copy from the master frame
+    # `$` stripped → clean slugs; static 'Brand Logo' excluded; image slot typed.
+    assert set(tpl.placeholder_schema.keys()) == {"headline", "subhead", "cta", "hero_image"}
+    assert tpl.placeholder_schema["headline"]["type"] == "text"
     assert tpl.placeholder_schema["headline"]["current"] == "Stub Headline"
+    assert tpl.placeholder_schema["headline"]["figma_layer"] == "$headline"
+    assert tpl.placeholder_schema["hero_image"]["type"] == "image"
 
 
 def test_create_template_validates_required_fields():
@@ -144,6 +155,23 @@ def test_update_template_replaces_noisy_schema():
     assert updated.name == "Hero v2"
     assert set(updated.placeholder_schema.keys()) == {"headline", "cta"}
     assert updated.placeholder_schema["cta"]["figma_layer"] == "BOOK NOW"
+    db.close()
+
+
+def test_refresh_template_schema_rescans_frame():
+    """After a designer renames layers in Figma, refresh-schema re-scans and
+    overwrites placeholder_schema from the current `$`-prefixed slots."""
+    branch = _seed_branch()
+    db = TestSession()
+    tpl = create_template(
+        db, name="Hero", file_key="FILE", node_id="2:1", branch_id=branch.id,
+        placeholder_schema={"stale_slot": {"type": "text"}},  # pretend old schema
+    )
+    assert set(tpl.placeholder_schema.keys()) == {"stale_slot"}
+
+    refreshed = refresh_template_schema(db, tpl.id)
+    # Re-scanned from the stub frame → the real `$` slots, stale_slot gone.
+    assert set(refreshed.placeholder_schema.keys()) == {"headline", "subhead", "cta", "hero_image"}
     db.close()
 
 
