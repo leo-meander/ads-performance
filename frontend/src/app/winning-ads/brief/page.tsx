@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Sparkles } from 'lucide-react'
+import { ArrowLeft, Sparkles, Send } from 'lucide-react'
+import SendToFigmaModal from '@/components/SendToFigmaModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -52,6 +53,8 @@ export default function AIBriefPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<BriefResult | null>(null)
   const [err, setErr] = useState('')
+  const [sendBrief, setSendBrief] = useState<Brief | null>(null)
+  const [queuedMsg, setQueuedMsg] = useState('')
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
@@ -175,13 +178,28 @@ export default function AIBriefPage() {
             </div>
           </div>
 
+          {queuedMsg && (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4 text-sm text-green-800">
+              {queuedMsg}{' '}
+              <Link href="/winning-ads/jobs" className="underline">View render jobs →</Link>
+            </div>
+          )}
+
           {/* Brief variants */}
           <div className="space-y-4">
             {result.briefs.map((b, i) => (
               <div key={i} className="bg-white border border-gray-200 rounded-lg p-4">
                 <div className="flex items-baseline justify-between mb-2">
                   <h3 className="text-base font-semibold text-gray-900">{b.title}</h3>
-                  <span className="text-xs text-gray-400">Variant {i + 1}</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => { setQueuedMsg(''); setSendBrief(b) }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
+                    >
+                      <Send className="w-3 h-3" /> Send to Figma
+                    </button>
+                    <span className="text-xs text-gray-400">Variant {i + 1}</span>
+                  </div>
                 </div>
                 <div className="space-y-1.5 text-sm">
                   <div><span className="text-gray-500 w-20 inline-block">Hook</span><span className="font-medium">{b.hook}</span></div>
@@ -229,6 +247,18 @@ export default function AIBriefPage() {
             </div>
           )}
         </>
+      )}
+
+      {sendBrief && (
+        <SendToFigmaModal
+          brief={sendBrief}
+          branchId={branchId}
+          onClose={() => setSendBrief(null)}
+          onQueued={(jobId) => {
+            setSendBrief(null)
+            setQueuedMsg(`Render job queued (${jobId.slice(0, 8)}).`)
+          }}
+        />
       )}
     </div>
   )

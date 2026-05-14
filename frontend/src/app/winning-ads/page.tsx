@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Sparkles, LayoutTemplate } from 'lucide-react'
+import { Sparkles, LayoutTemplate, ListChecks } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -112,6 +112,12 @@ export default function WinningAdsPage() {
             className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50"
           >
             <LayoutTemplate className="w-4 h-4" /> Figma Templates
+          </Link>
+          <Link
+            href="/winning-ads/jobs"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50"
+          >
+            <ListChecks className="w-4 h-4" /> Render Jobs
           </Link>
         </div>
       </div>
