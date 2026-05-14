@@ -41,7 +41,12 @@ def list_templates(
 ) -> list[dict[str, Any]]:
     q = db.query(FigmaTemplate)
     if branch_id:
-        q = q.filter(FigmaTemplate.branch_id == branch_id)
+        # Include shared templates (branch_id IS NULL) alongside branch-scoped
+        # ones — a Taipei brief should still see a "shared" master frame.
+        q = q.filter(
+            (FigmaTemplate.branch_id == branch_id)
+            | (FigmaTemplate.branch_id.is_(None))
+        )
     if platform:
         q = q.filter(FigmaTemplate.platform == platform)
     if active_only:
