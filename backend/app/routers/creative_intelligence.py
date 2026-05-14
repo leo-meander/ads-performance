@@ -429,6 +429,108 @@ def generate_brief_endpoint(
         return _api_response(error=str(e))
 
 
+# ── Auto-assign angle + keypoints (suggest → confirm) ────────
+
+
+class AutoAssignSuggestRequest(BaseModel):
+    branch_id: str
+    combo_id: str | None = None
+    headline: str | None = None
+    benefits: list[str] | None = None
+    script_text: str | None = None
+    use_figma: bool = False
+
+
+@router.post("/creative/autoassign/suggest")
+def autoassign_suggest(
+    body: AutoAssignSuggestRequest,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Suggest an angle + keypoint split for a combo / raw text / video script.
+
+    Pure — no DB writes. Returns matched existing keypoints + PROPOSED new ones
+    for the user to confirm. Source priority: script_text > use_figma > explicit
+    headline/benefits > combo copy.
+    """
+    try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=body.branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
+
+        from app.services.creative_autoassign_service import AutoAssignError, suggest
+
+        try:
+            result = suggest(
+                db,
+                branch_id=body.branch_id,
+                combo_id=body.combo_id,
+                headline=body.headline,
+                benefits=body.benefits,
+                script_text=body.script_text,
+                use_figma=body.use_figma,
+            )
+        except AutoAssignError as e:
+            return _api_response(error=str(e))
+        return _api_response(data=result)
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+class NewKeypoint(BaseModel):
+    title: str
+    category: str  # location | amenity | experience | value
+
+
+class AutoAssignApplyRequest(BaseModel):
+    combo_id: str
+    angle_id: str | None = None
+    keypoint_ids: list[str] | None = None  # existing keypoints the user kept
+    new_keypoints: list[NewKeypoint] | None = None  # proposed ones the user confirmed
+
+
+@router.post("/creative/autoassign/apply")
+def autoassign_apply(
+    body: AutoAssignApplyRequest,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Persist a confirmed auto-assignment: creates the confirmed new keypoints
+    and stamps angle_id + keypoint_ids onto the combo."""
+    try:
+        from app.models.ad_combo import AdCombo as _AdCombo
+        combo = db.query(_AdCombo).filter(_AdCombo.combo_id == body.combo_id).first()
+        if not combo:
+            return _api_response(error=f"Combo {body.combo_id} not found")
+
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
+        if scoped_ids is not None and combo.branch_id not in scoped_ids:
+            return _api_response(error="No access to this combo")
+
+        from app.services.creative_autoassign_service import AutoAssignError, apply
+
+        try:
+            result = apply(
+                db,
+                combo_id=body.combo_id,
+                angle_id=body.angle_id,
+                keypoint_ids=body.keypoint_ids,
+                new_keypoints=[nk.model_dump() for nk in (body.new_keypoints or [])],
+            )
+        except AutoAssignError as e:
+            return _api_response(error=str(e))
+        return _api_response(data=result)
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
 @router.get("/creative/similar/{combo_id}")
 def find_similar_combos(
     combo_id: str,
