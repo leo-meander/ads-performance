@@ -62,6 +62,17 @@ export default function AIBriefPage() {
       .then(d => { if (d.success) setAccounts(d.data.filter((a: Account) => a.platform === 'meta')) })
   }, [])
 
+  // Pre-fill from query params when arriving via "Brief" on the Figma list
+  // (e.g. /winning-ads/brief?branch_id=...&ta=Couple). Reads window.location
+  // directly so we don't need a Suspense boundary for useSearchParams.
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search)
+    const b = sp.get('branch_id')
+    const t = sp.get('ta')
+    if (b) setBranchId(b)
+    if (t) setTa(t)
+  }, [])
+
   const generate = async () => {
     if (!branchId) { setErr('Pick a branch'); return }
     setErr('')
@@ -95,7 +106,7 @@ export default function AIBriefPage() {
   return (
     <div className="p-6 max-w-5xl">
       <Link href="/winning-ads" className="inline-flex items-center gap-1 text-sm text-blue-600 hover:underline mb-4">
-        <ArrowLeft className="w-4 h-4" /> Back to Winning Ads
+        <ArrowLeft className="w-4 h-4" /> Back to Figma
       </Link>
 
       <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">

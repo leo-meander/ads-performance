@@ -106,7 +106,7 @@ export default function WinningAdDetailPage() {
   return (
     <div className="p-6 max-w-5xl">
       <Link href="/winning-ads" className="inline-flex items-center gap-1 text-sm text-blue-600 hover:underline mb-4">
-        <ArrowLeft className="w-4 h-4" /> Back to Winning Ads
+        <ArrowLeft className="w-4 h-4" /> Back to Figma
       </Link>
 
       <div className="flex items-start justify-between mb-6">

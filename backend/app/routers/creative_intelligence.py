@@ -299,6 +299,7 @@ def tag_search(
     target_audience: str | None = None,
     country: str | None = None,
     verdict: str | None = None,
+    figma_only: bool = Query(False, description="Only combos whose material has a Figma source"),
     sort_by: str = Query("roas", description="roas | spend | conversions"),
     limit: int = Query(25, le=100),
     offset: int = Query(0, ge=0),
@@ -310,7 +311,9 @@ def tag_search(
     Tag matching runs against the combo's material's creative_visual_tags
     (Claude-vision-derived). The keyword does a case-insensitive ILIKE over
     ad_name, headline and body_text. Branch / TA / country / verdict scope as
-    plain filters. Results are sorted by the chosen performance column.
+    plain filters. `figma_only` restricts to materials with a Figma source
+    (file_url is a figma.com link or figma_file_key is wired). Results are
+    sorted by the chosen performance column.
     """
     try:
         ok, scoped_ids, err = scoped_account_ids(
@@ -345,6 +348,13 @@ def tag_search(
             base = base.filter(AdCombo.verdict == verdict.upper())
         if matched_material_ids is not None:
             base = base.filter(AdCombo.material_id.in_(matched_material_ids))
+        if figma_only:
+            base = base.filter(
+                or_(
+                    AdMaterial.file_url.ilike("%figma.com%"),
+                    AdMaterial.figma_file_key.isnot(None),
+                )
+            )
         if q:
             like = f"%{q}%"
             base = base.filter(

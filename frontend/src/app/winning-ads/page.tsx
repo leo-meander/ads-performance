@@ -6,7 +6,7 @@ import { Sparkles, LayoutTemplate, ListChecks } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
-interface WinningAd {
+interface FigmaCreative {
   combo_id: string
   ad_name: string | null
   branch_id: string
@@ -41,18 +41,17 @@ const TAG_FILTERS: { category: string; label: string; values: string[] }[] = [
   { category: 'color_palette', label: 'Palette', values: ['warm', 'cool', 'neutral', 'high_contrast', 'pastel', 'dark', 'other'] },
 ]
 
-export default function WinningAdsPage() {
-  const [items, setItems] = useState<WinningAd[]>([])
+export default function FigmaCreativesPage() {
+  const [items, setItems] = useState<FigmaCreative[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [accounts, setAccounts] = useState<Account[]>([])
   const [fBranch, setFBranch] = useState('')
   const [fTA, setFTA] = useState('')
   const [fCountry, setFCountry] = useState('')
-  const [fVerdict, setFVerdict] = useState('WIN')
+  const [fVerdict, setFVerdict] = useState('') // all verdicts by default
   const [sortBy, setSortBy] = useState('roas')
   const [keyword, setKeyword] = useState('')
-  // tag filters: { emotional_angle: 'calm', scene_type: '', ... }
   const [tagSel, setTagSel] = useState<Record<string, string>>({})
 
   useEffect(() => {
@@ -65,7 +64,8 @@ export default function WinningAdsPage() {
 
   const load = () => {
     setLoading(true)
-    const params = new URLSearchParams({ sort_by: sortBy, limit: '100', match: 'all' })
+    // figma_only: this page only surfaces creatives with a Figma source.
+    const params = new URLSearchParams({ sort_by: sortBy, limit: '100', match: 'all', figma_only: 'true' })
     if (fBranch) params.set('branch_id', fBranch)
     if (fTA) params.set('target_audience', fTA)
     if (fCountry) params.set('country', fCountry)
@@ -91,13 +91,21 @@ export default function WinningAdsPage() {
 
   const activeTagCount = Object.values(tagSel).filter(Boolean).length
 
+  // "Reuse" a creative → jump to the AI Brief pre-filtered to its branch + TA.
+  const briefHref = (ad: FigmaCreative) => {
+    const p = new URLSearchParams()
+    if (ad.branch_id) p.set('branch_id', ad.branch_id)
+    if (ad.target_audience) p.set('ta', ad.target_audience)
+    return `/winning-ads/brief?${p}`
+  }
+
   return (
     <div className="p-6">
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Winning Ads</h1>
+          <h1 className="text-2xl font-bold text-gray-900">Figma</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Search combos by visual tags + keyword. Sorted by performance.
+            Creatives sourced from Figma — all verdicts. Click a row to reuse it as a brief.
           </p>
         </div>
         <div className="flex gap-2">
@@ -163,7 +171,7 @@ export default function WinningAdsPage() {
           </button>
         </form>
         <div className="ml-auto text-xs text-gray-500 self-center">
-          {loading ? 'Loading…' : `${total} ad${total === 1 ? '' : 's'}`}
+          {loading ? 'Loading…' : `${total} Figma creative${total === 1 ? '' : 's'}`}
         </div>
       </div>
 
@@ -204,6 +212,7 @@ export default function WinningAdsPage() {
               <th className="text-right px-4 py-3">ROAS</th>
               <th className="text-right px-4 py-3">Spend</th>
               <th className="text-right px-4 py-3">Conv</th>
+              <th className="text-right px-4 py-3"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -234,12 +243,20 @@ export default function WinningAdsPage() {
                   {ad.spend != null ? ad.spend.toLocaleString() : '—'}
                 </td>
                 <td className="px-4 py-3 text-right font-mono text-gray-700">{ad.conversions ?? '—'}</td>
+                <td className="px-4 py-3 text-right">
+                  <Link
+                    href={briefHref(ad)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
+                  >
+                    <Sparkles className="w-3 h-3" /> Brief
+                  </Link>
+                </td>
               </tr>
             ))}
             {!loading && items.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-gray-500">
-                  No combos match the current filters.
+                <td colSpan={9} className="px-4 py-12 text-center text-gray-500">
+                  No Figma-sourced creatives match the current filters.
                   {activeTagCount > 0 && ' Try fewer visual tags, or check that materials have been vision-tagged.'}
                 </td>
               </tr>
