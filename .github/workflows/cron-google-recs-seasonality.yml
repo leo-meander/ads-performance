@@ -1,0 +1,33 @@
+# Daily 21:00 UTC — Google Ads recommendation engine (seasonality cadence).
+name: Cron — Google recs (seasonality)
+
+on:
+  schedule:
+    - cron: "0 21 * * *"
+  workflow_dispatch:
+
+env:
+  BACKEND_URL: https://ads-performance-fuls.zeabur.app
+  ENDPOINT: google-recommendations/seasonality
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/internal/tasks/google-recommendations/seasonality
+        env:
+          INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}
+        run: |
+          set -euo pipefail
+          echo "Triggering endpoint: $ENDPOINT"
+          HTTP_CODE=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+            -X POST \
+            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET" \
+            "$BACKEND_URL/api/internal/tasks/$ENDPOINT")
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/body.txt || true
+          echo
+          if [ "$HTTP_CODE" != "202" ]; then
+            echo "::error::endpoint $ENDPOINT returned HTTP $HTTP_CODE"
+            exit 1
+          fi

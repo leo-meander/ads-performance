@@ -1,0 +1,35 @@
+# Once-per-day Madgicx-style tactics cycle.
+# 17:00 UTC = 00:00 VN / 01:00 TW / 02:00 JP — start of a new local day.
+# Reverts yesterday's REVERT_NEXT_DAY mutations, syncs, evaluates tactic rules.
+name: Cron — Daily tactics cycle
+
+on:
+  schedule:
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+
+env:
+  BACKEND_URL: https://ads-performance-fuls.zeabur.app
+  ENDPOINT: run-daily-tactics
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/internal/tasks/run-daily-tactics
+        env:
+          INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}
+        run: |
+          set -euo pipefail
+          echo "Triggering endpoint: $ENDPOINT"
+          HTTP_CODE=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+            -X POST \
+            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET" \
+            "$BACKEND_URL/api/internal/tasks/$ENDPOINT")
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/body.txt || true
+          echo
+          if [ "$HTTP_CODE" != "202" ]; then
+            echo "::error::endpoint $ENDPOINT returned HTTP $HTTP_CODE"
+            exit 1
+          fi

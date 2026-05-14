@@ -1,0 +1,36 @@
+# Weekly Sun 19:00 UTC — deep-refresh sync-backfill (2-month window).
+# Tier-2 catch-up for offline conversion uploads that arrive past the daily
+# rolling window. Sun 19:00 UTC = Mon 02:00 VN — quiet period before the
+# morning sync.
+name: Cron — Sync backfill (weekly)
+
+on:
+  schedule:
+    - cron: "0 19 * * 0"
+  workflow_dispatch:
+
+env:
+  BACKEND_URL: https://ads-performance-fuls.zeabur.app
+  ENDPOINT: sync-backfill?months_back=2
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/internal/tasks/sync-backfill
+        env:
+          INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}
+        run: |
+          set -euo pipefail
+          echo "Triggering endpoint: $ENDPOINT"
+          HTTP_CODE=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+            -X POST \
+            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET" \
+            "$BACKEND_URL/api/internal/tasks/$ENDPOINT")
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/body.txt || true
+          echo
+          if [ "$HTTP_CODE" != "202" ]; then
+            echo "::error::endpoint $ENDPOINT returned HTTP $HTTP_CODE"
+            exit 1
+          fi
