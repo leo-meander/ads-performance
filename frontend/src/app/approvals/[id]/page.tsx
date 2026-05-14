@@ -25,6 +25,7 @@ interface ApprovalDetail {
   resolved_at: string | null
   working_file_url: string | null
   working_file_label: string | null
+  note: string | null
   launch_status: string | null
   launch_meta_ad_id: string | null
   launched_at: string | null
@@ -303,6 +304,14 @@ export default function ApprovalDetailPage() {
             </div>
           </div>
 
+          {/* Submitter note */}
+          {approval.note && (
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <h3 className="text-sm font-semibold text-gray-900 mb-2">Note from Submitter</h3>
+              <p className="text-sm text-gray-700 whitespace-pre-line">{approval.note}</p>
+            </div>
+          )}
+
           {/* Angle context */}
           {approval.angle && (
             <div className="bg-white rounded-xl border border-gray-200 p-4">
@@ -398,9 +407,9 @@ export default function ApprovalDetailPage() {
                   }`}>{approval.copy.derived_verdict}</span>
                 )}
               </div>
-              <p className="text-sm font-semibold text-gray-900">{approval.copy.headline}</p>
-              <p className="text-sm text-gray-600 mt-1 whitespace-pre-line">{approval.copy.body_text}</p>
+              <p className="text-sm text-gray-600 whitespace-pre-line">{approval.copy.body_text}</p>
               {approval.copy.cta && <p className="text-sm text-blue-600 mt-2 font-medium">{approval.copy.cta}</p>}
+              <p className="text-sm font-semibold text-gray-900 mt-2">{approval.copy.headline}</p>
               <div className="flex gap-3 mt-2 text-xs text-gray-400">
                 <span>{approval.copy.language}</span>
                 <span>{approval.copy.target_audience}</span>

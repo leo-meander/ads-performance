@@ -38,6 +38,7 @@ class SubmitApprovalRequest(BaseModel):
     working_file_url: str | None = None
     working_file_label: str | None = None
     deadline: str | None = None  # ISO8601 datetime string
+    note: str | None = None
 
 
 class DecisionRequest(BaseModel):
@@ -88,6 +89,7 @@ def submit_approval(
             working_file_label=body.working_file_label,
             submitted_by=current_user.id,
             deadline=body.deadline,
+            note=body.note,
         )
         detail = get_approval_detail(db, approval.id)
         return _api_response(data=detail)

@@ -54,6 +54,7 @@ export default function CreateAndSubmitPage() {
   const [workingFileUrl, setWorkingFileUrl] = useState('')
   const [workingFileLabel, setWorkingFileLabel] = useState('Figma Frame')
   const [deadline, setDeadline] = useState('')
+  const [note, setNote] = useState('')
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
@@ -149,6 +150,7 @@ export default function CreateAndSubmitPage() {
           working_file_url: workingFileUrl || (mode === 'new' ? creativeUrl : selectedMaterial?.file_url) || null,
           working_file_label: workingFileLabel || null,
           deadline: deadline ? new Date(deadline).toISOString() : null,
+          note: note.trim() || null,
         }),
       })
       const approvalData = await approvalRes.json()
@@ -404,6 +406,15 @@ export default function CreateAndSubmitPage() {
           <h3 className="text-sm font-semibold text-gray-900 mb-2">Review Deadline</h3>
           <input type="datetime-local" value={deadline} onChange={e => setDeadline(e.target.value)}
             className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+
+        {/* Note */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h3 className="text-sm font-semibold text-gray-900 mb-2">Note for Reviewers</h3>
+          <p className="text-xs text-gray-400 mb-3">Optional. Extra context for reviewers that doesn&apos;t belong on the ad copy.</p>
+          <textarea value={note} onChange={e => setNote(e.target.value)} rows={3}
+            placeholder="e.g. This is a re-test of the June angle with a new hook image."
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y" />
         </div>
 
         {/* Reviewers */}

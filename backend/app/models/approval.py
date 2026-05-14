@@ -28,6 +28,9 @@ class ComboApproval(Base, TimestampMixin):
     working_file_url = Column(Text, nullable=True)
     working_file_label = Column(String(100), nullable=True)
 
+    # Free-text note from the submitter, shown to reviewers for extra context
+    note = Column(Text, nullable=True)
+
     # Launch info (populated after launch)
     launch_campaign_id = Column(
         UUIDType,

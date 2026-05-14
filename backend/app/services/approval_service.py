@@ -23,6 +23,7 @@ def submit_for_approval(
     working_file_label: str | None,
     submitted_by: str,
     deadline: str | None = None,
+    note: str | None = None,
 ) -> ComboApproval:
     """Submit a combo for approval. Creates combo_approval + reviewer rows + notifications."""
     combo = db.query(AdCombo).filter(AdCombo.id == combo_id).first()
@@ -60,6 +61,7 @@ def submit_for_approval(
         deadline=parsed_deadline,
         working_file_url=working_file_url,
         working_file_label=working_file_label,
+        note=(note or "").strip() or None,
     )
     db.add(approval)
     db.flush()  # Get approval.id
@@ -638,6 +640,7 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
         "resolved_at": approval.resolved_at.isoformat() if approval.resolved_at else None,
         "working_file_url": approval.working_file_url,
         "working_file_label": approval.working_file_label,
+        "note": approval.note,
         "launch_status": approval.launch_status,
         "launch_meta_ad_id": approval.launch_meta_ad_id,
         "launched_at": approval.launched_at.isoformat() if approval.launched_at else None,
