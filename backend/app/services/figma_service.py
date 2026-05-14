@@ -235,9 +235,14 @@ def create_job(
         raise FigmaServiceError(f"Template {template_id} is inactive")
 
     # Validate the request_payload only fills declared slots — anything else
-    # is dropped to keep the schema honest.
+    # is dropped to keep the schema honest. Keys starting with "_" are reserved
+    # metadata (e.g. _visual_direction, a note the plugin shows the designer so
+    # they know which photo to drop into the image slots) and always pass through.
     schema_keys = set((template.placeholder_schema or {}).keys())
-    cleaned = {k: v for k, v in (request_payload or {}).items() if not schema_keys or k in schema_keys}
+    cleaned = {
+        k: v for k, v in (request_payload or {}).items()
+        if k.startswith("_") or not schema_keys or k in schema_keys
+    }
 
     now = datetime.now(timezone.utc)
     job = FigmaJob(

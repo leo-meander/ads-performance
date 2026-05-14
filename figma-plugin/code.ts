@@ -148,15 +148,25 @@ async function generateJob(
 
   let filled = 0;
   let missing = 0;
+  // Image slots left empty are intentional under Option 2 — the designer
+  // places room/scene photos by hand. We just count them so the log can
+  // surface the visual-direction note instead of treating them as errors.
+  let imageSlotsToPlace = 0;
   for (const node of descendants) {
     if (!node.name || node.name[0] !== "$") continue;
     const slug = node.name.slice(1).trim();
     const value = payload[slug];
+    const slotType = schema[slug] && schema[slug].type;
+
     if (value === undefined || value === null || value === "") {
-      missing++;
+      if (slotType === "image") {
+        // Leave the master's placeholder image in place for the designer.
+        imageSlotsToPlace++;
+      } else {
+        missing++;
+      }
       continue;
     }
-    const slotType = schema[slug] && schema[slug].type;
 
     if (node.type === "TEXT" && slotType !== "image") {
       try {
@@ -173,6 +183,18 @@ async function generateJob(
   }
 
   log(`✓ ${clone.name}: filled ${filled} slot(s)${missing ? `, ${missing} empty` : ""}`);
+
+  // Option 2: the plugin fills text only. Surface the marketer's
+  // visual_direction note so the designer knows which photo to drop into
+  // the image slots that were left on the master's placeholder.
+  if (imageSlotsToPlace > 0) {
+    const direction = payload._visual_direction;
+    if (direction) {
+      log(`  🖼 ${imageSlotsToPlace} image slot(s) — place manually: ${String(direction)}`);
+    } else {
+      log(`  🖼 ${imageSlotsToPlace} image slot(s) — place photo(s) manually in Figma`);
+    }
+  }
 
   const deepLink = `https://www.figma.com/file/${job.template.file_key}?node-id=${encodeURIComponent(clone.id)}`;
   try {
