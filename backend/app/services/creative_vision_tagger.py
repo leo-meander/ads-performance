@@ -10,8 +10,8 @@ IS NULL OR vision_model != current model. The Zeabur cron endpoint
 /internal/tasks/vision-tag-materials calls this with a small limit (default 25)
 so a single cron tick stays under the 225s ingress budget.
 
-Cost envelope (claude-sonnet-4-6 vision):
-  ~1024-token image + ~600 input + ~200 output ≈ $0.012 / material.
+Cost envelope (claude-haiku-4-5 vision):
+  ~1024-token image + ~600 input + ~200 output ≈ $0.003 / material.
 
 The tagger never throws — failures land on the material row with vision_model
 set to "FAILED:<reason-prefix>" so we don't re-retry endlessly. Operators can
@@ -35,7 +35,7 @@ from app.models.creative_visual_tag import CreativeVisualTag
 
 logger = logging.getLogger(__name__)
 
-VISION_MODEL = "claude-sonnet-4-6"
+VISION_MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 600
 
 # Allowed values per category. The tagger drops any model output that doesn't
