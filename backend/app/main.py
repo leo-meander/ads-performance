@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -70,6 +70,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Permissive CORS for machine endpoints ────────────────────
+#
+# The Figma plugin runs in a null-origin sandbox, so its fetches carry
+# `Origin: null` — which the credentialed CORSMiddleware above (scoped to the
+# frontend domain) rejects. The /api/figma/plugin/* endpoints authenticate
+# with X-API-Key (no cookies), so `Access-Control-Allow-Origin: *` is safe
+# here — there are no credentials to leak. This middleware is registered AFTER
+# CORSMiddleware so it sits OUTERMOST and can answer the preflight before
+# CORSMiddleware sees it.
+
+_PLUGIN_CORS_PREFIX = "/api/figma/plugin"
+_PLUGIN_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "X-API-Key, Content-Type",
+    "Access-Control-Max-Age": "86400",
+}
+
+
+@app.middleware("http")
+async def plugin_cors_middleware(request: Request, call_next):
+    is_plugin = request.url.path.startswith(_PLUGIN_CORS_PREFIX)
+    if is_plugin and request.method == "OPTIONS":
+        # Answer the preflight directly with permissive CORS.
+        return Response(status_code=200, headers=_PLUGIN_CORS_HEADERS)
+    response = await call_next(request)
+    if is_plugin:
+        for k, v in _PLUGIN_CORS_HEADERS.items():
+            response.headers[k] = v
+    return response
+
 
 # Routers
 app.include_router(accounts.router, prefix="/api", tags=["accounts"])

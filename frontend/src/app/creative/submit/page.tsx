@@ -242,6 +242,7 @@ export default function CreateAndSubmitPage() {
                   <option value="vi">Vietnamese</option>
                   <option value="zh">Chinese</option>
                   <option value="ja">Japanese</option>
+                  <option value="de">German</option>
                 </select>
               </div>
             </div>

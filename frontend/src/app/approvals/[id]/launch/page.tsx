@@ -217,6 +217,7 @@ export default function LaunchPage() {
                 <option value="en">English</option>
                 <option value="zh">Chinese</option>
                 <option value="ja">Japanese</option>
+                <option value="de">German</option>
               </select>
             </div>
           </div>
