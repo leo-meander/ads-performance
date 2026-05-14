@@ -1,0 +1,12 @@
+{
+  "name": "MEANDER Ads Generator",
+  "id": "meander-ads-generator",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["*"],
+    "reasoning": "Calls the MEANDER ads platform API for pending render jobs and fetches creative images from arbitrary CDNs (Meta, Figma, Drive)."
+  }
+}

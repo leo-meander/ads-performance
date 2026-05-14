@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: Inter, -apple-system, sans-serif;
+    font-size: 12px;
+    margin: 0;
+    padding: 12px;
+    color: #1a1a1a;
+  }
+  h2 { font-size: 13px; margin: 0 0 8px; }
+  .row { margin-bottom: 8px; }
+  label { display: block; font-size: 11px; color: #666; margin-bottom: 3px; }
+  input[type="text"], input[type="password"] {
+    width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;
+  }
+  button {
+    padding: 6px 12px; border: none; border-radius: 4px; font-size: 12px;
+    cursor: pointer; font-weight: 500;
+  }
+  button.primary { background: #7c3aed; color: #fff; }
+  button.primary:hover { background: #6d28d9; }
+  button.secondary { background: #f0f0f0; color: #333; }
+  button.secondary:hover { background: #e5e5e5; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .settings { background: #f7f7f8; border-radius: 6px; padding: 10px; margin-bottom: 12px; }
+  .settings-toggle { cursor: pointer; color: #7c3aed; font-size: 11px; }
+  .jobs { border: 1px solid #eee; border-radius: 6px; max-height: 200px; overflow: auto; }
+  .job {
+    display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid #f0f0f0; align-items: flex-start;
+  }
+  .job:last-child { border-bottom: none; }
+  .job-meta { min-width: 0; }
+  .job-name { font-weight: 500; }
+  .job-payload { color: #888; font-size: 11px; margin-top: 2px; word-break: break-word; }
+  .empty { padding: 16px; text-align: center; color: #999; }
+  .log {
+    background: #1a1a1a; color: #c8e6c9; font-family: ui-monospace, monospace;
+    font-size: 11px; border-radius: 6px; padding: 8px; max-height: 130px; overflow: auto;
+    white-space: pre-wrap; margin-top: 10px;
+  }
+  .bar { display: flex; gap: 8px; margin: 10px 0; }
+  .err { color: #d32f2f; font-size: 11px; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <h2>MEANDER Ads Generator</h2>
+
+  <div class="settings">
+    <span class="settings-toggle" id="settingsToggle">▸ Connection settings</span>
+    <div id="settingsBody" style="display:none; margin-top:8px;">
+      <div class="row">
+        <label>API base URL</label>
+        <input type="text" id="apiBase" placeholder="https://ads-performance-fuls.zeabur.app" />
+      </div>
+      <div class="row">
+        <label>API key (X-API-Key — mint one at /api/export/keys)</label>
+        <input type="password" id="apiKey" placeholder="paste key" />
+      </div>
+      <button class="secondary" id="saveSettings">Save</button>
+      <span id="savedMsg" style="color:#2e7d32; font-size:11px; margin-left:6px;"></span>
+    </div>
+  </div>
+
+  <div class="bar">
+    <button class="secondary" id="fetchBtn">Fetch pending jobs</button>
+    <button class="primary" id="generateBtn" disabled>Generate selected</button>
+  </div>
+  <div style="font-size:11px; color:#888; margin-bottom:6px;">
+    The template's master frame must be in this open file.
+  </div>
+
+  <div class="jobs" id="jobs"><div class="empty">No jobs loaded.</div></div>
+
+  <div id="err" class="err"></div>
+  <div class="log" id="log" style="display:none;"></div>
+
+<script>
+  let jobs = [];
+
+  function post(msg) { parent.postMessage({ pluginMessage: msg }, "*"); }
+
+  const $ = (id) => document.getElementById(id);
+
+  $("settingsToggle").onclick = () => {
+    const b = $("settingsBody");
+    const open = b.style.display !== "none";
+    b.style.display = open ? "none" : "block";
+    $("settingsToggle").textContent = (open ? "▸" : "▾") + " Connection settings";
+  };
+
+  $("saveSettings").onclick = () => {
+    post({ type: "save-settings", settings: { apiBase: $("apiBase").value.trim(), apiKey: $("apiKey").value.trim() } });
+  };
+
+  $("fetchBtn").onclick = () => {
+    $("err").textContent = "";
+    $("fetchBtn").disabled = true;
+    $("fetchBtn").textContent = "Fetching…";
+    post({ type: "fetch-jobs" });
+  };
+
+  $("generateBtn").onclick = () => {
+    const selected = jobs.filter((_, i) => $("job-" + i) && $("job-" + i).checked);
+    if (selected.length === 0) return;
+    $("err").textContent = "";
+    $("log").style.display = "block";
+    $("log").textContent = "Generating " + selected.length + " job(s)…\n";
+    $("generateBtn").disabled = true;
+    post({ type: "generate", jobs: selected });
+  };
+
+  function renderJobs() {
+    const el = $("jobs");
+    if (jobs.length === 0) {
+      el.innerHTML = '<div class="empty">No pending jobs.</div>';
+      $("generateBtn").disabled = true;
+      return;
+    }
+    el.innerHTML = jobs.map((j, i) => {
+      const payload = Object.entries(j.request_payload || {})
+        .map(([k, v]) => k + ": " + String(v).slice(0, 40))
+        .join(" · ");
+      return (
+        '<div class="job">' +
+        '<input type="checkbox" id="job-' + i + '" checked />' +
+        '<div class="job-meta">' +
+        '<div class="job-name">' + (j.template ? j.template.name : "?") + "</div>" +
+        '<div class="job-payload">' + (payload || "(no values)") + "</div>" +
+        "</div></div>"
+      );
+    }).join("");
+    $("generateBtn").disabled = false;
+  }
+
+  window.onmessage = (event) => {
+    const msg = event.data.pluginMessage;
+    if (!msg) return;
+
+    if (msg.type === "settings") {
+      $("apiBase").value = msg.settings.apiBase || "";
+      $("apiKey").value = msg.settings.apiKey || "";
+      if (!msg.settings.apiBase || !msg.settings.apiKey) {
+        $("settingsBody").style.display = "block";
+        $("settingsToggle").textContent = "▾ Connection settings";
+      }
+    } else if (msg.type === "saved") {
+      $("savedMsg").textContent = "Saved ✓";
+      setTimeout(() => ($("savedMsg").textContent = ""), 2000);
+    } else if (msg.type === "jobs") {
+      jobs = msg.jobs || [];
+      renderJobs();
+      $("fetchBtn").disabled = false;
+      $("fetchBtn").textContent = "Fetch pending jobs";
+    } else if (msg.type === "log") {
+      $("log").textContent += msg.message + "\n";
+      $("log").scrollTop = $("log").scrollHeight;
+    } else if (msg.type === "done") {
+      $("log").textContent += "\nDone — " + msg.count + "/" + msg.total + " frame(s) generated.\n";
+      $("log").scrollTop = $("log").scrollHeight;
+      $("generateBtn").disabled = false;
+      post({ type: "fetch-jobs" }); // refresh — completed jobs drop off
+    } else if (msg.type === "error") {
+      $("err").textContent = msg.message;
+      $("fetchBtn").disabled = false;
+      $("fetchBtn").textContent = "Fetch pending jobs";
+      $("generateBtn").disabled = false;
+    }
+  };
+
+  post({ type: "init" });
+</script>
+</body>
+</html>
