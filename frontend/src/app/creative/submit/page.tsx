@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { Sparkles } from 'lucide-react'
+import AutoAssignPanel, { AutoAssignResult } from '@/components/AutoAssignPanel'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -56,6 +58,9 @@ export default function CreateAndSubmitPage() {
   const [deadline, setDeadline] = useState('')
   const [note, setNote] = useState('')
 
+  // Auto-assign panel
+  const [showAutoAssign, setShowAutoAssign] = useState(false)
+
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
     fetch(`${API_BASE}/api/users/reviewers`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setReviewers(d.data.items || []) }).catch(() => {})
@@ -76,6 +81,26 @@ export default function CreateAndSubmitPage() {
   const selectedMaterial = materials.find(m => m.material_id === selectedMaterialId)
   const branchKeypoints = keypoints.filter(k => k.branch_id === branchId)
   const branchAngles = angles.filter(a => !a.branch_id || a.branch_id === branchId)
+
+  // Headline / body the auto-assign panel analyzes — depends on the active mode.
+  const autoAssignHeadline = mode === 'new' ? headline : (selectedCopy?.headline || '')
+  const autoAssignBody = mode === 'new' ? primaryText : (selectedCopy?.body_text || '')
+
+  const handleAutoAssignResult = (r: AutoAssignResult) => {
+    if (r.angle_id) setSelectedAngle(r.angle_id)
+    // Newly-created keypoints aren't in the `keypoints` list yet — append them
+    // so their checkboxes render as checked.
+    if (r.created_keypoints.length > 0) {
+      setKeypoints(prev => [
+        ...prev,
+        ...r.created_keypoints.map(k => ({
+          id: k.id, branch_id: branchId, category: k.category, title: k.title,
+        })),
+      ])
+    }
+    setSelectedKeypoints(prev => Array.from(new Set([...prev, ...r.keypoint_ids])))
+    setShowAutoAssign(false)
+  }
 
   const handleSubmit = async () => {
     if (!branchId) return setError('Select a branch')
@@ -354,7 +379,18 @@ export default function CreateAndSubmitPage() {
         {/* Keypoints & Angle */}
         {branchId && (
           <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h3 className="text-sm font-semibold text-gray-900 mb-4">Keypoints &amp; Angle</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-gray-900">Keypoints &amp; Angle</h3>
+              <button
+                type="button"
+                onClick={() => setShowAutoAssign(true)}
+                disabled={!autoAssignHeadline && !autoAssignBody}
+                title={!autoAssignHeadline && !autoAssignBody ? 'Fill the headline/copy first' : ''}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
+              >
+                <Sparkles className="w-3.5 h-3.5" /> Auto-assign
+              </button>
+            </div>
             <div className="space-y-4">
               {/* Keypoints */}
               <div>
@@ -442,6 +478,16 @@ export default function CreateAndSubmitPage() {
           {submitting ? 'Creating & Submitting...' : 'Create Combo & Submit for Approval'}
         </button>
       </div>
+
+      {showAutoAssign && (
+        <AutoAssignPanel
+          branchId={branchId}
+          headline={autoAssignHeadline}
+          bodyText={autoAssignBody}
+          onResult={handleAutoAssignResult}
+          onClose={() => setShowAutoAssign(false)}
+        />
+      )}
     </div>
   )
 }

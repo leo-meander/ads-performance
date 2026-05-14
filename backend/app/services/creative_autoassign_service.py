@@ -77,6 +77,7 @@ def _resolve_source_text(
     combo: Optional[AdCombo],
     headline: Optional[str],
     benefits: Optional[list[str]],
+    body_text: Optional[str],
     script_text: Optional[str],
     use_figma: bool,
     figma_client=None,
@@ -125,11 +126,11 @@ def _resolve_source_text(
             "source": "figma",
         }
 
-    if headline or benefits:
+    if headline or benefits or body_text:
         return {
             "headline": (headline or "").strip(),
             "benefits": [b.strip() for b in (benefits or []) if b and b.strip()],
-            "body": "",
+            "body": (body_text or "").strip()[:1000],
             "script": "",
             "source": "explicit",
         }
@@ -213,6 +214,7 @@ def suggest(
     combo_id: Optional[str] = None,
     headline: Optional[str] = None,
     benefits: Optional[list[str]] = None,
+    body_text: Optional[str] = None,
     script_text: Optional[str] = None,
     use_figma: bool = False,
     client: Optional[Anthropic] = None,
@@ -244,6 +246,7 @@ def suggest(
         combo=combo,
         headline=headline,
         benefits=benefits,
+        body_text=body_text,
         script_text=script_text,
         use_figma=use_figma,
         figma_client=figma_client,

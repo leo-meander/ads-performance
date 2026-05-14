@@ -437,6 +437,7 @@ class AutoAssignSuggestRequest(BaseModel):
     combo_id: str | None = None
     headline: str | None = None
     benefits: list[str] | None = None
+    body_text: str | None = None
     script_text: str | None = None
     use_figma: bool = False
 
@@ -469,6 +470,7 @@ def autoassign_suggest(
                 combo_id=body.combo_id,
                 headline=body.headline,
                 benefits=body.benefits,
+                body_text=body.body_text,
                 script_text=body.script_text,
                 use_figma=body.use_figma,
             )
