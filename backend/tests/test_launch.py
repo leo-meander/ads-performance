@@ -355,3 +355,86 @@ def test_launch_status_endpoint():
     assert data["success"] is True
     assert data["data"]["status"] == "APPROVED"
     assert data["data"]["launch_status"] is None  # Not yet launched
+
+
+# ── Preflight + inline-fix tests ─────────────────────────────
+
+
+def test_preflight_flags_missing_meta_page_id():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo, campaign, account = _create_combo_and_account()
+    approval_id = _submit_and_approve(creator, reviewer, combo)
+
+    resp = client.get(
+        f"/api/launch/{approval_id}/preflight?campaign_id={campaign.id}",
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()
+    assert data["success"] is True
+    assert data["data"]["mode"] == "existing"
+    checks = {c["key"]: c for c in data["data"]["checks"]}
+
+    page_check = checks["meta_page_id"]
+    assert page_check["status"] == "missing"
+    assert page_check["fix"]["target"] == "account"
+    assert page_check["fix"]["target_id"] == str(account.id)
+    assert page_check["fix"]["field"] == "meta_page_id"
+    # Fixture sets access_token_enc, so that check passes.
+    assert checks["account_token"]["status"] == "ok"
+    assert data["data"]["ready"] is False
+
+
+def test_patch_account_then_preflight_passes_config_checks():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo, campaign, account = _create_combo_and_account()
+    approval_id = _submit_and_approve(creator, reviewer, combo)
+
+    patch = client.patch(
+        f"/api/accounts/{account.id}",
+        json={
+            "meta_page_id": "page_999",
+            "default_destination_url": "https://example.com/book",
+        },
+        headers=_auth_headers(creator),
+    )
+    assert patch.json()["success"] is True
+
+    resp = client.get(
+        f"/api/launch/{approval_id}/preflight?campaign_id={campaign.id}",
+        headers=_auth_headers(creator),
+    )
+    checks = {c["key"]: c for c in resp.json()["data"]["checks"]}
+    assert checks["meta_page_id"]["status"] == "ok"
+    assert checks["destination_url"]["status"] == "ok"
+
+
+def test_create_auto_config_endpoint():
+    creator = _create_user(["creator"])
+    _combo, _campaign, account = _create_combo_and_account()
+
+    resp = client.post(
+        "/api/launch/auto-config",
+        json={
+            "account_id": account.id,
+            "country": "TW",
+            "ta": "Solo",
+            "language": "de",
+            "campaign_name_template": "Mason_{COUNTRY}_{FUNNEL} {TA}",
+            "default_daily_budget": 500000,
+        },
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()
+    assert data["success"] is True
+    assert data["data"]["country"] == "TW"
+    assert data["data"]["language"] == "de"
+
+    # The auto-config lookup endpoint now resolves it.
+    cfg = client.get(
+        "/api/launch/auto-config?country=TW&ta=Solo&language=de",
+        headers=_auth_headers(creator),
+    )
+    assert cfg.json()["success"] is True
+    assert cfg.json()["data"]["default_daily_budget"] == 500000

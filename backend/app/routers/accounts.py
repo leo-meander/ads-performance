@@ -40,6 +40,16 @@ class AccountResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AccountUpdate(BaseModel):
+    """Patch the Meta-publish config fields on an ad account.
+
+    Both fields are launch prerequisites surfaced by the launch preflight —
+    they're optional here so the caller can set just one at a time.
+    """
+    meta_page_id: str | None = None
+    default_destination_url: str | None = None
+
+
 def _api_response(data=None, error=None):
     return {
         "success": error is None,
@@ -75,6 +85,8 @@ def list_accounts(
                 "currency": a.currency,
                 "is_active": a.is_active,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
+                "meta_page_id": a.meta_page_id,
+                "default_destination_url": a.default_destination_url,
             }
             for a in accounts
         ])
@@ -168,6 +180,47 @@ def create_account(
             "account_id": account.account_id,
             "account_name": account.account_name,
             "currency": account.currency,
+        })
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.patch("/accounts/{account_id}")
+def update_account(
+    account_id: str,
+    body: AccountUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Patch an ad account's Meta-publish config (meta_page_id,
+    default_destination_url). Admins and creators can edit — creators need it
+    because they're the ones launching ads and hitting the missing-field
+    preflight blockers."""
+    if not (is_admin(current_user) or "creator" in (current_user.roles or [])):
+        return _api_response(error="Only admins or creators can edit ad accounts")
+    try:
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        if not account:
+            return _api_response(error="Account not found")
+
+        fields = body.model_dump(exclude_unset=True)
+        if "meta_page_id" in fields:
+            account.meta_page_id = (fields["meta_page_id"] or "").strip() or None
+        if "default_destination_url" in fields:
+            account.default_destination_url = (
+                (fields["default_destination_url"] or "").strip() or None
+            )
+
+        db.commit()
+        db.refresh(account)
+        return _api_response(data={
+            "id": str(account.id),
+            "platform": account.platform,
+            "account_id": account.account_id,
+            "account_name": account.account_name,
+            "meta_page_id": account.meta_page_id,
+            "default_destination_url": account.default_destination_url,
         })
     except Exception as e:
         db.rollback()

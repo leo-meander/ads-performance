@@ -233,6 +233,237 @@ def get_available_adsets(db: Session, campaign_id: str) -> list[dict]:
     ]
 
 
+def get_launch_preflight(
+    db: Session,
+    approval_id: str,
+    *,
+    campaign_id: str | None = None,
+    adset_id: str | None = None,
+    country: str | None = None,
+    ta: str | None = None,
+    language: str | None = None,
+) -> dict:
+    """Build a checklist of everything that must be in place before an
+    approved combo can be published to Meta.
+
+    Each check is {key, label, status: 'ok'|'missing', detail, fix}. `fix` is
+    non-null when the gap can be patched inline from the launch page (e.g. an
+    account missing meta_page_id, or a missing auto-config). `ready` is True
+    only when a launch mode is resolved and every check passes.
+    """
+    from app.models.account import AdAccount
+    from app.models.ad_copy import AdCopy
+    from app.models.ad_material import AdMaterial
+    from app.services.meta_creative_builder import _resolve_figma_source
+
+    checks: list[dict] = []
+
+    def add(key, label, ok, detail, fix=None):
+        checks.append({
+            "key": key,
+            "label": label,
+            "status": "ok" if ok else "missing",
+            "detail": detail,
+            "fix": fix if not ok else None,
+        })
+
+    approval = db.query(ComboApproval).filter(ComboApproval.id == approval_id).first()
+    if not approval:
+        raise ValueError("Approval not found")
+
+    combo = db.query(AdCombo).filter(AdCombo.id == approval.combo_id).first()
+
+    # ── Approval state ───────────────────────────────────────
+    add(
+        "approval_status",
+        "Combo is approved and not yet launched",
+        approval.status == "APPROVED" and approval.launch_status != "LAUNCHED",
+        "Already launched" if approval.launch_status == "LAUNCHED"
+        else f"Approval status: {approval.status}",
+    )
+
+    # ── Combo material + copy ────────────────────────────────
+    material = None
+    copy = None
+    if combo:
+        material = (
+            db.query(AdMaterial)
+            .filter(AdMaterial.material_id == combo.material_id)
+            .first()
+        )
+        copy = db.query(AdCopy).filter(AdCopy.copy_id == combo.copy_id).first()
+    add(
+        "combo_material",
+        "Material exists",
+        material is not None,
+        f"material_id={combo.material_id}" if combo else "Combo not found",
+    )
+    add(
+        "combo_copy",
+        "Ad copy exists (headline + body)",
+        copy is not None and bool(copy.headline) and bool(copy.body_text),
+        f"copy_id={combo.copy_id}" if combo else "Combo not found",
+    )
+
+    # ── Resolve launch mode + the ad account in play ─────────
+    mode = None
+    account = None
+    if campaign_id:
+        mode = "existing"
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        add(
+            "campaign",
+            "Selected campaign is a Meta campaign",
+            campaign is not None and campaign.platform == "meta",
+            "Campaign not found" if not campaign else f"platform={campaign.platform}",
+        )
+        if campaign:
+            account = _get_account_for_campaign(db, campaign)
+            if adset_id:
+                adset = (
+                    db.query(AdSet)
+                    .filter(AdSet.id == adset_id, AdSet.campaign_id == campaign.id)
+                    .first()
+                )
+                add(
+                    "adset",
+                    "Ad set selected",
+                    adset is not None,
+                    adset.name if adset else "Selected ad set is not under this campaign",
+                )
+            else:
+                active = (
+                    db.query(AdSet)
+                    .filter(AdSet.campaign_id == campaign.id, AdSet.status == "ACTIVE")
+                    .count()
+                )
+                add(
+                    "adset",
+                    "Campaign has an active ad set",
+                    active > 0,
+                    f"{active} active ad set(s)" if active
+                    else "No active ad set — pick another campaign or auto-create one",
+                )
+    elif country and ta and language:
+        mode = "new"
+        config = get_auto_config(
+            db, combo.branch_id if combo else None, country, ta, language
+        )
+        add(
+            "auto_config",
+            "Campaign auto-config exists",
+            config is not None,
+            f"{country.upper()} / {ta} / {language.lower()}",
+            fix=None if config else {
+                "target": "auto_config",
+                "country": country.upper(),
+                "ta": ta,
+                "language": language.lower(),
+                "branch_id": combo.branch_id if combo else None,
+            },
+        )
+        if config:
+            account = (
+                db.query(AdAccount)
+                .filter(AdAccount.id == config.account_id)
+                .first()
+            )
+
+    # ── Account-level Meta config ────────────────────────────
+    if account:
+        add(
+            "account_token",
+            "Ad account has an access token",
+            bool(account.access_token_enc),
+            account.account_name,
+        )
+        add(
+            "meta_page_id",
+            "Facebook Page ID is set",
+            bool(account.meta_page_id),
+            account.meta_page_id
+            or f"Branch '{account.account_name}' has no Facebook Page ID",
+            fix=None if account.meta_page_id else {
+                "target": "account",
+                "target_id": str(account.id),
+                "field": "meta_page_id",
+                "account_name": account.account_name,
+            },
+        )
+        add(
+            "destination_url",
+            "Default destination URL is set",
+            bool(account.default_destination_url),
+            account.default_destination_url
+            or f"Branch '{account.account_name}' has no destination URL",
+            fix=None if account.default_destination_url else {
+                "target": "account",
+                "target_id": str(account.id),
+                "field": "default_destination_url",
+                "account_name": account.account_name,
+            },
+        )
+
+    # ── Figma creative source ────────────────────────────────
+    if combo and material:
+        fk, nid = _resolve_figma_source(material, db=db, combo=combo)
+        add(
+            "figma_source",
+            "Creative has a Figma source to render",
+            bool(fk and nid),
+            f"file={fk}, node={nid}" if fk and nid
+            else "No figma_file_key/node_id on the material and no Figma template behind this combo",
+        )
+
+    ready = mode is not None and all(c["status"] == "ok" for c in checks)
+    return {"mode": mode, "ready": ready, "checks": checks}
+
+
+def create_auto_config(
+    db: Session,
+    *,
+    account_id: str,
+    country: str,
+    ta: str,
+    language: str,
+    campaign_name_template: str,
+    default_objective: str,
+    default_daily_budget: float,
+    default_funnel_stage: str,
+) -> CampaignAutoConfig:
+    """Create — or reactivate + overwrite — a campaign auto-config row.
+
+    Keyed by (account_id, country, ta, language). Re-submitting the same combo
+    just updates the existing row instead of erroring on a duplicate.
+    """
+    existing = (
+        db.query(CampaignAutoConfig)
+        .filter(
+            CampaignAutoConfig.account_id == account_id,
+            CampaignAutoConfig.country == country.upper(),
+            CampaignAutoConfig.ta == ta,
+            CampaignAutoConfig.language == language.lower(),
+        )
+        .first()
+    )
+    target = existing or CampaignAutoConfig(
+        account_id=account_id,
+        country=country.upper(),
+        ta=ta,
+        language=language.lower(),
+    )
+    target.campaign_name_template = campaign_name_template
+    target.default_objective = default_objective
+    target.default_daily_budget = default_daily_budget
+    target.default_funnel_stage = default_funnel_stage
+    target.is_active = True
+    if existing is None:
+        db.add(target)
+    db.commit()
+    db.refresh(target)
+    return target
+
+
 # ── Private helpers ──────────────────────────────────────────
 
 
