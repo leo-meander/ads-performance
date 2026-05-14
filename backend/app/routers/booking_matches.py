@@ -351,6 +351,152 @@ def booking_matches_summary(
     except Exception as e:
         return _api_response(error=str(e))
 
+@router.get("/booking-matches/insights")
+def booking_matches_insights(
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    branch: str = Query(None, description="Legacy single-branch filter"),
+    branches: str = Query(None, description="Comma-separated branch names"),
+    channel: str = Query(None),
+    match_result: str = Query(None),
+    purchase_kind: str = Query(None, description="website | offline"),
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Reservation-side insights for matched bookings.
+
+    Joins matched BookingMatch rows back to Reservation by reservation_number
+    so we can surface lead time, room type, adults, nights, ADR — fields the
+    ads side doesn't have. ADR + revenue use the same display-currency rule
+    as the summary endpoint.
+    """
+    try:
+        if not date_from or not date_to:
+            df, dt = _default_date_range()
+            date_from = date_from or df.isoformat()
+            date_to = date_to or dt.isoformat()
+
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+
+        branches_list = _parse_branches_param(branches, branch)
+        display_currency, convert = _resolve_currency(branches_list)
+
+        q = db.query(BookingMatch).filter(
+            BookingMatch.match_date >= df,
+            BookingMatch.match_date <= dt,
+        )
+        ok, q, err = _apply_branch_scope(q, BookingMatch.branch, current_user, db, branches_list, exact_match=True)
+        if not ok:
+            return _api_response(error=err)
+        if channel:
+            q = q.filter(BookingMatch.ads_channel == channel)
+        if match_result:
+            q = q.filter(BookingMatch.match_result == match_result)
+        if purchase_kind:
+            q = q.filter(BookingMatch.purchase_kind == purchase_kind)
+
+        match_rows = q.all()
+
+        res_numbers: set[str] = set()
+        for m in match_rows:
+            if not m.reservation_numbers:
+                continue
+            for n in m.reservation_numbers.split(","):
+                n = n.strip()
+                if n:
+                    res_numbers.add(n)
+
+        def _empty_stats() -> dict:
+            return {"count": 0, "avg": 0, "median": 0, "min": 0, "max": 0}
+
+        if not res_numbers:
+            return _api_response(data={
+                "lead_time_days": _empty_stats(),
+                "room_types": [],
+                "adults": _empty_stats(),
+                "nights": _empty_stats(),
+                "adr": _empty_stats(),
+                "currency": display_currency,
+                "total_reservations": 0,
+                "period": {"from": date_from, "to": date_to},
+            })
+
+        reservations = (
+            db.query(Reservation)
+            .filter(Reservation.reservation_number.in_(list(res_numbers)))
+            .all()
+        )
+
+        lead_times: list[int] = []
+        adults_list: list[int] = []
+        nights_list: list[int] = []
+        adr_values: list[float] = []
+        room_counter: dict[str, dict] = {}
+
+        for r in reservations:
+            branch_key = normalize_branch(r.branch)
+
+            if r.reservation_date and r.check_in_date:
+                delta = (r.check_in_date - r.reservation_date).days
+                if delta >= 0:
+                    lead_times.append(delta)
+
+            if r.adults is not None and r.adults > 0:
+                adults_list.append(int(r.adults))
+
+            if r.nights is not None and r.nights > 0:
+                nights_list.append(int(r.nights))
+
+            gt = float(r.grand_total) if r.grand_total is not None else 0.0
+            gt_disp = _convert_revenue(branch_key, gt, convert) if gt else 0.0
+
+            if r.nights and r.nights > 0 and gt > 0:
+                adr_values.append(gt_disp / r.nights)
+
+            rt = (r.room_type or "Unknown").strip() or "Unknown"
+            bucket = room_counter.setdefault(rt, {"room_type": rt, "count": 0, "revenue": 0.0, "nights": 0})
+            bucket["count"] += 1
+            bucket["revenue"] += gt_disp
+            if r.nights:
+                bucket["nights"] += int(r.nights)
+
+        def _stats(vals: list[float]) -> dict:
+            if not vals:
+                return _empty_stats()
+            sorted_v = sorted(vals)
+            n = len(sorted_v)
+            if n % 2 == 1:
+                median = sorted_v[n // 2]
+            else:
+                median = (sorted_v[n // 2 - 1] + sorted_v[n // 2]) / 2
+            return {
+                "count": n,
+                "avg": sum(sorted_v) / n,
+                "median": median,
+                "min": sorted_v[0],
+                "max": sorted_v[-1],
+            }
+
+        room_types = sorted(
+            room_counter.values(),
+            key=lambda x: (-x["revenue"], -x["count"]),
+        )
+
+        return _api_response(data={
+            "lead_time_days": _stats(lead_times),
+            "room_types": room_types,
+            "adults": _stats(adults_list),
+            "nights": _stats(nights_list),
+            "adr": _stats(adr_values),
+            "currency": display_currency,
+            "total_reservations": len(reservations),
+            "period": {"from": date_from, "to": date_to},
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.post("/booking-matches/run-async", status_code=202)
 def trigger_match_run_async(
     date_from: str = Query(..., description="ISO date, e.g. 2026-01-01"),

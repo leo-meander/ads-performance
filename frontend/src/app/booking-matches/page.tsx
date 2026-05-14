@@ -45,6 +45,19 @@ type Summary = {
   period: { from: string; to: string }
 }
 
+type Stats = { count: number; avg: number; median: number; min: number; max: number }
+type RoomTypeStat = { room_type: string; count: number; revenue: number; nights: number }
+type Insights = {
+  lead_time_days: Stats
+  room_types: RoomTypeStat[]
+  adults: Stats
+  nights: Stats
+  adr: Stats
+  currency: string
+  total_reservations: number
+  period: { from: string; to: string }
+}
+
 type Branch = { name: string; currency: string }
 
 const CHANNELS = ['meta', 'google']
@@ -98,6 +111,41 @@ function rowBgColor(result: string): string {
   return ''
 }
 
+function fmtNum(v: number, digits = 1): string {
+  if (!isFinite(v)) return '--'
+  return v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits })
+}
+
+function StatCard({
+  label, avg, median, min, max, count, digits = 1, isMoney = false, currency,
+}: {
+  label: string
+  avg: number
+  median: number
+  min: number
+  max: number
+  count: number
+  digits?: number
+  isMoney?: boolean
+  currency?: string
+}) {
+  const fmt = (v: number) => isMoney ? fmtMoney(v, currency || 'VND') : fmtNum(v, digits)
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg p-4">
+      <p className="text-sm text-gray-500">{label}</p>
+      <p className="text-2xl font-bold mt-1">{count > 0 ? fmt(avg) : '--'}</p>
+      <p className="text-xs text-gray-400 mt-1">avg · n={count}</p>
+      {count > 0 && (
+        <div className="mt-2 text-xs text-gray-500 flex justify-between border-t pt-2">
+          <span>med {fmt(median)}</span>
+          <span>min {fmt(min)}</span>
+          <span>max {fmt(max)}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ResultBadge({ result }: { result: string }) {
   const isGreen = result.startsWith('Matched')
   return (
@@ -127,6 +175,7 @@ export default function BookingMatchesDashboard() {
     return getDateRange(datePreset)
   }, [datePreset, customFrom, customTo])
   const [summary, setSummary] = useState<Summary | null>(null)
+  const [insights, setInsights] = useState<Insights | null>(null)
   const [matches, setMatches] = useState<BookingMatch[]>([])
   const [listCurrency, setListCurrency] = useState<string>('VND')
   const [loading, setLoading] = useState(false)
@@ -167,9 +216,14 @@ export default function BookingMatchesDashboard() {
       const summaryParams = new URLSearchParams({ date_from: from, date_to: to })
       if (branchParam) summaryParams.set('branches', branchParam)
 
-      const [summaryRes, listRes] = await Promise.all([
+      // Insights honour the same filters as the list (channel/result/kind),
+      // so the lead-time / ADR cards reflect what's shown in the table.
+      const insightsParams = new URLSearchParams(params)
+
+      const [summaryRes, listRes, insightsRes] = await Promise.all([
         fetch(`${API_BASE}/api/booking-matches/summary?${summaryParams}`, { credentials: 'include' }).then(r => r.json()),
         fetch(`${API_BASE}/api/booking-matches?${params}`, { credentials: 'include' }).then(r => r.json()),
+        fetch(`${API_BASE}/api/booking-matches/insights?${insightsParams}`, { credentials: 'include' }).then(r => r.json()),
       ])
 
       if (summaryRes.success) setSummary(summaryRes.data)
@@ -177,6 +231,7 @@ export default function BookingMatchesDashboard() {
         setMatches(listRes.data.items)
         setListCurrency(listRes.data.currency || 'VND')
       }
+      if (insightsRes.success) setInsights(insightsRes.data)
     } finally {
       setLoading(false)
     }
@@ -439,6 +494,85 @@ export default function BookingMatchesDashboard() {
           </table>
         </div>
       </div>
+
+      {/* Reservation Insights */}
+      {insights && insights.total_reservations > 0 && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <StatCard
+              label="Lead time (days)"
+              avg={insights.lead_time_days.avg}
+              median={insights.lead_time_days.median}
+              min={insights.lead_time_days.min}
+              max={insights.lead_time_days.max}
+              count={insights.lead_time_days.count}
+              digits={1}
+            />
+            <StatCard
+              label="Nights"
+              avg={insights.nights.avg}
+              median={insights.nights.median}
+              min={insights.nights.min}
+              max={insights.nights.max}
+              count={insights.nights.count}
+              digits={1}
+            />
+            <StatCard
+              label="Adults"
+              avg={insights.adults.avg}
+              median={insights.adults.median}
+              min={insights.adults.min}
+              max={insights.adults.max}
+              count={insights.adults.count}
+              digits={1}
+            />
+            <StatCard
+              label={`ADR (${insights.currency})`}
+              avg={insights.adr.avg}
+              median={insights.adr.median}
+              min={insights.adr.min}
+              max={insights.adr.max}
+              count={insights.adr.count}
+              currency={insights.currency}
+              isMoney
+            />
+          </div>
+
+          <div className="bg-white border border-gray-200 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-gray-900">By Room Type</h3>
+              <span className="text-xs text-gray-400">{insights.total_reservations} reservations</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-gray-500 border-b">
+                    <th className="text-left py-2">Room Type</th>
+                    <th className="text-right py-2">Bookings</th>
+                    <th className="text-right py-2">Nights</th>
+                    <th className="text-right py-2">Revenue ({insights.currency})</th>
+                    <th className="text-right py-2">ADR ({insights.currency})</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {insights.room_types.map(rt => {
+                    const adr = rt.nights > 0 ? rt.revenue / rt.nights : 0
+                    return (
+                      <tr key={rt.room_type} className="border-b last:border-0">
+                        <td className="py-2 max-w-md truncate" title={rt.room_type}>{rt.room_type}</td>
+                        <td className="text-right py-2">{rt.count}</td>
+                        <td className="text-right py-2">{rt.nights}</td>
+                        <td className="text-right py-2">{fmtMoney(rt.revenue, insights.currency)}</td>
+                        <td className="text-right py-2">{adr > 0 ? fmtMoney(adr, insights.currency) : '--'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Matches Table */}
       <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
