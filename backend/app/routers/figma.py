@@ -11,12 +11,17 @@ from sqlalchemy.orm import Session
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
 from app.dependencies.auth import require_section
+from app.models.api_key import ApiKey
 from app.models.figma import FigmaJob, FigmaTemplate
 from app.models.user import User
+from app.services.export_auth import validate_api_key
 from app.services.figma_service import (
     FigmaServiceError,
+    complete_job,
     create_job,
     create_template,
+    fail_job,
+    list_pending_jobs_for_plugin,
     list_templates,
     refresh_template_preview,
     refresh_template_schema,
@@ -273,4 +278,76 @@ def get_job_endpoint(
             return _api_response(error="Job not found")
         return _api_response(data=serialize_job(job))
     except Exception as e:
+        return _api_response(error=str(e))
+
+
+# ── Plugin-facing endpoints (X-API-Key auth, no cookies) ─────
+#
+# The Figma plugin runs in the designer's Figma session and can't carry the
+# app's auth cookie, so these endpoints authenticate with an X-API-Key header
+# (same mechanism as the export API — keys minted at /api/export/keys).
+
+
+@router.get("/figma/plugin/jobs")
+def plugin_list_jobs(
+    limit: int = Query(50, le=100),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Pending/running jobs + their template's Figma coordinates + the fill
+    values. Everything the plugin needs to clone the master frame and fill
+    the $-prefixed slots."""
+    try:
+        jobs = list_pending_jobs_for_plugin(db, limit=limit)
+        return _api_response(data={"items": jobs, "total": len(jobs)})
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+class PluginComplete(BaseModel):
+    output_figma_url: str | None = None
+    output_image_url: str | None = None
+
+
+@router.post("/figma/plugin/jobs/{job_id}/complete")
+def plugin_complete_job(
+    job_id: str,
+    body: PluginComplete,
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Plugin reports a job done — it generated + (optionally) exported the frame."""
+    try:
+        job = complete_job(
+            db, job_id,
+            output_figma_url=body.output_figma_url,
+            output_image_url=body.output_image_url,
+        )
+        return _api_response(data=serialize_job(job))
+    except FigmaServiceError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+class PluginFail(BaseModel):
+    error: str
+
+
+@router.post("/figma/plugin/jobs/{job_id}/fail")
+def plugin_fail_job(
+    job_id: str,
+    body: PluginFail,
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Plugin reports a job failed (e.g. master frame not in the open file)."""
+    try:
+        job = fail_job(db, job_id, error=body.error)
+        return _api_response(data=serialize_job(job))
+    except FigmaServiceError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
         return _api_response(error=str(e))

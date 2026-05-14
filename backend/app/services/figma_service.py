@@ -313,6 +313,81 @@ def poll_pending_jobs(
     return counts
 
 
+# ── Plugin-facing helpers ────────────────────────────────────
+
+
+def list_pending_jobs_for_plugin(db: Session, *, limit: int = 50) -> list[dict[str, Any]]:
+    """Pending/running jobs joined with their template's Figma coordinates.
+
+    The Figma plugin needs everything in one payload: which file + node is the
+    master frame, its placeholder schema (so it knows which layers are slots),
+    and the job's request_payload (the values to fill).
+    """
+    rows = (
+        db.query(FigmaJob, FigmaTemplate)
+        .join(FigmaTemplate, FigmaTemplate.id == FigmaJob.template_id)
+        .filter(FigmaJob.status.in_(["PENDING", "RUNNING"]))
+        .order_by(FigmaJob.requested_at.asc().nullsfirst())
+        .limit(limit)
+        .all()
+    )
+    out = []
+    for job, tpl in rows:
+        out.append({
+            "job_id": job.id,
+            "status": job.status,
+            "source_combo_id": job.source_combo_id,
+            "request_payload": job.request_payload or {},
+            "requested_at": job.requested_at.isoformat() if job.requested_at else None,
+            "template": {
+                "id": tpl.id,
+                "name": tpl.name,
+                "file_key": tpl.file_key,
+                "node_id": tpl.node_id,
+                "width": tpl.width,
+                "height": tpl.height,
+                "placeholder_schema": tpl.placeholder_schema or {},
+            },
+        })
+    return out
+
+
+def complete_job(
+    db: Session,
+    job_id: str,
+    *,
+    output_figma_url: Optional[str] = None,
+    output_image_url: Optional[str] = None,
+) -> FigmaJob:
+    """Mark a job COMPLETED — called by the plugin after it generates the frame."""
+    job = db.query(FigmaJob).filter(FigmaJob.id == job_id).first()
+    if not job:
+        raise FigmaServiceError(f"Job {job_id} not found")
+    job.status = "COMPLETED"
+    job.completed_at = datetime.now(timezone.utc)
+    if output_figma_url:
+        job.output_figma_url = output_figma_url
+    if output_image_url:
+        job.output_image_url = output_image_url
+    job.error = None
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def fail_job(db: Session, job_id: str, *, error: str) -> FigmaJob:
+    """Mark a job FAILED with an error message."""
+    job = db.query(FigmaJob).filter(FigmaJob.id == job_id).first()
+    if not job:
+        raise FigmaServiceError(f"Job {job_id} not found")
+    job.status = "FAILED"
+    job.error = (error or "Plugin reported a failure")[:2000]
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 # ── Serialization helpers ────────────────────────────────────
 
 
