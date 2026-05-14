@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
-import { ArrowLeft, ExternalLink } from 'lucide-react'
+import { ArrowLeft, ExternalLink, RefreshCw, Sparkles } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -30,26 +30,78 @@ interface Detail {
   combos: Combo[]
 }
 
+interface VisualTag {
+  category: string
+  value: string
+  confidence: number | null
+  model_version: string | null
+}
+
+interface TagsResponse {
+  material_id: string
+  analyzed_at: string | null
+  model_version: string | null
+  tag_count: number
+  tags: Record<string, VisualTag[]>
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  text_density: 'Text density',
+  hook_type: 'Hook type',
+  cta_visible: 'CTA visible',
+  color_palette: 'Color palette',
+  human_presence: 'People',
+  scene_type: 'Scene',
+  emotional_angle: 'Emotion',
+}
+
 export default function WinningAdDetailPage() {
   const params = useParams()
   const materialId = params?.material_id as string
   const [detail, setDetail] = useState<Detail | null>(null)
   const [loading, setLoading] = useState(true)
+  const [tags, setTags] = useState<TagsResponse | null>(null)
+  const [tagsLoading, setTagsLoading] = useState(true)
+  const [retagging, setRetagging] = useState(false)
 
-  const load = () => {
+  const loadDetail = () => {
     setLoading(true)
     fetch(`${API_BASE}/api/winning-ads/${materialId}`, { credentials: 'include' })
       .then(r => r.json())
-      .then(d => {
-        if (d.success) setDetail(d.data)
-      })
+      .then(d => { if (d.success) setDetail(d.data) })
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { if (materialId) load() }, [materialId])
+  const loadTags = () => {
+    setTagsLoading(true)
+    fetch(`${API_BASE}/api/creative/materials/${materialId}/tags`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => { if (d.success) setTags(d.data) })
+      .finally(() => setTagsLoading(false))
+  }
+
+  useEffect(() => {
+    if (materialId) { loadDetail(); loadTags() }
+  }, [materialId])
+
+  const retag = async () => {
+    setRetagging(true)
+    try {
+      await fetch(`${API_BASE}/api/creative/materials/${materialId}/retag`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      // Re-tag is async (cron picks it up) — just reflect the cleared state.
+      loadTags()
+    } finally {
+      setRetagging(false)
+    }
+  }
 
   if (loading) return <div className="p-6 text-gray-500">Loading…</div>
   if (!detail) return <div className="p-6 text-red-600">Material not found</div>
+
+  const tagCategories = tags ? Object.keys(tags.tags) : []
 
   return (
     <div className="p-6 max-w-5xl">
@@ -104,6 +156,63 @@ export default function WinningAdDetailPage() {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* Visual tags — Claude vision */}
+      <div className="bg-white border border-gray-200 rounded-lg p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-purple-600" /> Visual tags
+            <span className="text-xs font-normal text-gray-400">(Claude vision)</span>
+          </h2>
+          <button
+            onClick={retag}
+            disabled={retagging}
+            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3 h-3 ${retagging ? 'animate-spin' : ''}`} /> Re-tag
+          </button>
+        </div>
+
+        {tagsLoading ? (
+          <p className="text-sm text-gray-400">Loading tags…</p>
+        ) : !tags || tags.tag_count === 0 ? (
+          <p className="text-sm text-gray-500">
+            {tags?.analyzed_at
+              ? 'No usable tags returned — the thumbnail may be broken. Try Re-tag.'
+              : 'Not analyzed yet — the vision tagger cron will reach this material soon.'}
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+              {tagCategories.map(cat => (
+                <div key={cat}>
+                  <div className="text-xs font-medium text-gray-500 mb-1">
+                    {CATEGORY_LABELS[cat] || cat}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {tags.tags[cat].map(t => (
+                      <span
+                        key={t.value}
+                        className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200"
+                        title={t.confidence != null ? `confidence ${(t.confidence * 100).toFixed(0)}%` : undefined}
+                      >
+                        {t.value}
+                        {t.confidence != null && (
+                          <span className="text-purple-400">{(t.confidence * 100).toFixed(0)}%</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-3">
+              {tags.tag_count} tags · {tags.model_version}
+              {tags.analyzed_at && ` · ${new Date(tags.analyzed_at).toLocaleString()}`}
+            </p>
+          </>
+        )}
       </div>
     </div>
   )
