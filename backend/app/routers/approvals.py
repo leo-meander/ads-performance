@@ -210,10 +210,17 @@ def decide_approval(
     approval_id: str,
     body: DecisionRequest,
     current_user: User = Depends(require_role(["reviewer", "admin"])),
-    _section: User = Depends(require_section("meta_ads", "edit")),
+    _section: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
 ):
-    """Submit reviewer decision (APPROVED or REJECTED)."""
+    """Submit reviewer decision (APPROVED or REJECTED).
+
+    Deciding is a reviewer's core action — it requires only view-level
+    meta_ads access (same as loading the approval page). The real
+    authorization is the reviewer role plus the assigned-reviewer check
+    inside record_decision(); requiring edit-level access here wrongly
+    locked out view-only reviewers with a 403.
+    """
     try:
         approval = record_decision(
             db=db,
