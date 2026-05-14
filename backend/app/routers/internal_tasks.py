@@ -207,6 +207,16 @@ def _do_sync_material_urls(db):
     sync_material_urls(db)
 
 
+def _do_sync_combo_metrics(db, days_back: int = 45):
+    """Pull ad-level Meta metrics into ad_combos (Creative Library performance).
+
+    Metrics are overwritten per combo from the rolling `days_back` window, so
+    re-runs and overlapping windows never double-count.
+    """
+    from app.services.combo_metrics_sync import sync_all_combo_metrics
+    sync_all_combo_metrics(db, days_back=days_back)
+
+
 def _do_vision_tag_materials(db, limit: int = 25):
     """Score the next batch of un-tagged image materials with Claude vision.
 
@@ -349,6 +359,26 @@ def trigger_sync_material_urls(
     _require_secret(x_internal_secret)
     _run_in_thread(_do_sync_material_urls, "sync-material-urls")
     return _api_response(data={"status": "started"})
+
+
+@router.post("/internal/tasks/sync-combo-metrics", status_code=202)
+def trigger_sync_combo_metrics(
+    x_internal_secret: str | None = Header(default=None),
+    days_back: int = 45,
+):
+    """Daily: pull ad-level Meta metrics into ad_combos so the Creative Library
+    shows live spend / ROAS / CPP / CTR / hook rate per combo.
+
+    `days_back` is a rolling window (default 45). Metrics are overwritten on
+    each combo, so re-running — or running an overlapping window — never
+    double-counts. Pass `days_back=45` for a first-time backfill; the daily
+    cron uses the default. Runs async in a thread (one paginated Meta call per
+    account; expect a few minutes for all branches)."""
+    _require_secret(x_internal_secret)
+    if days_back <= 0 or days_back > 365:
+        raise HTTPException(status_code=400, detail="days_back must be 1..365")
+    _run_in_thread(_do_sync_combo_metrics, "sync-combo-metrics", days_back=days_back)
+    return _api_response(data={"status": "started", "days_back": days_back})
 
 
 @router.post("/internal/tasks/vision-tag-materials", status_code=200)

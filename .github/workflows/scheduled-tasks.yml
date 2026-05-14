@@ -32,6 +32,11 @@ on:
     - cron: "0 23 * * *"
     # Daily 00:00 UTC — PMS reservations + booking match
     - cron: "0 0 * * *"
+    # Daily 05:00 UTC — Creative Library combo metrics (ad-level Meta spend/
+    # ROAS/CPP/CTR/hook rate). Runs after the 03:00 sync-all-platforms so any
+    # new combo rows exist before metrics are pulled. 45-day rolling window;
+    # metrics are overwritten per combo so overlapping runs never double-count.
+    - cron: "0 5 * * *"
     # Daily 22:30 UTC — Google recs daily
     - cron: "30 22 * * *"
     # Daily 23:15 UTC — Meta recs daily (shifted 15m from daily-rule-cycle to avoid collision)
@@ -109,6 +114,7 @@ jobs:
               "0 17 * * *")     ENDPOINT="run-daily-tactics" ;;
               "0 23 * * *")     ENDPOINT="daily-rule-cycle" ;;
               "0 0 * * *")      ENDPOINT="sync-reservations-match" ;;
+              "0 5 * * *")      ENDPOINT="sync-combo-metrics" ;;
               "30 22 * * *")    ENDPOINT="google-recommendations/daily" ;;
               "15 23 * * *")    ENDPOINT="meta-recommendations/daily" ;;
               "0 21 * * *")     ENDPOINT="google-recommendations/seasonality" ;;
