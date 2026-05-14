@@ -12,6 +12,7 @@ All external IO (Figma REST, Meta SDK, httpx) is mocked.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,6 +24,7 @@ from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
 from app.models.base import Base
+from app.models.figma import FigmaJob, FigmaTemplate
 from app.services.figma_client import FigmaExport
 from app.services.meta_creative_builder import (
     CreativeBuilderError,
@@ -207,6 +209,60 @@ def test_second_launch_uses_cached_hash(mock_download, mock_upload, mock_create,
 
     # AdCreative still built with the cached hash.
     assert mock_create.call_args.kwargs["image_hash"] == "cached_hash"
+
+
+@patch("app.services.meta_creative_builder._create_adcreative")
+@patch("app.services.meta_creative_builder._upload_adimage")
+@patch("app.services.meta_creative_builder._download")
+def test_builds_creative_from_template_when_material_has_no_figma(
+    mock_download, mock_upload, mock_create, db
+):
+    """Material has no figma_file_key/node_id, but the combo was built from a
+    registered Figma template — the builder falls back to the template's
+    file_key/node_id."""
+    mock_download.return_value = b"png-bytes"
+    mock_upload.return_value = "hash_tpl"
+    mock_create.return_value = "creative_tpl"
+
+    account = _make_account(db)
+    _make_material(db, branch_id=account.id, figma_file_key=None, figma_node_id=None)
+    _make_copy(db, branch_id=account.id)
+    combo = _make_combo(db, branch_id=account.id)
+
+    tpl = FigmaTemplate(
+        id=str(uuid.uuid4()),
+        name="Saigon Master Frame",
+        file_key="TPLFILEKEY",
+        node_id="9:9",
+        platform="meta",
+        width=1080,
+        height=1080,
+        placeholder_schema={},
+    )
+    db.add(tpl)
+    db.commit()
+    job = FigmaJob(
+        id=str(uuid.uuid4()),
+        template_id=tpl.id,
+        source_combo_id=combo.combo_id,
+        request_payload={},
+        status="COMPLETED",
+        requested_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+    db.add(job)
+    db.commit()
+
+    fake_figma = MagicMock()
+    fake_figma.export_images.return_value = [
+        FigmaExport(node_id="9:9", image_url="https://figma-cdn.example/tpl.png", format="png")
+    ]
+
+    cid = build_or_get_meta_creative(db, account, combo, figma_client=fake_figma)
+    assert cid == "creative_tpl"
+    fake_figma.export_images.assert_called_once_with("TPLFILEKEY", ["9:9"], fmt="png")
+    mock_download.assert_called_once_with(
+        "https://figma-cdn.example/tpl.png", http_client=None
+    )
 
 
 # ── Error paths ──────────────────────────────────────────────

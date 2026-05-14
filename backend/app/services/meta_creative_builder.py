@@ -16,11 +16,16 @@ pipeline Meta requires is:
   4. Pass that creative_id into /act_xxx/ads.
 
 This module owns steps 1–3 and caches step 2's hash on the material so
-re-launches don't re-upload. Step 1 prefers Figma (figma_file_key +
-figma_node_id on ad_materials) because the Figma REST API can render
-frames as PNG URLs that need no auth to download. Drive URLs are not
-supported yet — the launch will fail with a clear error pointing the
-designer at the Figma fields.
+re-launches don't re-upload. Step 1 sources the image from Figma because the
+Figma REST API can render frames as PNG URLs that need no auth to download.
+The Figma coordinates (file_key + node_id) are resolved in priority order:
+
+  1. figma_file_key / figma_node_id pinned directly on ad_materials.
+  2. The figma_templates row behind the combo's most recent figma_job
+     (combo.combo_id → figma_jobs.source_combo_id → template).
+
+Drive URLs are not supported — if no Figma source is found anywhere the
+launch fails with a clear error pointing the designer at the Figma fields.
 
 Resilience
 ----------
@@ -44,6 +49,7 @@ from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
+from app.models.figma import FigmaJob, FigmaTemplate
 from app.services.figma_client import FigmaClient, FigmaClientError
 
 logger = logging.getLogger(__name__)
@@ -121,7 +127,13 @@ def build_or_get_meta_creative(
 
     image_hash = material.meta_image_hash
     if not image_hash:
-        image_bytes = _fetch_creative_bytes(material, figma_client=figma_client, http_client=http_client)
+        image_bytes = _fetch_creative_bytes(
+            material,
+            db=db,
+            combo=combo,
+            figma_client=figma_client,
+            http_client=http_client,
+        )
         image_hash = _upload_adimage(account, image_bytes)
         material.meta_image_hash = image_hash
         db.commit()
@@ -155,25 +167,65 @@ def build_or_get_meta_creative(
 # ── Image sourcing ───────────────────────────────────────────
 
 
+def _resolve_figma_source(
+    material: AdMaterial,
+    *,
+    db: Optional[Session],
+    combo: Optional[AdCombo],
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve the Figma (file_key, node_id) to render this combo's image from.
+
+    Priority:
+      1. figma_file_key / figma_node_id pinned directly on the material — an
+         explicit per-material override a designer set.
+      2. The Figma template behind the combo's most recent figma_job. This is
+         the common path: the combo was built from a registered template, so
+         the file_key/node_id already live on figma_templates and the material
+         only carries the Drive preview link.
+    """
+    if material.figma_file_key and material.figma_node_id:
+        return material.figma_file_key, material.figma_node_id
+
+    if db is not None and combo is not None:
+        job = (
+            db.query(FigmaJob)
+            .filter(FigmaJob.source_combo_id == combo.combo_id)
+            .order_by(FigmaJob.requested_at.desc().nullslast())
+            .first()
+        )
+        if job:
+            tpl = (
+                db.query(FigmaTemplate)
+                .filter(FigmaTemplate.id == job.template_id)
+                .first()
+            )
+            if tpl and tpl.file_key and tpl.node_id:
+                return tpl.file_key, tpl.node_id
+
+    return None, None
+
+
 def _fetch_creative_bytes(
     material: AdMaterial,
     *,
+    db: Optional[Session] = None,
+    combo: Optional[AdCombo] = None,
     figma_client: Optional[FigmaClient] = None,
     http_client: Optional[httpx.Client] = None,
 ) -> bytes:
-    """Resolve the material to raw PNG bytes.
+    """Resolve the material to raw PNG bytes by rendering its Figma frame.
 
-    Priority:
-      1. Figma render — if figma_file_key + figma_node_id are set we hit
-         /v1/images, then GET the returned CDN URL.
-      2. Drive — not supported yet; raises so the operator wires Figma.
+    The Figma coordinates come from _resolve_figma_source — either pinned on
+    the material itself, or inherited from the template behind the combo's
+    figma_job. With coordinates in hand we hit /v1/images, then GET the
+    returned CDN URL. Materials with no Figma source anywhere raise so the
+    operator registers the master frame in Figma first.
     """
-    if material.figma_file_key and material.figma_node_id:
+    file_key, node_id = _resolve_figma_source(material, db=db, combo=combo)
+    if file_key and node_id:
         client = figma_client or FigmaClient()
         try:
-            exports = client.export_images(
-                material.figma_file_key, [material.figma_node_id], fmt="png"
-            )
+            exports = client.export_images(file_key, [node_id], fmt="png")
         except FigmaClientError as e:
             raise CreativeBuilderError(
                 f"Figma render failed for material {material.material_id}: {e}"
@@ -182,16 +234,16 @@ def _fetch_creative_bytes(
         if not exports or not exports[0].image_url:
             raise CreativeBuilderError(
                 f"Figma returned no image URL for material {material.material_id} "
-                f"(file={material.figma_file_key}, node={material.figma_node_id})"
+                f"(file={file_key}, node={node_id})"
             )
 
-        png_url = exports[0].image_url
-        return _download(png_url, http_client=http_client)
+        return _download(exports[0].image_url, http_client=http_client)
 
     raise CreativeBuilderError(
-        f"Material {material.material_id} has no figma_file_key/figma_node_id. "
-        f"Drive-only sources are not yet supported by the auto-launch pipeline — "
-        f"register the master frame in Figma first."
+        f"Material {material.material_id} has no Figma source. Pin "
+        f"figma_file_key/figma_node_id on the material, or build the combo from "
+        f"a registered Figma template — Drive-only sources are not supported by "
+        f"the auto-launch pipeline."
     )
 
 
