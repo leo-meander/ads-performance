@@ -10,6 +10,7 @@ from app.models.ad_combo import AdCombo
 from app.models.approval import ApprovalReviewer, ComboApproval
 from app.models.user import User
 from app.services.email_service import render_approval_result_email, render_review_request_email
+from app.services.figma_service import ensure_template_from_url
 from app.services.notification_service import create_notification
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,23 @@ def submit_for_approval(
             email_tasks.append((reviewer.email, subject, html))
 
     db.commit()
+
+    # Auto-register the working Figma frame as a reusable template so it
+    # shows up in /winning-ads/templates and future briefs can pick it up.
+    # Idempotent: skipped if the URL isn't a Figma link or the same
+    # (file_key, node_id) is already registered. Wrapped — a Figma hiccup
+    # must NEVER block an approval submission.
+    if working_file_url:
+        try:
+            ensure_template_from_url(
+                db,
+                figma_url=working_file_url,
+                branch_id=combo.branch_id,
+                name=combo_name,
+                created_by=submitted_by,
+            )
+        except Exception:
+            logger.exception("Auto-template registration failed for combo %s", combo_id)
 
     # Send emails async via Celery (after commit so data is persisted)
     _queue_emails(email_tasks)

@@ -14,8 +14,10 @@ Polling is cron-driven — see /internal/tasks/figma-job-poll.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
 
 from sqlalchemy.orm import Session
 
@@ -27,6 +29,34 @@ logger = logging.getLogger(__name__)
 
 class FigmaServiceError(ValueError):
     """Caller-facing error (4xx-style)."""
+
+
+# ── URL parsing ──────────────────────────────────────────────
+
+_FIGMA_PATH_RE = re.compile(r"^/(?:file|design|proto)/([^/]+)")
+
+
+def parse_figma_url(url: str) -> tuple[Optional[str], Optional[str]]:
+    """Pull (file_key, node_id) out of any Figma share URL.
+
+    Handles /file/, /design/, /proto/ paths. Figma URLs encode node-id with a
+    dash (143-22) but the REST API expects a colon (143:22) — converted here.
+    Returns (None, None) if the URL doesn't look like a Figma link.
+    """
+    if not url:
+        return None, None
+    try:
+        u = urlparse(url.strip())
+    except (ValueError, AttributeError):
+        return None, None
+    if "figma.com" not in (u.netloc or ""):
+        return None, None
+    m = _FIGMA_PATH_RE.match(u.path or "")
+    file_key = m.group(1) if m else None
+    qs = parse_qs(u.query or "")
+    raw_node = (qs.get("node-id") or [None])[0]
+    node_id = raw_node.replace("-", ":") if raw_node else None
+    return file_key, node_id
 
 
 # ── Template management ──────────────────────────────────────
@@ -103,6 +133,62 @@ def create_template(
     db.commit()
     db.refresh(template)
     return template
+
+
+def ensure_template_from_url(
+    db: Session,
+    *,
+    figma_url: str,
+    branch_id: Optional[str] = None,
+    name: Optional[str] = None,
+    platform: str = "meta",
+    created_by: Optional[str] = None,
+    client: Optional[FigmaClient] = None,
+) -> Optional[FigmaTemplate]:
+    """Auto-register a Figma frame as a reusable template (idempotent).
+
+    Called when an approval is submitted with a working_file_url — the frame
+    the marketer just shipped becomes browsable in /winning-ads/templates so
+    it can be re-used by future briefs. Skips silently if:
+      - the URL isn't a Figma link, or
+      - the URL has no node-id (we can't pin to a specific frame), or
+      - a template already exists for the same (file_key, node_id).
+
+    Schema inference is best-effort — frames not designed as templates won't
+    have $-prefixed slots and the schema lands empty (designer can rename
+    layers + Refresh schema later).
+    """
+    file_key, node_id = parse_figma_url(figma_url)
+    if not file_key or not node_id:
+        return None
+
+    existing = (
+        db.query(FigmaTemplate)
+        .filter(FigmaTemplate.file_key == file_key, FigmaTemplate.node_id == node_id)
+        .first()
+    )
+    if existing:
+        return existing
+
+    auto_name = (name or f"approval-{file_key[:8]}-{node_id.replace(':', '_')}").strip()[:120]
+    try:
+        return create_template(
+            db,
+            name=auto_name,
+            file_key=file_key,
+            node_id=node_id,
+            branch_id=branch_id,
+            platform=platform,
+            created_by=created_by,
+            client=client,
+        )
+    except FigmaServiceError as e:
+        logger.warning("Auto-register template from URL failed: %s", e)
+        return None
+    except Exception:
+        # Never break the caller (e.g. approval submission) on a Figma hiccup.
+        logger.exception("Unexpected error auto-registering template from %s", figma_url)
+        return None
 
 
 def _build_schema_from_placeholders(placeholders: list) -> dict[str, Any]:

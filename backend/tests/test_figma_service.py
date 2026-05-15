@@ -25,6 +25,8 @@ from app.services.figma_service import (
     FigmaServiceError,
     create_job,
     create_template,
+    ensure_template_from_url,
+    parse_figma_url,
     poll_pending_jobs,
     refresh_template_preview,
     refresh_template_schema,
@@ -257,4 +259,60 @@ def test_poll_pending_jobs_completes_and_attaches_image():
     refreshed = db.query(FigmaJob).filter(FigmaJob.id == job_id).first()
     assert refreshed.status == "COMPLETED"
     assert refreshed.output_image_url == "https://figma-stub.example/FILE/2:1.png"
+    db.close()
+
+
+# ── figma_service: URL parsing + auto-register from approval ────
+
+
+def test_parse_figma_url_handles_design_path_and_dash_node():
+    """The /design/ path + dash-node (143-22) format used by current Figma URLs."""
+    url = "https://www.figma.com/design/2Z6hfcKRPZfgnRVCID3qtN/MEANDER-Layout?node-id=143-22&t=fUfAkDk4LRvuiocb-0"
+    fk, nid = parse_figma_url(url)
+    assert fk == "2Z6hfcKRPZfgnRVCID3qtN"
+    assert nid == "143:22"  # dash → colon for the REST API
+
+
+def test_parse_figma_url_handles_legacy_file_path():
+    fk, nid = parse_figma_url("https://www.figma.com/file/ABC123/Doc?node-id=4%3A52")
+    assert fk == "ABC123"
+    # %3A decodes to ':' — already in API format, no double-mangling
+    assert nid == "4:52"
+
+
+def test_parse_figma_url_returns_none_for_non_figma_links():
+    assert parse_figma_url("https://example.com/?node-id=1-2") == (None, None)
+    assert parse_figma_url("") == (None, None)
+    assert parse_figma_url("not a url") == (None, None)
+
+
+def test_ensure_template_from_url_creates_then_dedupes():
+    """Second call with the same URL returns the existing template, not a new row."""
+    branch = _seed_branch()
+    db = TestSession()
+    url = "https://www.figma.com/design/FILE999/Approval?node-id=143-22"
+
+    first = ensure_template_from_url(db, figma_url=url, branch_id=branch.id, name="combo-x")
+    assert first is not None
+    assert first.file_key == "FILE999"
+    assert first.node_id == "143:22"
+    assert first.branch_id == branch.id
+
+    # Second submission of the same frame must NOT create a duplicate.
+    second = ensure_template_from_url(db, figma_url=url, branch_id=branch.id, name="combo-y")
+    assert second.id == first.id
+    count = db.query(FigmaTemplate).filter(
+        FigmaTemplate.file_key == "FILE999", FigmaTemplate.node_id == "143:22"
+    ).count()
+    assert count == 1
+    db.close()
+
+
+def test_ensure_template_from_url_skips_non_figma_urls():
+    branch = _seed_branch()
+    db = TestSession()
+    assert ensure_template_from_url(db, figma_url="", branch_id=branch.id) is None
+    assert ensure_template_from_url(db, figma_url="https://drive.google.com/x", branch_id=branch.id) is None
+    # No frame node-id → can't pin a template
+    assert ensure_template_from_url(db, figma_url="https://www.figma.com/file/X/y", branch_id=branch.id) is None
     db.close()
