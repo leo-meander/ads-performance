@@ -32,6 +32,7 @@ export default function FigmaTemplatesPage() {
 
   // register form
   const [name, setName] = useState('')
+  const [figmaUrl, setFigmaUrl] = useState('')
   const [fileKey, setFileKey] = useState('')
   const [nodeId, setNodeId] = useState('')
   const [branchId, setBranchId] = useState('')
@@ -40,6 +41,30 @@ export default function FigmaTemplatesPage() {
   const [height, setHeight] = useState(1080)
   const [saving, setSaving] = useState(false)
   const [formErr, setFormErr] = useState('')
+
+  // Parse a Figma share URL into the file_key + node_id the API needs.
+  // Handles /file/, /design/, and /proto/ paths. node-id in the URL uses a
+  // dash (143-22) but the REST API expects a colon (143:22).
+  const parseFigmaUrl = (url: string): { fileKey?: string; nodeId?: string } => {
+    try {
+      const u = new URL(url.trim())
+      const m = u.pathname.match(/\/(?:file|design|proto)\/([^/]+)/)
+      const fk = m ? m[1] : undefined
+      const raw = u.searchParams.get('node-id') || undefined
+      const nid = raw ? raw.replace(/-/g, ':') : undefined
+      return { fileKey: fk, nodeId: nid }
+    } catch {
+      return {}
+    }
+  }
+
+  const onFigmaUrlChange = (val: string) => {
+    setFigmaUrl(val)
+    if (!val.trim()) return
+    const { fileKey: fk, nodeId: nid } = parseFigmaUrl(val)
+    if (fk) setFileKey(fk)
+    if (nid) setNodeId(nid)
+  }
 
   const load = () => {
     setLoading(true)
@@ -75,7 +100,7 @@ export default function FigmaTemplatesPage() {
       })
       const d = await r.json()
       if (!d.success) { setFormErr(d.error || 'Failed'); return }
-      setName(''); setFileKey(''); setNodeId(''); setBranchId('')
+      setName(''); setFigmaUrl(''); setFileKey(''); setNodeId(''); setBranchId('')
       setShowForm(false)
       load()
     } finally {
@@ -125,6 +150,14 @@ export default function FigmaTemplatesPage() {
               <label className="text-xs text-gray-600 block mb-1">Name *</label>
               <input className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
                 placeholder="saigon_meta_1080x1080_hero" value={name} onChange={e => setName(e.target.value)} />
+            </div>
+            <div className="lg:col-span-3">
+              <label className="text-xs text-gray-600 block mb-1">
+                Figma link <span className="text-gray-400 font-normal">(paste — file_key + node_id auto-extract)</span>
+              </label>
+              <input className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+                placeholder="https://www.figma.com/design/2Z6hfcKRPZfgnRVCID3qtN/MEANDER-Layout?node-id=143-22"
+                value={figmaUrl} onChange={e => onFigmaUrlChange(e.target.value)} />
             </div>
             <div>
               <label className="text-xs text-gray-600 block mb-1">file_key *</label>
