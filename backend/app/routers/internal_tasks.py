@@ -207,6 +207,12 @@ def _do_sync_material_urls(db):
     sync_material_urls(db)
 
 
+def _do_assign_from_copy(db):
+    """Fill missing angle + keypoints on combos by reading the ad copy text."""
+    from app.services.assign_from_copy_service import assign_from_copy
+    return assign_from_copy(db)
+
+
 def _do_sync_combo_metrics(db, days_back: int = 45):
     """Pull ad-level Meta metrics into ad_combos (Creative Library performance).
 
@@ -349,6 +355,22 @@ def trigger_sync_reservations_match(
     _require_secret(x_internal_secret)
     _run_in_thread(_do_sync_reservations_and_match, "sync-reservations-match", days_back=days_back)
     return _api_response(data={"status": "started", "days_back": days_back})
+
+
+@router.post("/internal/tasks/assign-from-copy", status_code=202)
+def trigger_assign_from_copy(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Fill missing angle + keypoints on combos by reading the ad copy text.
+
+    Picks angle from existing angles only (never creates a new one). Reuses
+    branch keypoints when the copy clearly matches; creates new branch
+    keypoints for points the copy raises that aren't already in the library.
+    Idempotent — only touches combos where angle_id IS NULL OR keypoint_ids
+    IS NULL, and never overwrites a value that's already filled."""
+    _require_secret(x_internal_secret)
+    _run_in_thread(_do_assign_from_copy, "assign-from-copy")
+    return _api_response(data={"status": "started"})
 
 
 @router.post("/internal/tasks/sync-material-urls", status_code=202)
