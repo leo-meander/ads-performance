@@ -1,0 +1,58 @@
+# Manual debug helper — diagnoses why a single combo on the Creative Library is
+# missing metrics. Pick "Run workflow", paste a combo_id (e.g. CMB-182), read
+# the JSON in the run log. No schedule — workflow_dispatch only.
+name: Manual — Debug combo
+
+on:
+  workflow_dispatch:
+    inputs:
+      combo_id:
+        description: "Combo ID (e.g. CMB-182). Leave blank to search by ad_name substring instead."
+        required: false
+        default: ""
+      q:
+        description: "ad_name substring search (used only if combo_id is blank, e.g. 'vanice')."
+        required: false
+        default: ""
+
+env:
+  BACKEND_URL: https://ads-performance-fuls.zeabur.app
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/internal/tasks/debug-combo
+        env:
+          INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}
+          COMBO_ID: ${{ github.event.inputs.combo_id }}
+          Q: ${{ github.event.inputs.q }}
+        run: |
+          set -euo pipefail
+          if [ -n "$COMBO_ID" ]; then
+            URL="$BACKEND_URL/api/internal/tasks/debug-combo?combo_id=$COMBO_ID"
+            echo "Debugging by combo_id: $COMBO_ID"
+          elif [ -n "$Q" ]; then
+            # URL-encode minimally; spaces → %20
+            Q_ENC=$(printf '%s' "$Q" | sed 's/ /%20/g')
+            URL="$BACKEND_URL/api/internal/tasks/debug-combo?q=$Q_ENC"
+            echo "Debugging by substring: $Q"
+          else
+            echo "::error::Pass either combo_id or q"
+            exit 1
+          fi
+          HTTP_CODE=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+            -X POST \
+            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET" \
+            "$URL")
+          echo "HTTP $HTTP_CODE"
+          echo "--- response ---"
+          if command -v python3 >/dev/null 2>&1; then
+            python3 -m json.tool < /tmp/body.txt || cat /tmp/body.txt
+          else
+            cat /tmp/body.txt
+          fi
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::endpoint returned HTTP $HTTP_CODE"
+            exit 1
+          fi

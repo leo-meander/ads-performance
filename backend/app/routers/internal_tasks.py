@@ -627,3 +627,144 @@ def trigger_backfill_google_country(
     _require_secret(x_internal_secret)
     _run_in_thread(_do_backfill_google_country, "backfill-google-country")
     return _api_response(data={"status": "started"})
+
+
+# ----------------------------------------------------------------- debug ----
+
+
+@router.post("/internal/tasks/debug-combo", status_code=200)
+def debug_combo(
+    combo_id: str | None = None,
+    q: str | None = None,
+    x_internal_secret: str | None = Header(default=None),
+):
+    """One-shot diagnosis for a single combo: returns the DB ad_name and the
+    Meta insights returned for that ad in the last 45 days, so name-mismatch
+    vs no-spend can be told apart without direct DB access.
+
+    Pass `combo_id` (exact, e.g. CMB-182) or `q` (ILIKE substring on ad_name).
+    Runs synchronously — body is the diagnosis JSON, not a 202 ack.
+    """
+    _require_secret(x_internal_secret)
+    if not combo_id and not q:
+        raise HTTPException(status_code=400, detail="pass combo_id or q")
+
+    from datetime import date as _date, timedelta as _timedelta
+
+    from facebook_business.adobjects.adaccount import AdAccount as FBAdAccount
+    from facebook_business.api import FacebookAdsApi
+
+    from app.models.account import AdAccount
+    from app.models.ad_combo import AdCombo
+
+    db = SessionLocal()
+    try:
+        if combo_id:
+            combos = db.query(AdCombo).filter(AdCombo.combo_id == combo_id).all()
+        else:
+            combos = db.query(AdCombo).filter(AdCombo.ad_name.ilike(f"%{q}%")).all()
+
+        if not combos:
+            return _api_response(error="no combo matched")
+
+        results = []
+        for combo in combos:
+            account = db.query(AdAccount).filter(AdAccount.id == combo.branch_id).first()
+            info: dict = {
+                "combo_id": combo.combo_id,
+                "ad_name_db": combo.ad_name,
+                "ad_name_db_repr": repr(combo.ad_name),  # exposes hidden chars
+                "ad_name_db_len": len(combo.ad_name or ""),
+                "branch": account.account_name if account else None,
+                "branch_id": str(combo.branch_id) if combo.branch_id else None,
+                "platform": account.platform if account else None,
+                "account_active": account.is_active if account else None,
+                "has_token": bool(account.access_token_enc) if account else False,
+                "current_spend": float(combo.spend) if combo.spend else None,
+                "current_roas": float(combo.roas) if combo.roas else None,
+                "current_conversions": int(combo.conversions) if combo.conversions else None,
+                "updated_at": combo.updated_at.isoformat() if combo.updated_at else None,
+            }
+
+            if not account or not account.access_token_enc or account.platform != "meta":
+                info["meta_lookup"] = "skipped (not Meta or no token)"
+                results.append(info)
+                continue
+
+            try:
+                FacebookAdsApi.init(app_id="", app_secret="", access_token=account.access_token_enc)
+                acc_id = (
+                    account.account_id
+                    if account.account_id.startswith("act_")
+                    else f"act_{account.account_id}"
+                )
+                fb = FBAdAccount(acc_id)
+                date_to = _date.today()
+                date_from = date_to - _timedelta(days=45)
+
+                rows = list(fb.get_insights(
+                    fields=["ad_name", "spend", "impressions"],
+                    params={
+                        "level": "ad",
+                        "time_range": {
+                            "since": date_from.isoformat(),
+                            "until": date_to.isoformat(),
+                        },
+                    },
+                ))
+
+                db_name = combo.ad_name or ""
+                db_name_norm = db_name.strip().lower()
+
+                exact_matches = []
+                fuzzy_matches = []
+                for r in rows:
+                    rn = r.get("ad_name") or ""
+                    if rn == db_name:
+                        exact_matches.append({
+                            "ad_name": rn,
+                            "spend": float(r.get("spend", 0) or 0),
+                            "impressions": int(r.get("impressions", 0) or 0),
+                        })
+                        continue
+                    rn_norm = rn.strip().lower()
+                    # Fuzzy: case/whitespace differences or substring on either side
+                    if rn_norm == db_name_norm or db_name_norm in rn_norm or rn_norm in db_name_norm:
+                        fuzzy_matches.append({
+                            "ad_name_meta": rn,
+                            "ad_name_meta_repr": repr(rn),
+                            "spend": float(r.get("spend", 0) or 0),
+                            "impressions": int(r.get("impressions", 0) or 0),
+                        })
+
+                info["meta_window"] = f"{date_from} → {date_to} (45d)"
+                info["meta_total_ads_in_window"] = len(rows)
+                info["meta_exact_matches"] = exact_matches
+                info["meta_fuzzy_matches"] = fuzzy_matches[:5]
+
+                if exact_matches:
+                    info["diagnosis"] = (
+                        "EXACT MATCH found on Meta — metrics should have been written. "
+                        "If combo is still empty, the daily cron either hasn't fired since "
+                        "(check Actions → Cron — Creative combo metrics) or errored mid-run."
+                    )
+                elif fuzzy_matches:
+                    info["diagnosis"] = (
+                        "NAME MISMATCH — DB ad_name differs from what Meta returns. "
+                        "Likely cause: ad was renamed on Meta after the combo was first synced. "
+                        "Fix: update combo.ad_name in DB to match Meta, or rename the ad back on Meta."
+                    )
+                else:
+                    info["diagnosis"] = (
+                        "NO MATCH — ad_name not found in this account's 45-day insights. "
+                        "Either the ad has zero spend in the window, lives in a different ad "
+                        "account, or has been deleted/archived without delivery."
+                    )
+            except Exception as e:
+                info["meta_lookup_error"] = str(e)[:500]
+
+            results.append(info)
+
+        return _api_response(data={"results": results})
+    finally:
+        db.close()
