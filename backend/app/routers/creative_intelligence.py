@@ -229,6 +229,7 @@ def _serialize_combo_row(combo, copy, material, branch, *, extra: dict | None = 
         "country": combo.country,
         "roas": float(combo.roas) if combo.roas is not None else None,
         "spend": float(combo.spend) if combo.spend is not None else None,
+        "currency": branch.currency if branch else None,
         "conversions": combo.conversions,
         "headline": copy.headline if copy else None,
         "cta": copy.cta if copy else None,

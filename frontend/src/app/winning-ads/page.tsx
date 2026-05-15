@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Sparkles, LayoutTemplate, ListChecks } from 'lucide-react'
+import { fmtMoney } from '@/lib/recHighlights'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -15,6 +16,7 @@ interface FigmaCreative {
   country: string | null
   verdict: string
   spend: number | null
+  currency: string | null
   roas: number | null
   conversions: number | null
   headline: string | null
@@ -240,7 +242,7 @@ export default function FigmaCreativesPage() {
                   {ad.roas != null ? ad.roas.toFixed(2) : '—'}
                 </td>
                 <td className="px-4 py-3 text-right font-mono text-gray-700">
-                  {ad.spend != null ? ad.spend.toLocaleString() : '—'}
+                  {ad.spend != null ? fmtMoney(ad.spend, ad.currency || undefined) : '—'}
                 </td>
                 <td className="px-4 py-3 text-right font-mono text-gray-700">{ad.conversions ?? '—'}</td>
                 <td className="px-4 py-3 text-right">
