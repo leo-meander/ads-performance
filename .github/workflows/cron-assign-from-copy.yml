@@ -1,16 +1,12 @@
-# Daily 06:00 UTC — fill missing angle + keypoints on combos by reading the
+# Manual only — fill missing angle + keypoints on combos by reading the
 # ad copy text via Claude. Picks angle from existing only (never creates a
 # new angle). Reuses branch keypoints when possible; creates new ones for
 # points the copy raises that aren't covered yet.
 #
-# Runs after the 05:00 Creative combo metrics so newly-synced combos that
-# came in earlier (03:00 Ads Platform sync) get tagged the same day.
-# workflow_dispatch is on by default — bấm Run workflow để chạy ngay.
+# Schedule disabled — bấm Run workflow để chạy thủ công khi cần.
 name: Cron — Assign angles & keypoints (from copy)
 
 on:
-  schedule:
-    - cron: "0 6 * * *"
   workflow_dispatch:
 
 env:
