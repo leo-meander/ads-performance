@@ -87,17 +87,22 @@ def _country_col():
 
 
 def _no_double_count_filter():
-    """Avoid double-counting Search-style platforms that sync both campaign-
-    level and ad-group-level metrics rows for the same date.
+    """Keep only campaign-level metric rows (ad_set_id IS NULL).
 
-    Rule:
-      - Keep ad-set-level rows (ad_set_id IS NOT NULL).
-      - Keep campaign-level rows (ad_set_id IS NULL) only if the campaign has
-        no AdSets at all — i.e. PMax campaigns.
+    Why campaign-level only:
+    - Meta writes spend+impressions+clicks at every level (campaign/adset/ad)
+      with matching totals, BUT attributes conversions/revenue most completely
+      at the campaign level — adset/ad attribution drops events (Bread last 7d:
+      campaign=7 purchases, adset=0). Reading adset-level under-counts conv.
+    - Google Search currently writes only campaign-level rows in MetricsCache
+      (ad-group sync path exists but no live adset rows), so campaign-level
+      gives the full totals.
+    - Google PMax has no AdSet entities — campaign-level is the only choice.
+
+    Result: one consistent rule across platforms, matches the funnel chart
+    (campaigns.py:_aggregate_funnel) which has always used ad_set_id IS NULL.
     """
-    _AS = aliased(AdSet)
-    has_adset = exists().where(_AS.campaign_id == MetricsCache.campaign_id)
-    return or_(MetricsCache.ad_set_id.isnot(None), ~has_adset)
+    return MetricsCache.ad_set_id.is_(None)
 
 
 def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage, account_id, account_ids=None):

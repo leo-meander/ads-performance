@@ -420,6 +420,34 @@ def sync_meta_account(
 
     db.flush()  # ensure ad set IDs are available
 
+    # --- 2b. Backfill Campaign.country from AdSet.country ---
+    # Meta campaign names don't follow the XX_TA_... country prefix convention,
+    # so Campaign.country stays NULL from sync. But the dashboard's country
+    # filter (_country_col COALESCEs Campaign.country when AdSet doesn't join)
+    # needs a value at the campaign level — otherwise campaign-level metric
+    # rows (where Meta attributes conversions/revenue) get dropped by the
+    # `length(country) == 2` filter. Derive Campaign.country from its adsets:
+    # single distinct adset country → use that; multiple → 'ALL'.
+    from sqlalchemy import distinct as _distinct
+    meta_campaigns_this_account = (
+        db.query(Campaign).filter(Campaign.account_id == account.id, Campaign.platform == "meta").all()
+    )
+    for c in meta_campaigns_this_account:
+        adset_countries = [
+            r[0] for r in db.query(_distinct(AdSet.country))
+            .filter(AdSet.campaign_id == c.id, AdSet.country.isnot(None))
+            .all()
+        ]
+        if len(adset_countries) == 1:
+            new_country = adset_countries[0]
+        elif len(adset_countries) > 1:
+            new_country = "ALL"
+        else:
+            continue  # no adset country → leave Campaign.country unchanged
+        if c.country != new_country:
+            c.country = new_country
+    db.flush()
+
     # --- 3. Fetch and upsert ads ---
     try:
         raw_ads = fetch_ads(meta_account_id, access_token)
