@@ -14,7 +14,7 @@ Endpoints:
     DELETE /tactics/{id}               hard delete (rules cascade)
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -95,6 +95,177 @@ def list_presets_endpoint(
 ):
     """Return all known presets + their default configs. Drives the create dialog."""
     return _api_response(data=tactic_presets.list_presets())
+
+
+# ---------- Overview dashboard ----------
+
+# Action name → bucket. Anything else (evaluation_summary, send_alert handled separately) is ignored.
+_START_ACTIONS = {"enable_ad", "enable_adset", "enable_ad_set", "enable_campaign"}
+_PAUSE_ACTIONS = {"pause_ad", "pause_adset", "pause_ad_set", "pause_campaign"}
+
+
+def _bucket_for_action(log: ActionLog) -> str | None:
+    """Map an action_log row to one of the 5 dashboard buckets, or None to skip."""
+    if log.action == "evaluation_summary":
+        return None
+    if log.action in _START_ACTIONS:
+        return "start"
+    if log.action in _PAUSE_ACTIONS:
+        return "pause"
+    if log.action == "adjust_budget":
+        params = log.action_params if isinstance(log.action_params, dict) else {}
+        mult = params.get("budget_multiplier")
+        try:
+            m = float(mult) if mult is not None else 1.0
+        except (TypeError, ValueError):
+            m = 1.0
+        if m > 1:
+            return "increase_budget"
+        if m < 1:
+            return "decrease_budget"
+        return None
+    if log.action == "send_alert":
+        return "alert"
+    return None
+
+
+@router.get("/tactics/overview")
+def tactics_overview_endpoint(
+    days: int = 7,
+    account_id: str | None = None,
+    current_user: User = Depends(require_section("automation")),
+    db: Session = Depends(get_db),
+):
+    """Aggregate dashboard for the Tactics page.
+
+    Returns totals + daily breakdown + per-tactic counts over the last `days`
+    days, scoped to action_logs whose rule belongs to a Tactic (not standalone
+    rules). Action categories: start / pause / increase_budget / decrease_budget
+    / alert.
+    """
+    try:
+        ok, scoped_ids, err = scoped_account_ids(db, current_user, "automation")
+        if not ok:
+            return _api_response(error=err)
+
+        # Clamp days to a sane range so nobody asks for 10y of logs.
+        days = max(1, min(int(days or 7), 90))
+        today = date.today()
+        start_dt = datetime.combine(today - timedelta(days=days - 1), datetime.min.time(), tzinfo=timezone.utc)
+
+        # Pull tactics first (filtered by scope + account) so we know which
+        # rule_ids belong to which tactic — and which to drop entirely.
+        tq = db.query(Tactic)
+        if account_id:
+            tq = tq.filter(Tactic.account_id == account_id)
+        if scoped_ids is not None:
+            tq = tq.filter(
+                (Tactic.account_id.is_(None))
+                | (Tactic.account_id.in_(scoped_ids or ["__no_match__"]))
+            )
+        tactics = tq.all()
+        tactic_ids = [t.id for t in tactics]
+        if not tactic_ids:
+            return _api_response(data={
+                "totals": {"start": 0, "pause": 0, "increase_budget": 0, "decrease_budget": 0, "alert": 0, "total": 0},
+                "daily": [
+                    {"date": (today - timedelta(days=days - 1 - i)).isoformat(),
+                     "start": 0, "pause": 0, "increase_budget": 0, "decrease_budget": 0, "alert": 0}
+                    for i in range(days)
+                ],
+                "per_tactic": [],
+            })
+
+        rule_to_tactic: dict[str, str] = {}
+        rules = (
+            db.query(AutomationRule.id, AutomationRule.tactic_id)
+            .filter(AutomationRule.tactic_id.in_(tactic_ids))
+            .all()
+        )
+        for rid, tid in rules:
+            rule_to_tactic[rid] = tid
+        rule_ids = list(rule_to_tactic.keys())
+        if not rule_ids:
+            return _api_response(data={
+                "totals": {"start": 0, "pause": 0, "increase_budget": 0, "decrease_budget": 0, "alert": 0, "total": 0},
+                "daily": [
+                    {"date": (today - timedelta(days=days - 1 - i)).isoformat(),
+                     "start": 0, "pause": 0, "increase_budget": 0, "decrease_budget": 0, "alert": 0}
+                    for i in range(days)
+                ],
+                "per_tactic": [
+                    {"tactic_id": t.id, "automated_assets": 0, "daily_actions": [0] * days, "total_actions": 0}
+                    for t in tactics
+                ],
+            })
+
+        logs = (
+            db.query(ActionLog)
+            .filter(
+                ActionLog.rule_id.in_(rule_ids),
+                ActionLog.action != "evaluation_summary",
+                ActionLog.success.is_(True),
+                ActionLog.executed_at >= start_dt,
+            )
+            .all()
+        )
+
+        # Initialize aggregates
+        zero_bucket = {"start": 0, "pause": 0, "increase_budget": 0, "decrease_budget": 0, "alert": 0}
+        totals = dict(zero_bucket)
+        daily_rows = [
+            {"date": (today - timedelta(days=days - 1 - i)).isoformat(), **zero_bucket}
+            for i in range(days)
+        ]
+        # date string → index in daily_rows for O(1) lookup
+        date_idx = {row["date"]: i for i, row in enumerate(daily_rows)}
+
+        # Per-tactic: daily counts + distinct asset ids
+        per_tactic_daily: dict[str, list[int]] = {tid: [0] * days for tid in tactic_ids}
+        per_tactic_assets: dict[str, set[str]] = {tid: set() for tid in tactic_ids}
+        per_tactic_total: dict[str, int] = {tid: 0 for tid in tactic_ids}
+
+        for log in logs:
+            bucket = _bucket_for_action(log)
+            if not bucket:
+                continue
+            tid = rule_to_tactic.get(log.rule_id)
+            if not tid:
+                continue
+
+            # Daily bucket on the log's UTC date.
+            d_iso = log.executed_at.date().isoformat() if log.executed_at else None
+            if d_iso and d_iso in date_idx:
+                idx = date_idx[d_iso]
+                daily_rows[idx][bucket] += 1
+                per_tactic_daily[tid][idx] += 1
+
+            totals[bucket] += 1
+            per_tactic_total[tid] += 1
+
+            asset_id = log.ad_id or log.ad_set_id or log.campaign_id
+            if asset_id:
+                per_tactic_assets[tid].add(asset_id)
+
+        totals["total"] = sum(totals[k] for k in ("start", "pause", "increase_budget", "decrease_budget", "alert"))
+
+        per_tactic = [
+            {
+                "tactic_id": t.id,
+                "automated_assets": len(per_tactic_assets.get(t.id, set())),
+                "daily_actions": per_tactic_daily.get(t.id, [0] * days),
+                "total_actions": per_tactic_total.get(t.id, 0),
+            }
+            for t in tactics
+        ]
+
+        return _api_response(data={
+            "totals": totals,
+            "daily": daily_rows,
+            "per_tactic": per_tactic,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
 
 
 # ---------- CRUD ----------

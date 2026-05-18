@@ -1,7 +1,14 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Trash2, X, ChevronDown, ChevronRight, AlertCircle, CheckCircle2 } from 'lucide-react'
+import {
+  Plus, Trash2, X, ChevronDown, ChevronRight, AlertCircle, CheckCircle2,
+  Power, PowerOff, TrendingUp, TrendingDown, Bell,
+} from 'lucide-react'
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  LineChart, Line,
+} from 'recharts'
 import { useAuth } from '@/components/AuthContext'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -96,6 +103,31 @@ type Diagnostics = {
 
 type Account = { id: string; account_name: string; platform: string }
 
+type Overview = {
+  totals: {
+    start: number
+    pause: number
+    increase_budget: number
+    decrease_budget: number
+    alert: number
+    total: number
+  }
+  daily: Array<{
+    date: string
+    start: number
+    pause: number
+    increase_budget: number
+    decrease_budget: number
+    alert: number
+  }>
+  per_tactic: Array<{
+    tactic_id: string
+    automated_assets: number
+    daily_actions: number[]
+    total_actions: number
+  }>
+}
+
 const REVERT_LABELS: Record<string, string> = {
   none: 'Permanent',
   next_day: 'Auto-revert next day',
@@ -158,6 +190,14 @@ export default function TacticsPage() {
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<Record<string, { detail?: TacticDetail; diagnostics?: Diagnostics } | 'loading'>>({})
 
+  // Account filter (table + overview both read this).
+  const [filterAccountId, setFilterAccountId] = useState<string>('')
+
+  // Overview dashboard state.
+  const [overview, setOverview] = useState<Overview | null>(null)
+  const [overviewDays, setOverviewDays] = useState<7 | 30>(7)
+  const [overviewLoading, setOverviewLoading] = useState(false)
+
   // Create-tactic form state.
   const [showForm, setShowForm] = useState(false)
   const [formPreset, setFormPreset] = useState('')
@@ -188,6 +228,17 @@ export default function TacticsPage() {
       .finally(() => setLoading(false))
   }
 
+  const fetchOverview = (days: number, accountId: string) => {
+    setOverviewLoading(true)
+    const qs = new URLSearchParams({ days: String(days) })
+    if (accountId) qs.set('account_id', accountId)
+    fetch(`${API_BASE}/api/tactics/overview?${qs.toString()}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(data => { if (data.success) setOverview(data.data) })
+      .catch(() => {})
+      .finally(() => setOverviewLoading(false))
+  }
+
   useEffect(() => {
     fetchTactics()
     fetch(`${API_BASE}/api/tactics/presets`, { credentials: 'include' })
@@ -199,6 +250,23 @@ export default function TacticsPage() {
       .then(data => { if (data.success) setAccounts(data.data) })
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    fetchOverview(overviewDays, filterAccountId)
+  }, [overviewDays, filterAccountId])
+
+  // Client-side account filter — tactics list comes back unfiltered so we
+  // don't have to re-query when the user toggles the dropdown.
+  const filteredTactics = useMemo(() => {
+    if (!filterAccountId) return tactics
+    return tactics.filter(t => t.account_id === filterAccountId)
+  }, [tactics, filterAccountId])
+
+  const perTacticById = useMemo(() => {
+    const map: Record<string, Overview['per_tactic'][number]> = {}
+    overview?.per_tactic.forEach(p => { map[p.tactic_id] = p })
+    return map
+  }, [overview])
 
   const resetForm = () => {
     setFormPreset('')
@@ -336,6 +404,11 @@ export default function TacticsPage() {
     setCustomConditions(prev => prev.filter((_, i) => i !== idx))
   }
 
+  const tooltipDateLabel = (iso: string) => {
+    const d = new Date(`${iso}T00:00:00`)
+    return d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' })
+  }
+
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-4">
@@ -357,11 +430,129 @@ export default function TacticsPage() {
         )}
       </div>
 
+      {/* Overview dashboard: what tactics did over the last N days. */}
+      <div className="border rounded-lg bg-white p-5 mb-4">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-semibold">What your automations did for you</h2>
+          <div className="flex items-center gap-2 text-xs text-gray-600">
+            <span>Timeframe:</span>
+            <select
+              value={overviewDays}
+              onChange={e => setOverviewDays(parseInt(e.target.value, 10) as 7 | 30)}
+              className="border rounded px-2 py-1 text-xs"
+            >
+              <option value={7}>Last 7 days</option>
+              <option value={30}>Last 30 days</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
+          <SummaryCard
+            label="Start"
+            icon={<Power className="w-4 h-4 text-blue-600" />}
+            value={overview?.totals.start ?? 0}
+            loading={overviewLoading}
+          />
+          <SummaryCard
+            label="Pause"
+            icon={<PowerOff className="w-4 h-4 text-orange-500" />}
+            value={overview?.totals.pause ?? 0}
+            loading={overviewLoading}
+          />
+          <SummaryCard
+            label="Increase Budget"
+            icon={<TrendingUp className="w-4 h-4 text-green-600" />}
+            value={overview?.totals.increase_budget ?? 0}
+            loading={overviewLoading}
+          />
+          <SummaryCard
+            label="Decrease Budget"
+            icon={<TrendingDown className="w-4 h-4 text-red-500" />}
+            value={overview?.totals.decrease_budget ?? 0}
+            loading={overviewLoading}
+          />
+          <SummaryCard
+            label="Alerts"
+            icon={<Bell className="w-4 h-4 text-violet-600" />}
+            value={overview?.totals.alert ?? 0}
+            loading={overviewLoading}
+          />
+          <SummaryCard
+            label="Total actions"
+            icon={<CheckCircle2 className="w-4 h-4 text-gray-700" />}
+            value={overview?.totals.total ?? 0}
+            loading={overviewLoading}
+            emphasis
+          />
+        </div>
+
+        <div className="h-56">
+          {overview && (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={overview.daily} margin={{ top: 6, right: 12, left: -10, bottom: 0 }}>
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 11 }}
+                  tickFormatter={(d: string) => {
+                    const dt = new Date(`${d}T00:00:00`)
+                    return `${dt.getDate().toString().padStart(2, '0')}/${(dt.getMonth() + 1).toString().padStart(2, '0')}`
+                  }}
+                />
+                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                <Tooltip
+                  cursor={{ fill: 'rgba(0,0,0,0.04)' }}
+                  contentStyle={{ fontSize: 12 }}
+                  labelFormatter={(label: string) => tooltipDateLabel(label)}
+                  formatter={(value: number, name: string) => {
+                    const labels: Record<string, string> = {
+                      start: 'Start',
+                      pause: 'Pause',
+                      increase_budget: 'Increase Budget',
+                      decrease_budget: 'Decrease Budget',
+                      alert: 'Alerts',
+                    }
+                    return [value, labels[name] || name]
+                  }}
+                />
+                <Bar dataKey="start" stackId="a" fill="#2563eb" />
+                <Bar dataKey="pause" stackId="a" fill="#f97316" />
+                <Bar dataKey="increase_budget" stackId="a" fill="#16a34a" />
+                <Bar dataKey="decrease_budget" stackId="a" fill="#ef4444" />
+                <Bar dataKey="alert" stackId="a" fill="#8b5cf6" />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+
+      {/* Account filter for the tactics table below. */}
+      <div className="flex items-center gap-3 mb-3">
+        <label className="text-xs text-gray-600">Account:</label>
+        <select
+          value={filterAccountId}
+          onChange={e => setFilterAccountId(e.target.value)}
+          className="border rounded px-2 py-1 text-sm bg-white"
+        >
+          <option value="">All accounts</option>
+          {accounts.map(a => (
+            <option key={a.id} value={a.id}>
+              {a.account_name} ({a.platform})
+            </option>
+          ))}
+        </select>
+        <span className="text-xs text-gray-500">
+          {filteredTactics.length} of {tactics.length} tactics
+        </span>
+      </div>
+
       {loading ? (
         <div className="p-8 text-center text-gray-400">Loading…</div>
-      ) : tactics.length === 0 ? (
+      ) : filteredTactics.length === 0 ? (
         <div className="p-8 text-center text-gray-400 border border-dashed rounded">
-          No tactics yet. Create one from a preset.
+          {tactics.length === 0
+            ? 'No tactics yet. Create one from a preset.'
+            : 'No tactics for this account.'}
         </div>
       ) : (
         <div className="border rounded overflow-hidden bg-white">
@@ -374,13 +565,15 @@ export default function TacticsPage() {
                 <th className="text-left px-3 py-2">Account</th>
                 <th className="text-left px-3 py-2">Revert</th>
                 <th className="text-left px-3 py-2">Rules</th>
+                <th className="text-left px-3 py-2">Assets</th>
+                <th className="text-left px-3 py-2">Action Frequency ({overviewDays}d)</th>
                 <th className="text-left px-3 py-2">Last run</th>
                 <th className="text-left px-3 py-2">Active</th>
                 <th className="text-right px-3 py-2"></th>
               </tr>
             </thead>
             <tbody>
-              {tactics.map(t => {
+              {filteredTactics.map(t => {
                 const preset = presets.find(p => p.preset_type === t.preset_type)
                 const exp = expanded[t.id]
                 const isLoading = exp === 'loading'
@@ -400,6 +593,15 @@ export default function TacticsPage() {
                         {REVERT_LABELS[preset?.revert_policy || 'none']}
                       </td>
                       <td className="px-3 py-2 text-gray-600">{t.rule_count}</td>
+                      <td className="px-3 py-2 text-gray-600">
+                        {perTacticById[t.id]?.automated_assets ?? 0}
+                      </td>
+                      <td className="px-3 py-2">
+                        <SparklineCell
+                          daily={perTacticById[t.id]?.daily_actions}
+                          total={perTacticById[t.id]?.total_actions ?? 0}
+                        />
+                      </td>
                       <td className="px-3 py-2 text-gray-600 text-xs">
                         {t.last_run_at ? new Date(t.last_run_at).toLocaleString() : '—'}
                       </td>
@@ -425,12 +627,12 @@ export default function TacticsPage() {
                     </tr>
                     {isLoading && (
                       <tr key={`${t.id}-loading`} className="bg-gray-50 border-t">
-                        <td colSpan={9} className="px-6 py-3 text-xs text-gray-500">Loading…</td>
+                        <td colSpan={11} className="px-6 py-3 text-xs text-gray-500">Loading…</td>
                       </tr>
                     )}
                     {expData && (
                       <tr key={`${t.id}-detail`} className="bg-gray-50 border-t">
-                        <td colSpan={9} className="px-6 py-4 text-xs">
+                        <td colSpan={11} className="px-6 py-4 text-xs">
                           <div className="grid grid-cols-2 gap-6">
                             <div>
                               <div className="font-medium text-gray-700 mb-1">Config</div>
@@ -749,6 +951,61 @@ export default function TacticsPage() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function SummaryCard({
+  label,
+  icon,
+  value,
+  loading,
+  emphasis,
+}: {
+  label: string
+  icon: React.ReactNode
+  value: number
+  loading?: boolean
+  emphasis?: boolean
+}) {
+  return (
+    <div className={`border rounded-md px-3 py-2 ${emphasis ? 'bg-gray-50' : 'bg-white'}`}>
+      <div className="flex items-center gap-1.5 text-xs text-gray-600">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="mt-0.5 flex items-baseline justify-between">
+        <span className={`font-semibold ${emphasis ? 'text-xl' : 'text-lg'}`}>
+          {loading ? '…' : value.toLocaleString()}
+        </span>
+        <span className="text-[10px] text-gray-400">Actions triggered</span>
+      </div>
+    </div>
+  )
+}
+
+function SparklineCell({ daily, total }: { daily?: number[]; total: number }) {
+  if (!daily || daily.length === 0 || total === 0) {
+    return <span className="text-xs text-gray-400">—</span>
+  }
+  const data = daily.map((v, i) => ({ i, v }))
+  return (
+    <div className="flex items-center gap-2">
+      <div className="w-24 h-8">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
+            <Line
+              type="monotone"
+              dataKey="v"
+              stroke="#2563eb"
+              strokeWidth={1.5}
+              dot={false}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <span className="text-xs text-gray-600 tabular-nums">{total}</span>
     </div>
   )
 }
