@@ -598,6 +598,8 @@ def compute_branch_percentile(
 
     date_from = date.today() - timedelta(days=days)
 
+    # Baseline must reflect the currently-running population only — paused/archived
+    # entities would drag P75/P25 toward stale historical data and skew the bar.
     if entity_level == "ad":
         q = (
             db.query(MetricsCache.ad_id, func.avg(col))
@@ -605,6 +607,8 @@ def compute_branch_percentile(
             .join(Campaign, Campaign.id == Ad.campaign_id)
             .filter(
                 Ad.account_id == account_id,
+                Ad.status == "ACTIVE",
+                Campaign.status == "ACTIVE",
                 MetricsCache.date >= date_from,
                 MetricsCache.ad_id.isnot(None),
             )
@@ -619,6 +623,8 @@ def compute_branch_percentile(
             .join(Campaign, Campaign.id == AdSet.campaign_id)
             .filter(
                 AdSet.account_id == account_id,
+                AdSet.status == "ACTIVE",
+                Campaign.status == "ACTIVE",
                 MetricsCache.date >= date_from,
                 MetricsCache.ad_set_id.isnot(None),
                 MetricsCache.ad_id.is_(None),
@@ -633,6 +639,7 @@ def compute_branch_percentile(
             .join(Campaign, Campaign.id == MetricsCache.campaign_id)
             .filter(
                 Campaign.account_id == account_id,
+                Campaign.status == "ACTIVE",
                 MetricsCache.date >= date_from,
                 MetricsCache.campaign_id.isnot(None),
                 MetricsCache.ad_set_id.is_(None),
