@@ -459,7 +459,14 @@ def fetch_asset_group_assets(customer_id: str) -> list[dict]:
 
 
 def _parse_metrics_rows(rows: list[Any], entity_id_field: str) -> list[dict]:
-    """Parse metrics rows from GAQL response into normalized dicts."""
+    """Parse spend/impressions/clicks rows from GAQL response into normalized dicts.
+
+    Conversions and revenue are NOT read from the main query — they come from
+    a separate PURCHASE-category-filtered query merged in by `_merge_purchases`.
+    This matches Meta's `omni_purchase` semantic and avoids inflated counts
+    from accounts that flag non-purchase actions (page view, form submit, etc.)
+    as primary conversions.
+    """
     results = []
     for row in rows:
         m = row.metrics
@@ -468,8 +475,6 @@ def _parse_metrics_rows(rows: list[Any], entity_id_field: str) -> list[dict]:
         spend = _micros_to_currency(m.cost_micros) or 0
         impressions = m.impressions or 0
         clicks = m.clicks or 0
-        conversions = m.conversions or 0
-        revenue = m.conversions_value or 0
 
         # Get entity ID dynamically
         if entity_id_field == "campaign":
@@ -489,13 +494,14 @@ def _parse_metrics_rows(rows: list[Any], entity_id_field: str) -> list[dict]:
             "impressions": impressions,
             "clicks": clicks,
             "ctr": (clicks / impressions * 100) if impressions > 0 else 0,
-            "conversions": int(conversions),
-            "revenue": float(revenue),
+            # Filled by _merge_purchases from a separate PURCHASE-only fetch.
+            "conversions": 0,
+            "revenue": 0.0,
             # Google only has website conversions — no offline upload split.
-            "revenue_website": float(revenue),
+            "revenue_website": 0.0,
             "revenue_offline": 0.0,
-            "roas": float(revenue) / spend if spend > 0 else 0,
-            "cpa": spend / conversions if conversions > 0 else None,
+            "roas": 0,
+            "cpa": None,
             "cpc": spend / clicks if clicks > 0 else None,
             "frequency": None,  # Google doesn't have frequency like Meta
             "add_to_cart": 0,
@@ -512,6 +518,127 @@ def _parse_metrics_rows(rows: list[Any], entity_id_field: str) -> list[dict]:
         results.append(result)
 
     return results
+
+
+def _fetch_purchase_metrics(
+    customer_id: str,
+    *,
+    level: str,
+    date_from: date,
+    date_to: date,
+    by_country: bool = False,
+) -> dict[tuple, dict]:
+    """Fetch PURCHASE-only conversions/revenue per entity-date.
+
+    Why a separate query: Google's `metrics.conversions` returned in the main
+    query is account-side-configurable — it sums every action the user marked
+    as "include in conversions". Some branches flag only Booking/Purchase
+    (clean), others flag page views or form submits too (noise). To match
+    Meta's `omni_purchase` semantic and make cross-branch comparisons valid,
+    we filter to `segments.conversion_action_category = PURCHASE`.
+
+    Returns dict keyed by (entity_id, date_str) — or (entity_id, date_str,
+    country) when `by_country=True` — with summed conversions and revenue
+    across all PURCHASE-category actions in scope.
+    """
+    customer_id = customer_id.replace("-", "")
+    client = _get_client()
+
+    if level == "campaign":
+        entity_select = "campaign.id"
+        from_clause = "user_location_view" if by_country else "campaign"
+    elif level == "ad_group":
+        entity_select = "ad_group.id"
+        from_clause = "ad_group"
+    elif level == "ad_group_ad":
+        entity_select = "ad_group_ad.ad.id"
+        from_clause = "ad_group_ad"
+    else:
+        raise ValueError(f"Unknown level: {level}")
+
+    country_select = ",\n            segments.geo_target_country" if by_country else ""
+
+    query = f"""
+        SELECT
+            {entity_select},
+            segments.date{country_select},
+            metrics.conversions,
+            metrics.conversions_value
+        FROM {from_clause}
+        WHERE segments.date BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
+            AND segments.conversion_action_category = 'PURCHASE'
+    """
+
+    try:
+        rows = _search_stream(client, customer_id, query)
+    except GoogleAdsException as ex:
+        logger.warning(
+            "Google Ads API error fetching PURCHASE metrics (%s) for %s: %s — "
+            "returning empty (conversions will be 0 for this batch)",
+            level, customer_id, ex.failure,
+        )
+        return {}
+    except Exception:
+        logger.exception(
+            "Failed to fetch PURCHASE metrics (%s) for %s — returning empty",
+            level, customer_id,
+        )
+        return {}
+
+    out: dict[tuple, dict] = {}
+    for row in rows:
+        if level == "campaign":
+            entity_id = str(row.campaign.id)
+        elif level == "ad_group":
+            entity_id = str(row.ad_group.id)
+        else:
+            entity_id = str(row.ad_group_ad.ad.id)
+
+        date_str = row.segments.date
+        if by_country:
+            geo_resource = row.segments.geo_target_country or ""
+            criterion_id = geo_resource.split("/")[-1] if geo_resource else ""
+            country = _GEO_TARGET_TO_ISO2.get(criterion_id, criterion_id)
+            if not country:
+                continue
+            key: tuple = (entity_id, date_str, country)
+        else:
+            key = (entity_id, date_str)
+
+        m = row.metrics
+        bucket = out.setdefault(key, {"conversions": 0, "revenue": 0.0})
+        bucket["conversions"] += int(m.conversions or 0)
+        bucket["revenue"] += float(m.conversions_value or 0)
+    return out
+
+
+def _merge_purchases(
+    results: list[dict],
+    purchases: dict[tuple, dict],
+    *,
+    by_country: bool = False,
+) -> None:
+    """In-place fill conversions/revenue/roas/cpa on parsed result rows."""
+    for r in results:
+        if by_country:
+            key: tuple = (r["campaign_id"], r["date"], r["country"])
+        else:
+            entity_id = r.get("entity_id") or r["campaign_id"]
+            key = (entity_id, r["date"])
+        p = purchases.get(key)
+        if not p:
+            continue
+        conv = p["conversions"]
+        rev = p["revenue"]
+        spend = r["spend"] or 0
+        r["conversions"] = conv
+        r["revenue"] = float(rev)
+        if "revenue_website" in r:
+            r["revenue_website"] = float(rev)
+        if "roas" in r:
+            r["roas"] = (rev / spend) if spend > 0 else 0
+        if "cpa" in r:
+            r["cpa"] = (spend / conv) if conv > 0 else None
 
 
 def fetch_campaign_metrics(
@@ -534,9 +661,7 @@ def fetch_campaign_metrics(
             segments.date,
             metrics.cost_micros,
             metrics.impressions,
-            metrics.clicks,
-            metrics.conversions,
-            metrics.conversions_value
+            metrics.clicks
         FROM campaign
         WHERE segments.date BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
             AND campaign.status != 'REMOVED'
@@ -545,6 +670,10 @@ def fetch_campaign_metrics(
     try:
         rows = _search_stream(client, customer_id, query)
         results = _parse_metrics_rows(rows, "campaign")
+        purchases = _fetch_purchase_metrics(
+            customer_id, level="campaign", date_from=date_from, date_to=date_to,
+        )
+        _merge_purchases(results, purchases)
         logger.info(
             "Fetched %d campaign metric rows from Google account %s (%s to %s)",
             len(results), customer_id, date_from, date_to,
@@ -579,9 +708,7 @@ def fetch_ad_group_metrics(
             segments.date,
             metrics.cost_micros,
             metrics.impressions,
-            metrics.clicks,
-            metrics.conversions,
-            metrics.conversions_value
+            metrics.clicks
         FROM ad_group
         WHERE segments.date BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
             AND ad_group.status != 'REMOVED'
@@ -590,6 +717,10 @@ def fetch_ad_group_metrics(
     try:
         rows = _search_stream(client, customer_id, query)
         results = _parse_metrics_rows(rows, "ad_group")
+        purchases = _fetch_purchase_metrics(
+            customer_id, level="ad_group", date_from=date_from, date_to=date_to,
+        )
+        _merge_purchases(results, purchases)
         logger.info("Fetched %d ad-group metric rows from Google account %s", len(results), customer_id)
         return results
     except GoogleAdsException as ex:
@@ -622,9 +753,7 @@ def fetch_ad_metrics(
             segments.date,
             metrics.cost_micros,
             metrics.impressions,
-            metrics.clicks,
-            metrics.conversions,
-            metrics.conversions_value
+            metrics.clicks
         FROM ad_group_ad
         WHERE segments.date BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
             AND ad_group_ad.status != 'REMOVED'
@@ -633,6 +762,10 @@ def fetch_ad_metrics(
     try:
         rows = _search_stream(client, customer_id, query)
         results = _parse_metrics_rows(rows, "ad_group_ad")
+        purchases = _fetch_purchase_metrics(
+            customer_id, level="ad_group_ad", date_from=date_from, date_to=date_to,
+        )
+        _merge_purchases(results, purchases)
         logger.info("Fetched %d ad metric rows from Google account %s", len(results), customer_id)
         return results
     except GoogleAdsException as ex:
@@ -692,9 +825,7 @@ def fetch_campaign_user_country_metrics(
             segments.geo_target_country,
             metrics.cost_micros,
             metrics.impressions,
-            metrics.clicks,
-            metrics.conversions,
-            metrics.conversions_value
+            metrics.clicks
         FROM user_location_view
         WHERE segments.date BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
             AND campaign.status != 'REMOVED'
@@ -714,8 +845,8 @@ def fetch_campaign_user_country_metrics(
 
             m = row.metrics
             spend = _micros_to_currency(m.cost_micros) or 0
-            revenue = float(m.conversions_value or 0)
 
+            # conversions/revenue_website filled by _merge_purchases (PURCHASE-only).
             results.append({
                 "campaign_id": str(row.campaign.id),
                 "date": row.segments.date,
@@ -723,10 +854,17 @@ def fetch_campaign_user_country_metrics(
                 "spend": spend,
                 "impressions": m.impressions or 0,
                 "clicks": m.clicks or 0,
-                "conversions": int(m.conversions or 0),
-                "revenue_website": revenue,
+                "conversions": 0,
+                "revenue_website": 0.0,
                 "revenue_offline": 0.0,
             })
+
+        purchases = _fetch_purchase_metrics(
+            customer_id, level="campaign", date_from=date_from, date_to=date_to,
+            by_country=True,
+        )
+        _merge_purchases(results, purchases, by_country=True)
+
         logger.info(
             "Fetched %d campaign×user-country rows from Google account %s",
             len(results), customer_id,
@@ -740,12 +878,14 @@ def fetch_campaign_user_country_metrics(
         raise
 
 
-# Conversion action name patterns → metrics_cache column
+# Conversion action name patterns → metrics_cache column.
+# NOTE: "purchase" intentionally absent — the main per-entity metrics queries
+# already filter by `conversion_action_category = PURCHASE` and write the
+# count into `conversions`. Adding it here would double-count.
 _CONVERSION_ACTION_MAP = {
     "add_to_cart": "add_to_cart",
     "begin_checkout": "checkouts",
     "checkout": "checkouts",
-    "purchase": "conversions",  # fallback — already counted in main metrics
     "lead": "leads",
     "website visits": "landing_page_views",
     "website_visit": "landing_page_views",
@@ -797,7 +937,11 @@ def fetch_conversion_action_metrics(
         for row in rows:
             action_name = row.segments.conversion_action_name
             column = _match_conversion_column(action_name)
-            if column and column != "conversions":  # skip purchase — already in main metrics
+            # `conversions` column is filled by the PURCHASE-filtered main
+            # query (see fetch_campaign_metrics + _fetch_purchase_metrics);
+            # the action map intentionally excludes "purchase" so this branch
+            # only sees secondary actions (add_to_cart, lead, etc.).
+            if column:
                 results.append({
                     "campaign_id": str(row.campaign.id),
                     "date": row.segments.date,
