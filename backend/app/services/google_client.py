@@ -558,10 +558,15 @@ def _fetch_purchase_metrics(
 
     country_select = ",\n            segments.geo_target_country" if by_country else ""
 
+    # `segments.conversion_action_category` must appear in SELECT when used in
+    # WHERE (Google Ads API rule). The WHERE clause still narrows to PURCHASE
+    # only, so we get one row per entity-date (or per entity-date-country),
+    # not one per category. The Python aggregator below dedupes defensively.
     query = f"""
         SELECT
             {entity_select},
-            segments.date{country_select},
+            segments.date,
+            segments.conversion_action_category{country_select},
             metrics.conversions,
             metrics.conversions_value
         FROM {from_clause}
