@@ -139,9 +139,24 @@ app.include_router(winning_ads.router, prefix="/api", tags=["winning-ads"])
 
 @app.get("/health")
 def health_check():
+    # Include the git SHA when the host (Zeabur/CI) sets one, so we can verify
+    # which commit is actually serving without needing access to deploy logs.
+    import os
+    sha = (
+        os.getenv("ZEABUR_GIT_COMMIT_SHA")
+        or os.getenv("RAILWAY_GIT_COMMIT_SHA")
+        or os.getenv("RENDER_GIT_COMMIT")
+        or os.getenv("VERCEL_GIT_COMMIT_SHA")
+        or os.getenv("GIT_SHA")
+        or "unknown"
+    )
     return {
         "success": True,
-        "data": {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()},
+        "data": {
+            "status": "ok",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "git_sha": sha,
+        },
         "error": None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
