@@ -26,6 +26,7 @@ from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
 from app.models.creative_visual_tag import CreativeVisualTag
+from app.models.figma import FigmaJob
 from app.models.user import User
 
 router = APIRouter()
@@ -300,7 +301,7 @@ def tag_search(
     target_audience: str | None = None,
     country: str | None = None,
     verdict: str | None = None,
-    figma_only: bool = Query(False, description="Only combos whose material has a Figma source"),
+    figma_only: bool = Query(False, description="Only combos referenced by a figma_jobs row (combo_id = figma_jobs.source_combo_id)"),
     sort_by: str = Query("roas", description="roas | spend | conversions"),
     limit: int = Query(25, le=100),
     offset: int = Query(0, ge=0),
@@ -312,9 +313,10 @@ def tag_search(
     Tag matching runs against the combo's material's creative_visual_tags
     (Claude-vision-derived). The keyword does a case-insensitive ILIKE over
     ad_name, headline and body_text. Branch / TA / country / verdict scope as
-    plain filters. `figma_only` restricts to materials with a Figma source
-    (file_url is a figma.com link or figma_file_key is wired). Results are
-    sorted by the chosen performance column.
+    plain filters. `figma_only` restricts to combos that have at least one
+    figma_jobs row pointing at them (the canonical combo↔Figma bridge per
+    meta_creative_builder). Results are sorted by the chosen performance
+    column.
     """
     try:
         ok, scoped_ids, err = scoped_account_ids(
@@ -350,12 +352,17 @@ def tag_search(
         if matched_material_ids is not None:
             base = base.filter(AdCombo.material_id.in_(matched_material_ids))
         if figma_only:
-            base = base.filter(
-                or_(
-                    AdMaterial.file_url.ilike("%figma.com%"),
-                    AdMaterial.figma_file_key.isnot(None),
-                )
+            # A combo is "Figma-sourced" iff a figma_jobs row points at its
+            # combo_id. The legacy check on AdMaterial.figma_file_key /
+            # file_url LIKE '%figma.com%' was a designer-only manual flag that
+            # no pipeline auto-populates, so it always returned 0 rows.
+            figma_combo_subq = (
+                db.query(FigmaJob.source_combo_id)
+                .filter(FigmaJob.source_combo_id.isnot(None))
+                .distinct()
+                .subquery()
             )
+            base = base.filter(AdCombo.combo_id.in_(figma_combo_subq))
         if q:
             like = f"%{q}%"
             base = base.filter(
