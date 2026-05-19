@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.reservation import Reservation
 from app.services.pms_client import fetch_reservations
+from app.utils.country_normalize import normalize_country_to_iso
 
 logger = logging.getLogger(__name__)
 
@@ -176,12 +177,14 @@ def sync_reservations(
                     Reservation.reservation_number == str(res_number),
                 ).first()
 
+                raw_country = raw.get("country") or None
                 fields = {
                     "reservation_date": _parse_date(raw.get("reservation_date")),
                     "check_in_date": _parse_date(raw.get("check_in_date")),
                     "check_out_date": _parse_date(raw.get("check_out_date")),
                     "grand_total": _parse_numeric(raw.get("grand_total")),
-                    "country": raw.get("country") or None,
+                    "country": raw_country,
+                    "country_iso": normalize_country_to_iso(raw_country),
                     "name": raw.get("name") or None,
                     "email": raw.get("email") or None,
                     "status": raw.get("status") or None,

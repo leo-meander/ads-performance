@@ -5,9 +5,17 @@ Matching methodology (as used in the team's manual Sheet):
   - Two passes per ads row:
       website purchase value  → search reservations with source = Website/Booking Engine
       offline purchase value  → search reservations with other sources (OTA, Walk-in, ...)
-  - Candidates are restricted to the same date, branch, and country.
+  - Candidates are restricted to the same date, branch, and country (ISO-2).
   - A match occurs when the sum of grand_totals equals the ads revenue
     within AMOUNT_TOLERANCE.
+
+Country comparison: both sides are ISO-2. Ads-side ISO comes from Meta/Google
+breakdowns; reservation-side ISO is normalised at sync time from Cloudbeds'
+mixed-format country field. When a reservation has country_iso = NULL (junk
+PMS value: "Unknown", "00", missing), we treat it as country-unknown and
+allow it to match any ad ISO — this preserves matches for OTA bookings where
+Cloudbeds didn't capture nationality, while strict ISO equality is enforced
+for the rest.
 
 Data source:
   - Meta: ad_country_metrics rows at ad_id × date × country level (pulled via
@@ -38,6 +46,17 @@ HOTEL_BRANCH_KEYS = ["Saigon", "Taipei", "1948", "Osaka", "Oani"]
 AMOUNT_TOLERANCE = 0.5
 WEBSITE_SOURCE = "website/booking engine"
 
+# country_match_method values stored on BookingMatch:
+#   - "exact":  every matched reservation's country_iso == ads_country
+#   - "null_country": every matched reservation has country_iso = NULL
+#       (PMS didn't capture nationality — common for OTA/Walk-in bookings).
+#       Treated as low-confidence in the UI.
+#   - "mixed": a mix of exact-ISO and null-ISO reservations within the same
+#       match (only happens on multi-reservation combo matches).
+METHOD_EXACT = "exact"
+METHOD_NULL = "null_country"
+METHOD_MIXED = "mixed"
+
 
 def normalize_branch(name: str | None) -> str | None:
     if not name:
@@ -53,69 +72,33 @@ def normalize_branch(name: str | None) -> str | None:
     return None
 
 
-# ISO-2 → lower-case country-name substrings we accept on Reservation.country.
-# PMS returns human names ("Vietnam", "Japan"), ads return ISO codes ("VN"),
-# so we need a bridge. Expand as new markets appear.
-_ISO_TO_NAMES: dict[str, tuple[str, ...]] = {
-    "VN": ("vietnam", "viet nam", "việt nam"),
-    "JP": ("japan", "nhật", "nippon"),
-    "TW": ("taiwan", "taipei", "đài loan"),
-    "HK": ("hong kong", "hk"),
-    "SG": ("singapore",),
-    "US": ("united states", "usa", "u.s.a", "america"),
-    "GB": ("united kingdom", "uk", "britain", "england"),
-    "KR": ("korea", "south korea"),
-    "CN": ("china", "中国"),
-    "MY": ("malaysia",),
-    "TH": ("thailand",),
-    "PH": ("philippines",),
-    "ID": ("indonesia",),
-    "AU": ("australia",),
-    "CA": ("canada",),
-    "FR": ("france",),
-    "DE": ("germany", "deutschland"),
-    "NL": ("netherlands",),
-    "IT": ("italy",),
-    "ES": ("spain",),
-    "CH": ("switzerland",),
-    "RU": ("russia",),
-    "IN": ("india",),
-    "AE": ("united arab emirates", "uae"),
-    "SA": ("saudi arabia",),
-    "NZ": ("new zealand",),
-    "IL": ("israel",),
-    "NO": ("norway",),
-    "SE": ("sweden",),
-    "DK": ("denmark",),
-    "FI": ("finland",),
-    "BR": ("brazil",),
-    "MX": ("mexico",),
-    "PL": ("poland",),
-    "TR": ("turkey",),
-    "PT": ("portugal",),
-    "AT": ("austria",),
-    "BE": ("belgium",),
-    "IE": ("ireland",),
-    "GR": ("greece",),
-    "CY": ("cyprus",),
-    "KH": ("cambodia",),
-    "LA": ("laos",),
-    "MM": ("myanmar", "burma"),
-    "EG": ("egypt",),
-}
+def country_iso_matches_reservation(ads_iso: str | None, reservation: Reservation) -> bool:
+    """Strict ISO-2 equality between ads country and reservation country.
 
-
-def country_iso_matches_reservation(iso: str | None, reservation_country: str | None) -> bool:
-    """Loose compare between an ads-side ISO-2 code and a PMS-side country string."""
-    if not iso or not reservation_country:
+    Returns True only when both sides have a populated ISO that matches.
+    A reservation with country_iso = NULL is *not* considered a match here —
+    callers handle the null-country case separately so it can be flagged in
+    the match metadata.
+    """
+    if not ads_iso or not reservation.country_iso:
         return False
-    iso_upper = iso.upper()
-    res_lower = reservation_country.lower()
-    names = _ISO_TO_NAMES.get(iso_upper, ())
-    if any(n in res_lower for n in names):
-        return True
-    # Last resort: ISO code present as a token in the reservation country.
-    return iso_upper in reservation_country.upper().split()
+    return ads_iso.upper() == reservation.country_iso.upper()
+
+
+def _classify_match_method(reservations: list[Reservation], ads_iso: str | None) -> str:
+    """Tag a successful match with how its country comparison resolved."""
+    has_exact = False
+    has_null = False
+    for r in reservations:
+        if r.country_iso and ads_iso and r.country_iso.upper() == ads_iso.upper():
+            has_exact = True
+        elif not r.country_iso:
+            has_null = True
+    if has_exact and has_null:
+        return METHOD_MIXED
+    if has_exact:
+        return METHOD_EXACT
+    return METHOD_NULL
 
 
 def _find_combination(
@@ -216,6 +199,7 @@ def _build_booking_match(
         ),
         reservation_sources=", ".join(r.source or "" for r in matched),
         matched_country=", ".join(r.country or "" for r in matched),
+        country_match_method=_classify_match_method(matched, row.get("country")),
         branch=branch_key,
         match_result=result_label,
         matched_at=now,
@@ -237,7 +221,9 @@ def run_matching(
       4. For each ads row, run two passes:
            - website revenue → website-source reservations
            - offline revenue → non-website-source reservations
-         Country filter applied per pass.
+         Country filter (strict ISO-2) applied per pass. Reservations with
+         country_iso = NULL count as "unknown country" and can match any ad
+         ISO with a `null_country` confidence tag.
       5. Persist one BookingMatch per successful pass.
     """
     db.query(BookingMatch).filter(
@@ -330,27 +316,34 @@ def run_matching(
             key = (row["date"], branch_key, kind)
             candidates_all = res_by_key.get(key, [])
 
-            # Narrow by country: if a candidate has a matching country use it;
-            # if none match the ISO code, fall back to the full pool so we can
-            # still match when PMS country is missing/unknown.
-            with_country = [
+            # Country filter (strict ISO-2 vs ISO-2):
+            #   - exact ISO match  → high-confidence pool.
+            #   - country_iso NULL → "unknown" pool. PMS didn't capture
+            #     nationality (~14% of rows), so we let these match any ad
+            #     country, but tag the result as low-confidence in the UI.
+            # Reservations whose ISO is *different* from the ad ISO are
+            # excluded entirely — they are not the right customer.
+            ads_iso = (row.get("country") or "").upper() or None
+            exact_pool = [
                 r for r in candidates_all
-                if country_iso_matches_reservation(row["country"], r.country)
+                if country_iso_matches_reservation(ads_iso, r)
             ]
-            candidates = with_country if with_country else candidates_all
-            if not candidates:
+            null_pool = [r for r in candidates_all if not r.country_iso]
+            if not exact_pool and not null_pool:
                 ads_no_candidates += 1
                 continue
 
             bookings = bookings_hint or 1
-            match = _try_match(candidates, bookings, revenue)
+
+            # Try high-confidence pool first, then expand to null-country
+            # reservations only if no exact-ISO combination matches the
+            # revenue. This is materially stricter than the old behaviour,
+            # which dropped the country filter entirely on miss.
+            match = _try_match(exact_pool, bookings, revenue) if exact_pool else None
+            if not match and null_pool:
+                match = _try_match(exact_pool + null_pool, bookings, revenue)
             if not match:
-                # Try the unfiltered pool as a fallback so a mislabelled PMS
-                # country doesn't sink an otherwise-exact revenue match.
-                if with_country:
-                    match = _try_match(candidates_all, bookings, revenue)
-                if not match:
-                    continue
+                continue
 
             matched, result_label = match
             db.add(_build_booking_match(

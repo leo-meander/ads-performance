@@ -30,6 +30,7 @@ class BookingMatch(TimestampMixin, Base):
     rate_plans = Column(String(1000), nullable=True)
     reservation_sources = Column(String(500), nullable=True)
     matched_country = Column(String(200), nullable=True)
+    country_match_method = Column(String(30), nullable=True)
     branch = Column(String(100), nullable=True, index=True)
     match_result = Column(String(50), nullable=False, index=True)
     matched_at = Column(DateTime(timezone=True), nullable=False)

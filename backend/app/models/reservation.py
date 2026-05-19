@@ -12,6 +12,7 @@ class Reservation(TimestampMixin, Base):
     check_out_date = Column(Date, nullable=True)
     grand_total = Column(Numeric(15, 2), nullable=True)
     country = Column(String(100), nullable=True, index=True)
+    country_iso = Column(String(2), nullable=True, index=True)
     name = Column(String(300), nullable=True)
     email = Column(String(300), nullable=True)
     status = Column(String(50), nullable=True, index=True)

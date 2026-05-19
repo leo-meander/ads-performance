@@ -1064,6 +1064,7 @@ def export_booking_matches(
                 "rate_plans": m.rate_plans,
                 "reservation_sources": m.reservation_sources,
                 "matched_country": m.matched_country,
+                "country_match_method": m.country_match_method,
                 "branch": m.branch,
                 "match_result": m.match_result,
                 "matched_at": m.matched_at.isoformat() if m.matched_at else None,

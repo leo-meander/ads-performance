@@ -38,6 +38,9 @@ bcrypt==4.2.0
 # Form parsing
 python-multipart==0.0.9
 
+# Country normalization (Cloudbeds returns mixed full names + ISO codes)
+pycountry==26.2.16
+
 # Testing
 pytest==8.3.4
 pytest-asyncio==0.24.0

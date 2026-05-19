@@ -162,6 +162,7 @@ def _serialize_match(m: BookingMatch) -> dict:
         "rate_plans": m.rate_plans,
         "reservation_sources": m.reservation_sources,
         "matched_country": m.matched_country,
+        "country_match_method": m.country_match_method,
         "branch": m.branch,
         "match_result": m.match_result,
         "matched_at": m.matched_at.isoformat() if m.matched_at else None,
@@ -619,6 +620,7 @@ def list_reservations(
                 "check_out_date": r.check_out_date.isoformat() if r.check_out_date else None,
                 "grand_total": float(r.grand_total) if r.grand_total is not None else None,
                 "country": r.country,
+                "country_iso": r.country_iso,
                 "name": r.name,
                 "email": r.email,
                 "status": r.status,
@@ -706,7 +708,7 @@ def diagnose_reservation(
                 rev_off = float(row.revenue_offline or 0)
                 if rev_web <= 0 and rev_off <= 0:
                     continue
-                country_match = country_iso_matches_reservation(row.country, r.country)
+                country_match = country_iso_matches_reservation(row.country, r)
                 entries = []
                 if rev_web > 0:
                     entries.append(("website", rev_web, int(row.conversions_website or 0)))
@@ -772,6 +774,7 @@ def diagnose_reservation(
                 "check_in_date": r.check_in_date.isoformat() if r.check_in_date else None,
                 "grand_total": grand_total,
                 "country": r.country,
+                "country_iso": r.country_iso,
                 "status": r.status,
                 "source": r.source,
                 "room_type": r.room_type,
