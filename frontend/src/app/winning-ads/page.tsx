@@ -66,8 +66,11 @@ export default function FigmaCreativesPage() {
 
   const load = () => {
     setLoading(true)
-    // figma_only: this page only surfaces creatives with a Figma source.
-    const params = new URLSearchParams({ sort_by: sortBy, limit: '100', match: 'all', figma_only: 'true' })
+    // Lists all combos regardless of source. The figma_only filter (gated by
+    // figma_jobs.source_combo_id) is left available on the API but unused
+    // here — every flow that creates a job today is AI-Brief-from-scratch,
+    // so no combo ever has a source_combo_id pointing at it.
+    const params = new URLSearchParams({ sort_by: sortBy, limit: '100', match: 'all' })
     if (fBranch) params.set('branch_id', fBranch)
     if (fTA) params.set('target_audience', fTA)
     if (fCountry) params.set('country', fCountry)
