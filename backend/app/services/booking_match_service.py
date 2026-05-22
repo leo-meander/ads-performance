@@ -5,11 +5,13 @@ Matching methodology (as used in the team's manual Sheet):
   - Two passes per ads row:
       website purchase value  → search reservations with source = Website/Booking Engine
       offline purchase value  → search reservations with other sources (OTA, Walk-in, ...)
-  - Candidates share the same date, branch, and purchase kind. The real match
-    key is date + branch + kind + revenue (single or combo). Country is a
-    *ranking preference*, not a hard restriction (see below).
-  - A match occurs when the sum of grand_totals equals the ads revenue
-    within AMOUNT_TOLERANCE.
+  - Candidates share the same branch and purchase kind. The real match key is
+    date + branch + kind + revenue (single or combo). Date is matched same-day
+    first (reservation_date == ad date); if nothing matches, the candidate pool
+    expands to ±1 day to absorb the short lag between an ad and the booking it
+    drives. Country is a *ranking preference*, not a hard restriction (below).
+  - A match occurs when the sum of grand_totals equals the ads revenue within
+    the amount tolerance (±2%, see amount_tolerance()).
 
 Country is a preference, NOT a filter. The ads-side country is the campaign's
 targeting geo (Meta's adset ISO-2 prefix / Google's campaign ISO-2 suffix) —
@@ -38,7 +40,7 @@ Reservations are matched on `reservation_date` (booking date), not check-in.
 """
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -218,6 +220,37 @@ def _is_website_source(source: str | None) -> bool:
     return (source or "").strip().lower() == WEBSITE_SOURCE
 
 
+def _match_country_tiers(
+    candidates: list[Reservation],
+    ads_country: str | None,
+    bookings: int,
+    revenue: float,
+) -> tuple[list[Reservation], str] | None:
+    """Match within a candidate pool, ranking by country confidence.
+
+    Country never excludes a candidate — it only orders the pools we try:
+      1. same-country (campaign geo reconciled to guest ISO, e.g. ad "UK"->"GB"),
+      2. + country-unknown reservations (country_iso = NULL),
+      3. the full pool, any nationality (tier-3 fallback).
+    The real key is revenue; country only decides *which* booking when several
+    amounts match. Tier-3 restores the pre-039 behaviour the strict-ISO rewrite
+    dropped — without it, matches collapse whenever guest nationality differs
+    from the campaign targeting geo.
+    """
+    if not candidates:
+        return None
+    exact_pool = [
+        r for r in candidates if country_iso_matches_reservation(ads_country, r)
+    ]
+    null_pool = [r for r in candidates if not r.country_iso]
+    match = _try_match(exact_pool, bookings, revenue) if exact_pool else None
+    if not match and null_pool:
+        match = _try_match(exact_pool + null_pool, bookings, revenue)
+    if not match:
+        match = _try_match(candidates, bookings, revenue)
+    return match
+
+
 def _build_booking_match(
     row,
     revenue: float,
@@ -365,37 +398,29 @@ def run_matching(
             if revenue <= 0:
                 continue
 
-            key = (row["date"], branch_key, kind)
-            candidates_all = res_by_key.get(key, [])
-            if not candidates_all:
-                ads_no_candidates += 1
-                continue
-
             bookings = bookings_hint or 1
 
-            # Country ranks the pools we try, best-confidence first; it never
-            # excludes a candidate. The campaign geo (row["country"]) is the
-            # targeting country, not the guest's nationality, so an "HK"
-            # campaign must still be able to match a TW/KR/US guest.
-            #   1. same-country reservations (geo reconciled to ISO inside
-            #      country_iso_matches_reservation, e.g. ad "UK" -> "GB"),
-            #   2. + country-unknown reservations (country_iso = NULL),
-            #   3. the full same-date/branch/kind pool, any nationality.
-            # Tier 3 restores the pre-039 fallback the strict-ISO rewrite
-            # dropped — without it, matches collapse to ~0 whenever no booking
-            # nationality happens to equal the campaign geo.
-            exact_pool = [
-                r for r in candidates_all
-                if country_iso_matches_reservation(row.get("country"), r)
-            ]
-            null_pool = [r for r in candidates_all if not r.country_iso]
+            # Date: same-day first (reservation_date == ad date). If nothing
+            # matches, expand the candidate pool to ±1 day — a guest commonly
+            # books a day either side of the ad-attributed date. We do NOT widen
+            # further: a bigger window mostly pulls in unrelated bookings that
+            # happen to share an amount. Country only ranks within each pool
+            # (never filters) — see _match_country_tiers.
+            sameday = res_by_key.get((row["date"], branch_key, kind), [])
+            match = _match_country_tiers(sameday, row.get("country"), bookings, revenue)
 
-            match = _try_match(exact_pool, bookings, revenue) if exact_pool else None
-            if not match and null_pool:
-                match = _try_match(exact_pool + null_pool, bookings, revenue)
+            window = sameday
             if not match:
-                match = _try_match(candidates_all, bookings, revenue)
+                window = list(sameday)
+                for delta in (-1, 1):
+                    window += res_by_key.get(
+                        (row["date"] + timedelta(days=delta), branch_key, kind), []
+                    )
+                match = _match_country_tiers(window, row.get("country"), bookings, revenue)
+
             if not match:
+                if not window:
+                    ads_no_candidates += 1
                 continue
 
             matched, result_label = match
