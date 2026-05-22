@@ -128,6 +128,7 @@ export default function SpyAdsPage() {
   const [searchResults, setSearchResults] = useState<AdResult[]>([])
   const [pagingCursor, setPagingCursor] = useState<string | null>(null)
   const [isSearching, setIsSearching] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set())
 
   // ── Competitors state ──
@@ -197,6 +198,7 @@ export default function SpyAdsPage() {
     const q = query ?? searchQuery
     if (!q.trim() && !platform) return
     setIsSearching(true)
+    setSearchError(null)
     const params = new URLSearchParams({
       q, country, active_status: activeStatus, platform, media_type: mediaType, limit: '25',
     })
@@ -207,8 +209,11 @@ export default function SpyAdsPage() {
         if (append) setSearchResults(prev => [...prev, ...d.data.ads])
         else setSearchResults(d.data.ads)
         setPagingCursor(d.data.paging?.after || null)
+      } else {
+        if (!append) setSearchResults([])
+        setSearchError(d.error || 'Search failed. Please try again.')
       }
-    }).catch(() => {}).finally(() => setIsSearching(false))
+    }).catch(() => setSearchError('Could not reach the server. Please try again.')).finally(() => setIsSearching(false))
   }
 
   const handleSaveAd = (ad: AdResult) => {
@@ -408,7 +413,14 @@ export default function SpyAdsPage() {
             </div>
           )}
 
-          {!isSearching && searchResults.length === 0 && searchQuery && (
+          {!isSearching && searchError && (
+            <div className="bg-red-50 rounded-xl border border-red-200 p-5 text-sm text-red-700">
+              <p className="font-semibold">Search failed</p>
+              <p className="mt-1 text-red-600">{searchError}</p>
+            </div>
+          )}
+
+          {!isSearching && !searchError && searchResults.length === 0 && searchQuery && (
             <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400">
               No results. Try different keywords or filters.
             </div>

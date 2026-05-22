@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.dependencies.auth import require_page
+from app.models.account import AdAccount
 from app.models.spy_analysis_report import SpyAnalysisReport
 from app.models.spy_saved_ad import SpySavedAd
 from app.models.spy_tracked_page import SpyTrackedPage
@@ -34,6 +35,22 @@ def _api_response(data=None, error=None):
     }
 
 
+def _resolve_meta_token(db: Session) -> str | None:
+    """Token for the Ad Library API comes from any active Meta account in the
+    DB (same source as the sync engine). Returns None to let the client fall
+    back to the env var."""
+    account = (
+        db.query(AdAccount)
+        .filter(
+            AdAccount.platform == "meta",
+            AdAccount.is_active.is_(True),
+            AdAccount.access_token_enc.isnot(None),
+        )
+        .first()
+    )
+    return account.access_token_enc if account else None
+
+
 # ── Search ─────────────────────────────────────────────────
 
 
@@ -48,6 +65,7 @@ def search_ad_library(
     limit: int = Query(default=25, le=50),
     after: str | None = None,
     current_user: User = Depends(require_page("ad_research")),
+    db: Session = Depends(get_db),
 ):
     try:
         result = search_ads(
@@ -59,6 +77,7 @@ def search_ad_library(
             search_page_ids=page_id,
             limit=limit,
             after=after,
+            access_token=_resolve_meta_token(db),
         )
         return _api_response(result)
     except Exception as e:
@@ -203,6 +222,7 @@ def get_tracked_page_ads(
             active_status=active_status,
             limit=limit,
             after=after,
+            access_token=_resolve_meta_token(db),
         )
 
         row.last_checked_at = datetime.now(timezone.utc)
