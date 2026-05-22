@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     # Internal scheduled-task endpoints (Zeabur cron hits these with X-Internal-Secret header)
     INTERNAL_TASK_SECRET: str = ""
 
+    # MCP server public base URL (e.g. https://ads-api.zeabur.app).
+    # Used in OAuth discovery metadata so Claude knows where to redirect.
+    # Defaults to the request origin at runtime if left empty.
+    MCP_BASE_URL: str = ""
+
     # Microsoft Clarity — Data Export API + tracking snippet
     # Token: long-lived JWT with scope=Data.Export issued in Clarity settings.
     #        See Settings > Data Export API in the Clarity project dashboard.

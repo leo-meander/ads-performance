@@ -18,6 +18,7 @@ class UTF8JSONResponse(JSONResponse):
     """
 
     media_type = "application/json; charset=utf-8"
+from app.mcp.router import router as mcp_router
 from app.routers import (
     accounts,
     ad_research,
@@ -135,6 +136,35 @@ app.include_router(landing_pages.router, prefix="/api", tags=["landing-pages"])
 app.include_router(public_landing.router, prefix="/api", tags=["public-landing"])
 app.include_router(changelog.router, prefix="/api", tags=["changelog"])
 app.include_router(winning_ads.router, prefix="/api", tags=["winning-ads"])
+
+# MCP server — no /api prefix; OAuth and MCP paths must live at server root
+app.include_router(mcp_router)
+
+
+def _mcp_base(request: Request) -> str:
+    if settings.MCP_BASE_URL:
+        return settings.MCP_BASE_URL.rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+@app.get("/.well-known/oauth-authorization-server", tags=["mcp"])
+def oauth_authorization_server_metadata(request: Request):
+    base = _mcp_base(request)
+    return {
+        "issuer": base,
+        "authorization_endpoint": f"{base}/oauth/authorize",
+        "token_endpoint": f"{base}/oauth/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    }
+
+
+@app.get("/.well-known/oauth-protected-resource", tags=["mcp"])
+def oauth_protected_resource(request: Request):
+    base = _mcp_base(request)
+    return {"resource": base, "authorization_servers": [base]}
 
 
 @app.get("/health")
