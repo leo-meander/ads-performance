@@ -1,24 +1,20 @@
+"""OAuth 2.0 authorization code storage for the MCP server.
+
+Uses a simple in-memory store with TTL — no Redis dependency.
+Auth codes are short-lived (10 min) and single-instance is fine for this use case.
+"""
+
 import base64
 import hashlib
-import json
 import secrets
-from datetime import datetime, timezone
-
-import redis as redis_lib
-
-from app.config import settings
-
-_redis_client = None
-
-
-def _redis() -> redis_lib.Redis:
-    global _redis_client
-    if _redis_client is None:
-        _redis_client = redis_lib.from_url(settings.REDIS_URL, decode_responses=True)
-    return _redis_client
-
+import threading
+import time
 
 CODE_TTL = 600  # 10 minutes
+
+# { "mcp_code:{code}": (data_dict, expire_at_unix) }
+_store: dict[str, tuple[dict, float]] = {}
+_lock = threading.Lock()
 
 
 def generate_code() -> str:
@@ -37,19 +33,28 @@ def store_auth_code(
         "redirect_uri": redirect_uri,
         "code_challenge": code_challenge,
         "code_challenge_method": code_challenge_method,
-        "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    _redis().setex(f"mcp_code:{code}", CODE_TTL, json.dumps(data))
+    expire_at = time.monotonic() + CODE_TTL
+    key = f"mcp_code:{code}"
+    with _lock:
+        _store[key] = (data, expire_at)
+        # Opportunistic cleanup of expired entries
+        now = time.monotonic()
+        expired = [k for k, (_, exp) in _store.items() if exp < now]
+        for k in expired:
+            del _store[k]
 
 
 def consume_auth_code(code: str) -> dict | None:
-    r = _redis()
     key = f"mcp_code:{code}"
-    raw = r.get(key)
-    if not raw:
+    with _lock:
+        entry = _store.pop(key, None)
+    if entry is None:
         return None
-    r.delete(key)
-    return json.loads(raw)
+    data, expire_at = entry
+    if time.monotonic() > expire_at:
+        return None
+    return data
 
 
 def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
