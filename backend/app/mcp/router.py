@@ -117,6 +117,17 @@ async def oauth_token(request: Request, db: Session = Depends(get_db)):
 
 # ─── MCP: Streamable HTTP endpoint ───────────────────────────────────────────
 
+@router.get("/mcp")
+async def mcp_info(request: Request):
+    """Reachability probe — returns server info without auth."""
+    return JSONResponse({
+        "server": "MEANDER Ads Platform MCP",
+        "version": "1.0.0",
+        "protocol": "2024-11-05",
+        "transport": "streamable-http",
+    })
+
+
 @router.post("/mcp")
 async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
     auth_header = request.headers.get("Authorization", "")

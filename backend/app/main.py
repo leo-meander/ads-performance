@@ -91,16 +91,35 @@ _PLUGIN_CORS_HEADERS = {
     "Access-Control-Max-Age": "86400",
 }
 
+# MCP + OAuth paths are accessed from Claude.ai's browser/servers — allow all
+# origins. These endpoints authenticate via Bearer token (no cookies), so
+# Access-Control-Allow-Origin: * is safe.
+_MCP_CORS_PREFIXES = ("/mcp", "/oauth/", "/.well-known/")
+_MCP_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Mcp-Session-Id",
+    "Access-Control-Expose-Headers": "Mcp-Session-Id",
+    "Access-Control-Max-Age": "86400",
+}
+
 
 @app.middleware("http")
 async def plugin_cors_middleware(request: Request, call_next):
-    is_plugin = request.url.path.startswith(_PLUGIN_CORS_PREFIX)
-    if is_plugin and request.method == "OPTIONS":
-        # Answer the preflight directly with permissive CORS.
-        return Response(status_code=200, headers=_PLUGIN_CORS_HEADERS)
+    path = request.url.path
+    is_plugin = path.startswith(_PLUGIN_CORS_PREFIX)
+    is_mcp = any(path.startswith(p) for p in _MCP_CORS_PREFIXES)
+
+    if (is_plugin or is_mcp) and request.method == "OPTIONS":
+        headers = _MCP_CORS_HEADERS if is_mcp else _PLUGIN_CORS_HEADERS
+        return Response(status_code=200, headers=headers)
+
     response = await call_next(request)
     if is_plugin:
         for k, v in _PLUGIN_CORS_HEADERS.items():
+            response.headers[k] = v
+    elif is_mcp:
+        for k, v in _MCP_CORS_HEADERS.items():
             response.headers[k] = v
     return response
 
