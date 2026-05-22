@@ -9,9 +9,14 @@ Matching methodology (as used in the team's manual Sheet):
   - A match occurs when the sum of grand_totals equals the ads revenue
     within AMOUNT_TOLERANCE.
 
-Country comparison: both sides are ISO-2. Ads-side ISO comes from Meta/Google
-breakdowns; reservation-side ISO is normalised at sync time from Cloudbeds'
-mixed-format country field. When a reservation has country_iso = NULL (junk
+Country comparison: both sides are reconciled to one ISO-2 vocabulary before
+comparing. The ads side stores the country verbatim from name parsing — Meta's
+adset ISO-2 prefix and Google's campaign ISO-2 suffix — but that vocabulary is
+not identical to the reservation side's: Google stores "UK" for the United
+Kingdom whereas the reservation normaliser maps it to "GB". So we route the
+ads-side value through the same normalize_country_to_iso() the reservation side
+uses at sync time; valid ISO-2 codes pass through unchanged and divergent ones
+("UK" -> "GB") line up. When a reservation has country_iso = NULL (junk
 PMS value: "Unknown", "00", missing), we treat it as country-unknown and
 allow it to match any ad ISO — this preserves matches for OTA bookings where
 Cloudbeds didn't capture nationality, while strict ISO equality is enforced
@@ -39,6 +44,7 @@ from app.models.booking_match import BookingMatch
 from app.models.campaign import Campaign
 from app.models.reservation import Reservation
 from app.services.reservation_sync import extract_rate_plan_from_room_type
+from app.utils.country_normalize import normalize_country_to_iso
 
 logger = logging.getLogger(__name__)
 
@@ -72,25 +78,40 @@ def normalize_branch(name: str | None) -> str | None:
     return None
 
 
+def _normalize_ads_iso(ads_country: str | None) -> str | None:
+    """Reconcile an ads-side country onto the reservation ISO-2 vocabulary.
+
+    The ads pipeline stores the country as parsed from the campaign/adset name
+    ("UK", "VN", "TW", ...). Routing it through the same normaliser the
+    reservation side uses lets divergent codes line up — most importantly
+    Google's "UK", which the reservation side stores as "GB". Valid ISO-2 codes
+    pass through unchanged; junk / multi-country markers ("ALL") return None.
+    """
+    return normalize_country_to_iso(ads_country)
+
+
 def country_iso_matches_reservation(ads_iso: str | None, reservation: Reservation) -> bool:
     """Strict ISO-2 equality between ads country and reservation country.
 
-    Returns True only when both sides have a populated ISO that matches.
-    A reservation with country_iso = NULL is *not* considered a match here —
-    callers handle the null-country case separately so it can be flagged in
-    the match metadata.
+    Returns True only when both sides have a populated ISO that matches. The
+    ads side is normalised first (see _normalize_ads_iso) so that vocabulary
+    differences like "UK" vs "GB" don't cause false misses. A reservation with
+    country_iso = NULL is *not* considered a match here — callers handle the
+    null-country case separately so it can be flagged in the match metadata.
     """
-    if not ads_iso or not reservation.country_iso:
+    ads = _normalize_ads_iso(ads_iso)
+    if not ads or not reservation.country_iso:
         return False
-    return ads_iso.upper() == reservation.country_iso.upper()
+    return ads == reservation.country_iso.upper()
 
 
 def _classify_match_method(reservations: list[Reservation], ads_iso: str | None) -> str:
     """Tag a successful match with how its country comparison resolved."""
+    ads = _normalize_ads_iso(ads_iso)
     has_exact = False
     has_null = False
     for r in reservations:
-        if r.country_iso and ads_iso and r.country_iso.upper() == ads_iso.upper():
+        if r.country_iso and ads and r.country_iso.upper() == ads:
             has_exact = True
         elif not r.country_iso:
             has_null = True
@@ -322,11 +343,12 @@ def run_matching(
             #     nationality (~14% of rows), so we let these match any ad
             #     country, but tag the result as low-confidence in the UI.
             # Reservations whose ISO is *different* from the ad ISO are
-            # excluded entirely — they are not the right customer.
-            ads_iso = (row.get("country") or "").upper() or None
+            # excluded entirely — they are not the right customer. The ad ISO
+            # is reconciled to the reservation vocabulary inside
+            # country_iso_matches_reservation (e.g. ad "UK" -> "GB").
             exact_pool = [
                 r for r in candidates_all
-                if country_iso_matches_reservation(ads_iso, r)
+                if country_iso_matches_reservation(row.get("country"), r)
             ]
             null_pool = [r for r in candidates_all if not r.country_iso]
             if not exact_pool and not null_pool:
