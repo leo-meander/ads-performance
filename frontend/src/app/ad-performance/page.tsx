@@ -169,7 +169,7 @@ export default function AdPerformancePage() {
     const byDate = new Map<string, Record<string, number | string | null>>()
     daily.forEach(d => {
       const row = byDate.get(d.date) || { date: d.date }
-      row[d.ad_id] = (d as Record<string, number | null>)[metric] ?? null
+      row[d.ad_id] = d[metric] ?? null
       byDate.set(d.date, row)
     })
     return Array.from(byDate.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)))
