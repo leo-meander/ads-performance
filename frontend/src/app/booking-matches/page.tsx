@@ -274,9 +274,17 @@ export default function BookingMatchesDashboard() {
       if (res.success) {
         const sync = res.data.sync
         const matching = res.data.matching
-        setRunMessage(
-          `${from} → ${to} · Sync: ${sync?.created ?? 0} created, ${sync?.updated ?? 0} updated · Matching: ${matching?.matches_created ?? 0} matches found.`
-        )
+        const syncPart = sync?.skipped_concurrent
+          ? `Sync skipped (another run in progress)`
+          : `Sync: ${sync?.created ?? 0} created, ${sync?.updated ?? 0} updated`
+              + ` (fetched ${sync?.total_fetched ?? 0}, skipped non-hotel ${sync?.skipped ?? 0})`
+        const matchPart =
+          `Matching: ${matching?.matches_created ?? 0} matches`
+          + ` · ads rows ${matching?.ads_rows_processed ?? 0}`
+          + ` · reservations in window ${matching?.reservations_loaded ?? 0}`
+          + ` · ads no-branch ${matching?.ads_rows_no_branch ?? 0}`
+          + ` · ads no-candidate ${matching?.ads_rows_no_candidates ?? 0}`
+        setRunMessage(`${from} → ${to} · ${syncPart} · ${matchPart}`)
         await fetchData()
       } else {
         setRunMessage(`Error: ${res.error}`)

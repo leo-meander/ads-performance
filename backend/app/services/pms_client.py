@@ -53,14 +53,23 @@ def fetch_reservations(
     date_to: date,
     branch_id: str | None = None,
     limit: int = 1000,
+    date_type: str = "booked",
 ) -> list[dict]:
     """Fetch all reservations from PMS API with pagination.
 
     Args:
-        date_from: Start date for check-in filter.
-        date_to: End date for check-in filter.
+        date_from: Window start (interpreted per date_type).
+        date_to: Window end (interpreted per date_type).
         branch_id: Optional branch UUID filter.
         limit: Max results per page (API max 1000).
+        date_type: Which date the window filters on — "booked" (booking/
+            reservation date) or "check_in". Defaults to "booked" because the
+            only consumer is the Booking-from-Ads matcher, which attributes a
+            reservation to the day it was *made* (matching run_matching's
+            reservation_date filter). The PMS default is "check_in", so passing
+            this explicitly is required: otherwise a "last 7 days" sync returns
+            guests checking in this week (booked weeks earlier) instead of
+            bookings made this week, and matching finds nothing.
 
     Returns:
         List of reservation dicts from the API.
@@ -73,6 +82,7 @@ def fetch_reservations(
         params = {
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),
+            "date_type": date_type,
             "limit": limit,
             "offset": offset,
         }

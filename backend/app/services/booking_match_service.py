@@ -5,22 +5,28 @@ Matching methodology (as used in the team's manual Sheet):
   - Two passes per ads row:
       website purchase value  → search reservations with source = Website/Booking Engine
       offline purchase value  → search reservations with other sources (OTA, Walk-in, ...)
-  - Candidates are restricted to the same date, branch, and country (ISO-2).
+  - Candidates share the same date, branch, and purchase kind. The real match
+    key is date + branch + kind + revenue (single or combo). Country is a
+    *ranking preference*, not a hard restriction (see below).
   - A match occurs when the sum of grand_totals equals the ads revenue
     within AMOUNT_TOLERANCE.
 
-Country comparison: both sides are reconciled to one ISO-2 vocabulary before
-comparing. The ads side stores the country verbatim from name parsing — Meta's
-adset ISO-2 prefix and Google's campaign ISO-2 suffix — but that vocabulary is
-not identical to the reservation side's: Google stores "UK" for the United
-Kingdom whereas the reservation normaliser maps it to "GB". So we route the
-ads-side value through the same normalize_country_to_iso() the reservation side
-uses at sync time; valid ISO-2 codes pass through unchanged and divergent ones
-("UK" -> "GB") line up. When a reservation has country_iso = NULL (junk
-PMS value: "Unknown", "00", missing), we treat it as country-unknown and
-allow it to match any ad ISO — this preserves matches for OTA bookings where
-Cloudbeds didn't capture nationality, while strict ISO equality is enforced
-for the rest.
+Country is a preference, NOT a filter. The ads-side country is the campaign's
+targeting geo (Meta's adset ISO-2 prefix / Google's campaign ISO-2 suffix) —
+i.e. *who the ad was aimed at*, which is NOT the same as the guest's PMS
+nationality. An "HK"-targeted campaign legitimately drives bookings from TW,
+KR, US, ... guests. So we never exclude a same-date/branch/kind reservation
+just because its nationality differs from the campaign geo. Country only ranks
+the candidate pools we try, best-confidence first:
+  1. same-country (campaign geo reconciled to guest ISO via
+     normalize_country_to_iso, so Google "UK" lines up with reservation "GB"),
+  2. + country-unknown reservations (country_iso = NULL: junk PMS value
+     "Unknown"/"00"/missing — common for OTA bookings),
+  3. the full same-date/branch/kind pool, any nationality.
+Tier 3 restores the pre-039 fallback that an over-strict ISO rewrite removed;
+that rewrite collapsed matches to ~0 because guest nationality rarely equals
+campaign targeting geo. The campaign geo is still recorded on the match
+(ads_country) so the dashboard can break results down by campaign country.
 
 Data source:
   - Meta: ad_country_metrics rows at ad_id × date × country level (pulled via
@@ -52,16 +58,20 @@ HOTEL_BRANCH_KEYS = ["Saigon", "Taipei", "1948", "Osaka", "Oani"]
 AMOUNT_TOLERANCE = 0.5
 WEBSITE_SOURCE = "website/booking engine"
 
-# country_match_method values stored on BookingMatch:
+# country_match_method records how a match's country comparison resolved. It is
+# bookkeeping only (the UI does not filter on it); the field exists so a future
+# audit can tell same-country matches from cross-country ones.
 #   - "exact":  every matched reservation's country_iso == ads_country
 #   - "null_country": every matched reservation has country_iso = NULL
 #       (PMS didn't capture nationality — common for OTA/Walk-in bookings).
-#       Treated as low-confidence in the UI.
-#   - "mixed": a mix of exact-ISO and null-ISO reservations within the same
-#       match (only happens on multi-reservation combo matches).
+#   - "mixed": a mix of exact-ISO and null-ISO reservations in one combo match.
+#   - "cross_country": at least one matched reservation has a populated ISO that
+#       differs from the campaign geo (matched on date+revenue via the tier-3
+#       fallback). Expected and valid — targeting geo != guest nationality.
 METHOD_EXACT = "exact"
 METHOD_NULL = "null_country"
 METHOD_MIXED = "mixed"
+METHOD_CROSS = "cross_country"
 
 
 def normalize_branch(name: str | None) -> str | None:
@@ -110,11 +120,18 @@ def _classify_match_method(reservations: list[Reservation], ads_iso: str | None)
     ads = _normalize_ads_iso(ads_iso)
     has_exact = False
     has_null = False
+    has_cross = False
     for r in reservations:
-        if r.country_iso and ads and r.country_iso.upper() == ads:
-            has_exact = True
-        elif not r.country_iso:
+        if not r.country_iso:
             has_null = True
+        elif ads and r.country_iso.upper() == ads:
+            has_exact = True
+        else:
+            # Populated nationality that differs from the campaign geo — a
+            # tier-3 fallback match (or the ad country didn't normalise).
+            has_cross = True
+    if has_cross:
+        return METHOD_CROSS
     if has_exact and has_null:
         return METHOD_MIXED
     if has_exact:
@@ -336,34 +353,34 @@ def run_matching(
 
             key = (row["date"], branch_key, kind)
             candidates_all = res_by_key.get(key, [])
-
-            # Country filter (strict ISO-2 vs ISO-2):
-            #   - exact ISO match  → high-confidence pool.
-            #   - country_iso NULL → "unknown" pool. PMS didn't capture
-            #     nationality (~14% of rows), so we let these match any ad
-            #     country, but tag the result as low-confidence in the UI.
-            # Reservations whose ISO is *different* from the ad ISO are
-            # excluded entirely — they are not the right customer. The ad ISO
-            # is reconciled to the reservation vocabulary inside
-            # country_iso_matches_reservation (e.g. ad "UK" -> "GB").
-            exact_pool = [
-                r for r in candidates_all
-                if country_iso_matches_reservation(row.get("country"), r)
-            ]
-            null_pool = [r for r in candidates_all if not r.country_iso]
-            if not exact_pool and not null_pool:
+            if not candidates_all:
                 ads_no_candidates += 1
                 continue
 
             bookings = bookings_hint or 1
 
-            # Try high-confidence pool first, then expand to null-country
-            # reservations only if no exact-ISO combination matches the
-            # revenue. This is materially stricter than the old behaviour,
-            # which dropped the country filter entirely on miss.
+            # Country ranks the pools we try, best-confidence first; it never
+            # excludes a candidate. The campaign geo (row["country"]) is the
+            # targeting country, not the guest's nationality, so an "HK"
+            # campaign must still be able to match a TW/KR/US guest.
+            #   1. same-country reservations (geo reconciled to ISO inside
+            #      country_iso_matches_reservation, e.g. ad "UK" -> "GB"),
+            #   2. + country-unknown reservations (country_iso = NULL),
+            #   3. the full same-date/branch/kind pool, any nationality.
+            # Tier 3 restores the pre-039 fallback the strict-ISO rewrite
+            # dropped — without it, matches collapse to ~0 whenever no booking
+            # nationality happens to equal the campaign geo.
+            exact_pool = [
+                r for r in candidates_all
+                if country_iso_matches_reservation(row.get("country"), r)
+            ]
+            null_pool = [r for r in candidates_all if not r.country_iso]
+
             match = _try_match(exact_pool, bookings, revenue) if exact_pool else None
             if not match and null_pool:
                 match = _try_match(exact_pool + null_pool, bookings, revenue)
+            if not match:
+                match = _try_match(candidates_all, bookings, revenue)
             if not match:
                 continue
 

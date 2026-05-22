@@ -11,6 +11,7 @@ UK-targeted bookings never match.
 from types import SimpleNamespace
 
 from app.services.booking_match_service import (
+    METHOD_CROSS,
     METHOD_EXACT,
     METHOD_MIXED,
     METHOD_NULL,
@@ -64,3 +65,14 @@ class TestClassifyMatchMethod:
     def test_mixed_exact_and_null(self):
         method = _classify_match_method([_res("VN"), _res(None)], "VN")
         assert method == METHOD_MIXED
+
+    def test_cross_country_when_nationality_differs(self):
+        # An "HK" campaign matched (by date+revenue) to a TW guest is a valid
+        # tier-3 fallback match — tagged cross_country, not excluded.
+        method = _classify_match_method([_res("TW")], "HK")
+        assert method == METHOD_CROSS
+
+    def test_cross_country_dominates_mixed(self):
+        # Any cross-country reservation in a combo flags the whole match cross.
+        method = _classify_match_method([_res("HK"), _res("US"), _res(None)], "HK")
+        assert method == METHOD_CROSS
