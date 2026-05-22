@@ -1,5 +1,7 @@
 import json
 import logging
+import secrets
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -21,6 +23,31 @@ def _base_url(request: Request) -> str:
     if settings.MCP_BASE_URL:
         return settings.MCP_BASE_URL.rstrip("/")
     return str(request.base_url).rstrip("/")
+
+
+# ─── OAuth: Dynamic Client Registration (RFC 7591) ───────────────────────────
+
+@router.post("/oauth/register")
+async def oauth_register(request: Request):
+    """RFC 7591 Dynamic Client Registration — accept any client unconditionally."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    client_id = secrets.token_urlsafe(16)
+    return JSONResponse(
+        {
+            "client_id": client_id,
+            "client_id_issued_at": int(datetime.now(timezone.utc).timestamp()),
+            "redirect_uris": body.get("redirect_uris", []),
+            "grant_types": ["authorization_code"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+            "code_challenge_method": "S256",
+        },
+        status_code=201,
+    )
 
 
 # ─── OAuth: Authorization endpoint ───────────────────────────────────────────
@@ -132,9 +159,13 @@ async def mcp_info(request: Request):
 async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
+        base = _base_url(request)
+        resource_metadata = f"{base}/.well-known/oauth-protected-resource"
         return Response(
             status_code=401,
-            headers={"WWW-Authenticate": 'Bearer realm="MEANDER Ads Platform"'},
+            headers={
+                "WWW-Authenticate": f'Bearer realm="MEANDER Ads Platform", resource_metadata="{resource_metadata}"'
+            },
         )
 
     payload = decode_access_token(auth_header[7:])
