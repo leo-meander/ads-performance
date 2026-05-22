@@ -27,10 +27,14 @@ AD_LIBRARY_FIELDS = ",".join([
 
 
 def _get_access_token() -> str:
-    """Get access token for Ad Library API — reuses META_ACCESS_TOKEN_SAIGON."""
+    """Env-var fallback when no DB account token is passed in."""
     token = settings.META_ACCESS_TOKEN_SAIGON
     if not token:
-        raise ValueError("META_ACCESS_TOKEN_SAIGON is not configured. Required for Ad Library API.")
+        raise ValueError(
+            "No Meta access token available for Ad Library search. "
+            "Add an active Meta account with a token on the Accounts page, "
+            "or set META_ACCESS_TOKEN_SAIGON."
+        )
     return token
 
 
@@ -85,12 +89,13 @@ def search_ads(
     search_page_ids: str = "",
     limit: int = 25,
     after: str | None = None,
+    access_token: str | None = None,
 ) -> dict:
     """Search the Meta Ad Library API.
 
     Returns: {"ads": [parsed_ad_dicts], "paging": {"after": cursor_or_none}}
     """
-    token = _get_access_token()
+    token = access_token or _get_access_token()
 
     params: dict = {
         "access_token": token,
@@ -153,6 +158,7 @@ def fetch_page_ads(
     active_status: str = "ACTIVE",
     limit: int = 25,
     after: str | None = None,
+    access_token: str | None = None,
 ) -> dict:
     """Fetch ads for a specific page from the Ad Library."""
     return search_ads(
@@ -162,4 +168,5 @@ def fetch_page_ads(
         search_page_ids=page_id,
         limit=limit,
         after=after,
+        access_token=access_token,
     )
