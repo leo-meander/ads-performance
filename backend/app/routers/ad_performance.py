@@ -220,11 +220,17 @@ def ad_performance_daily(
 @router.post("/ad-performance/sync")
 def sync_ad_performance(
     since: str | None = None,
+    until: str | None = None,
+    branch_id: str | None = None,
     current_user: User = Depends(require_section("meta_ads", "edit")),
     db: Session = Depends(get_db),
 ):
-    """Manual 'Sync from Meta' button. Pulls daily ad metrics since `since`
-    (default 2026-05-01) for every active Meta account.
+    """Manual 'Sync from Meta' button. Pulls daily ad metrics over
+    [since, until] (since default 2026-05-01, until default today).
+
+    When `branch_id` is given only that branch is synced; otherwise every Meta
+    account the user can edit. The window matches the page's active filters so a
+    'Last 7 days' / 'Last month' sync only re-fetches those days.
 
     Runs in a daemon thread with its own DB session so the request returns
     immediately (Zeabur ingress is capped at ~225s); the frontend re-fetches
@@ -232,18 +238,42 @@ def sync_ad_performance(
     """
     try:
         since_date = date.fromisoformat(since) if since else DEFAULT_SINCE
+        until_date = date.fromisoformat(until) if until else None
     except ValueError:
-        return _api_response(error="invalid 'since' date (expected YYYY-MM-DD)")
+        return _api_response(error="invalid date (expected YYYY-MM-DD)")
+
+    if until_date and until_date < since_date:
+        return _api_response(error="'until' must not be before 'since'")
+
+    # Restrict the sync to the accounts this user is allowed to edit (and to the
+    # requested branch, when one is selected).
+    ok, scoped_ids, err = scoped_account_ids(
+        db, current_user, "meta_ads", requested_account_id=branch_id, min_level="edit"
+    )
+    if not ok:
+        return _api_response(error=err)
 
     def _wrapper():
         bg = SessionLocal()
         try:
-            logger.info("[ad-daily] manual sync starting (since=%s)", since_date.isoformat())
-            sync_all_daily_ad_metrics(bg, since_date=since_date)
+            logger.info(
+                "[ad-daily] manual sync starting (since=%s until=%s accounts=%s)",
+                since_date.isoformat(),
+                (until_date or date.today()).isoformat(),
+                scoped_ids if scoped_ids is not None else "all",
+            )
+            sync_all_daily_ad_metrics(
+                bg, since_date=since_date, until_date=until_date, account_ids=scoped_ids
+            )
         except Exception:
             logger.exception("[ad-daily] manual sync failed")
         finally:
             bg.close()
 
     threading.Thread(target=_wrapper, name="ad-daily-sync", daemon=True).start()
-    return _api_response(data={"status": "started", "since": since_date.isoformat()})
+    return _api_response(data={
+        "status": "started",
+        "since": since_date.isoformat(),
+        "until": (until_date or date.today()).isoformat(),
+        "branch_id": branch_id,
+    })
