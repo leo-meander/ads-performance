@@ -21,6 +21,7 @@ class UTF8JSONResponse(JSONResponse):
 from app.mcp.router import router as mcp_router
 from app.routers import (
     accounts,
+    ad_performance,
     ad_research,
     ai,
     approvals,
@@ -139,6 +140,7 @@ app.include_router(country.router, prefix="/api", tags=["country"])
 app.include_router(export.router, prefix="/api", tags=["export"])
 app.include_router(funnel_recommendations.router, prefix="/api", tags=["funnel-recommendations"])
 app.include_router(ad_research.router, prefix="/api", tags=["spy-ads"])
+app.include_router(ad_performance.router, prefix="/api", tags=["ad-performance"])
 app.include_router(auth.router, prefix="/api", tags=["auth"])
 app.include_router(users.router, prefix="/api", tags=["users"])
 app.include_router(approvals.router, prefix="/api", tags=["approvals"])

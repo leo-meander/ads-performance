@@ -4,6 +4,7 @@ from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_country_metric import AdCountryMetric
+from app.models.ad_daily_metric import AdDailyMetric
 from app.models.ad_material import AdMaterial
 from app.models.ad_set import AdSet
 from app.models.api_key import ApiKey
@@ -50,6 +51,7 @@ __all__ = [
     "AdCombo",
     "AdCopy",
     "AdCountryMetric",
+    "AdDailyMetric",
     "AdMaterial",
     "AdSet",
     "ApiKey",

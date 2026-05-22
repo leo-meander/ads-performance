@@ -39,6 +39,7 @@ const navSections: NavSection[] = [
       { href: '/approvals', label: 'Approvals', section: 'meta_ads', page: 'approvals', badge: true },
       { href: '/keypoints', label: 'Keypoints', section: 'meta_ads', page: 'keypoints' },
       { href: '/ad-research', label: 'Spy Ads', section: 'meta_ads', page: 'ad_research' },
+      { href: '/ad-performance', label: 'Ad Name Performance', section: 'meta_ads', page: 'ad_performance' },
     ],
   },
   {
