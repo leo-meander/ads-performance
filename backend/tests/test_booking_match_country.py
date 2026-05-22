@@ -16,12 +16,33 @@ from app.services.booking_match_service import (
     METHOD_MIXED,
     METHOD_NULL,
     _classify_match_method,
+    _try_match,
+    amount_tolerance,
     country_iso_matches_reservation,
 )
 
 
 def _res(country_iso):
     return SimpleNamespace(country_iso=country_iso)
+
+
+def _booking(grand_total, num="R1"):
+    return SimpleNamespace(grand_total=grand_total, reservation_number=num)
+
+
+class TestAmountTolerance:
+    def test_pct_window_with_floor(self):
+        assert amount_tolerance(2700) == 54.0          # 2%
+        assert amount_tolerance(10) == 0.5             # floor wins for tiny values
+
+    def test_match_within_2pct(self):
+        # Google reports 2686.91 (currency-converted) for a 2,700 booking → match.
+        res = _try_match([_booking(2686.91)], 1, 2700.0)
+        assert res is not None and res[1] == "Matched"
+
+    def test_no_match_beyond_2pct(self):
+        # 2,500 vs 2,700 = 7.4% off → no match.
+        assert _try_match([_booking(2500.0)], 1, 2700.0) is None
 
 
 class TestCountryIsoMatchesReservation:
