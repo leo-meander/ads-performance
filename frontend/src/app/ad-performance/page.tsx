@@ -37,22 +37,31 @@ interface DailyRow {
   leads: number; cost_per_lead: number | null; cost_per_purchase: number | null
   ctr: number | null; hook_rate: number | null
 }
-interface Account { id: string; account_name: string; platform: string }
+interface Account { id: string; account_name: string; platform: string; currency: string }
 
 // Today as YYYY-MM-DD (local).
 const todayISO = () => new Date().toISOString().slice(0, 10)
 
 const fmtNum = (n: number) => Math.round(n).toLocaleString()
 
+// Monetary values are stored in each branch's native currency.
+const CUR_SYM: Record<string, string> = { VND: '₫', TWD: 'NT$', JPY: '¥', USD: '$', EUR: '€', KRW: '₩', THB: '฿' }
+const curLabel = (cur?: string | null) => (cur ? (CUR_SYM[cur] || cur) : '')
+const money = (n: number | null, cur?: string | null) => {
+  if (n == null) return '—'
+  const s = curLabel(cur)
+  return s ? `${fmtNum(n)} ${s}` : fmtNum(n)
+}
+
 // Chart-able metrics. `pct` => stored as a 0..1 fraction.
 type MetricKey = 'roas' | 'spend' | 'conversions' | 'leads' | 'cost_per_lead' | 'cost_per_purchase' | 'ctr' | 'hook_rate'
-const METRICS: Record<MetricKey, { label: string; pct?: boolean; fmt: (v: number | null) => string }> = {
+const METRICS: Record<MetricKey, { label: string; pct?: boolean; money?: boolean; fmt: (v: number | null) => string }> = {
   roas: { label: 'ROAS', fmt: v => v == null ? '—' : `${v.toFixed(2)}x` },
-  spend: { label: 'Spend', fmt: v => v == null ? '—' : fmtNum(v) },
+  spend: { label: 'Spend', money: true, fmt: v => v == null ? '—' : fmtNum(v) },
   conversions: { label: 'Bookings', fmt: v => v == null ? '—' : String(v) },
   leads: { label: 'Leads', fmt: v => v == null ? '—' : String(v) },
-  cost_per_lead: { label: 'Cost / Lead', fmt: v => v == null ? '—' : fmtNum(v) },
-  cost_per_purchase: { label: 'CPP', fmt: v => v == null ? '—' : fmtNum(v) },
+  cost_per_lead: { label: 'Cost / Lead', money: true, fmt: v => v == null ? '—' : fmtNum(v) },
+  cost_per_purchase: { label: 'CPP', money: true, fmt: v => v == null ? '—' : fmtNum(v) },
   ctr: { label: 'CTR', pct: true, fmt: v => v == null ? '—' : `${(v * 100).toFixed(2)}%` },
   hook_rate: { label: 'Hook rate', pct: true, fmt: v => v == null ? '—' : `${(v * 100).toFixed(1)}%` },
 }
@@ -133,17 +142,17 @@ export default function AdPerformancePage() {
 
   const runSync = () => {
     setSyncing(true)
-    setSyncMsg('Đang đồng bộ từ Meta...')
+    setSyncMsg('Syncing from Meta...')
     fetch(`${API_BASE}/api/ad-performance/sync`, { method: 'POST', credentials: 'include' })
       .then(r => r.json())
       .then(d => {
-        if (!d.success) { setSyncMsg(`Lỗi: ${d.error}`); setSyncing(false); return }
-        setSyncMsg('Đã kích hoạt đồng bộ — dữ liệu sẽ cập nhật trong ít phút.')
+        if (!d.success) { setSyncMsg(`Error: ${d.error}`); setSyncing(false); return }
+        setSyncMsg('Sync triggered — data will update in a few minutes.')
         // Background job; refetch a couple of times then stop the spinner.
         setTimeout(refetchList, 8000)
         setTimeout(() => { refetchList(); setSyncing(false) }, 20000)
       })
-      .catch(() => { setSyncMsg('Đồng bộ thất bại'); setSyncing(false) })
+      .catch(() => { setSyncMsg('Sync failed'); setSyncing(false) })
   }
 
   const toggleSort = (col: string) => {
@@ -163,6 +172,24 @@ export default function AdPerformancePage() {
     rows.forEach(r => { if (r.campaign_id) m.set(r.campaign_id, r.campaign_name || r.campaign_id) })
     return Array.from(m.entries()).sort((a, b) => a[1].localeCompare(b[1]))
   }, [rows])
+
+  // Currency lives on each branch (account). Map account/ad -> currency so
+  // monetary columns render in the right currency per branch.
+  const accountCurrency = useMemo(() => {
+    const m: Record<string, string> = {}
+    accounts.forEach(a => { m[a.id] = a.currency })
+    return m
+  }, [accounts])
+  const adCurrency = useMemo(() => {
+    const m: Record<string, string> = {}
+    rows.forEach(r => { m[r.ad_id] = accountCurrency[r.account_id] || '' })
+    return m
+  }, [rows, accountCurrency])
+  // Only label the chart with a currency when the selected ads share one.
+  const chartCurrency = useMemo(() => {
+    const set = new Set(selected.map(id => adCurrency[id]).filter(Boolean))
+    return set.size === 1 ? [...set][0] : ''
+  }, [selected, adCurrency])
 
   // Reshape daily series into recharts rows: { date, [ad_id]: metricValue }.
   const chartData = useMemo(() => {
@@ -196,7 +223,7 @@ export default function AdPerformancePage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Ad Name Performance</h1>
-          <p className="text-xs text-gray-500 mt-1">Theo dõi từng ad theo ngày — pull từ Meta (chỉ ads có chi tiêu).</p>
+          <p className="text-xs text-gray-500 mt-1">Track each ad by day — pulled from Meta (only ads with spend).</p>
         </div>
         <div className="flex items-center gap-2">
           {syncMsg && <span className="text-xs text-gray-500">{syncMsg}</span>}
@@ -223,7 +250,7 @@ export default function AdPerformancePage() {
         <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="px-2 py-1.5 border border-gray-200 rounded-lg text-sm" />
         <span className="text-gray-400 text-sm">→</span>
         <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="px-2 py-1.5 border border-gray-200 rounded-lg text-sm" />
-        <span className="text-xs text-gray-400 ml-2">Chỉ số chart:</span>
+        <span className="text-xs text-gray-400 ml-2">Chart metric:</span>
         <select value={metric} onChange={e => setMetric(e.target.value as MetricKey)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
           {(Object.keys(METRICS) as MetricKey[]).map(k => <option key={k} value={k}>{METRICS[k].label}</option>)}
         </select>
@@ -232,18 +259,18 @@ export default function AdPerformancePage() {
       {/* Comparison chart */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-4">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold text-gray-700">{mcfg.label} theo ngày {selected.length > 0 ? `— ${selected.length} ad` : ''}</h2>
-          {selected.length > 0 && <button onClick={() => setSelected([])} className="text-xs text-blue-600">Bỏ chọn</button>}
+          <h2 className="text-sm font-semibold text-gray-700">{mcfg.label}{mcfg.money && chartCurrency ? ` (${curLabel(chartCurrency)})` : ''} by day {selected.length > 0 ? `— ${selected.length} ad` : ''}</h2>
+          {selected.length > 0 && <button onClick={() => setSelected([])} className="text-xs text-blue-600">Clear selection</button>}
         </div>
         {selected.length === 0 ? (
-          <div className="h-[300px] flex items-center justify-center text-gray-400 text-sm">Tick chọn 1 hoặc nhiều ad ở bảng dưới để xem đường tăng/giảm theo ngày.</div>
+          <div className="h-[300px] flex items-center justify-center text-gray-400 text-sm">Tick one or more ads in the table below to see their daily trend.</div>
         ) : (
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v: string) => v.slice(5)} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => mcfg.pct ? `${(v * 100).toFixed(0)}%` : (metric === 'roas' ? `${v.toFixed(1)}x` : fmtNum(v))} />
-              <Tooltip formatter={(v: number) => mcfg.fmt(v)} labelFormatter={(l) => `Ngày: ${l}`} />
+              <Tooltip formatter={(v: number) => mcfg.money && chartCurrency ? `${mcfg.fmt(v)} ${curLabel(chartCurrency)}` : mcfg.fmt(v)} labelFormatter={(l) => `Date: ${l}`} />
               <Legend />
               {selected.map((adId, i) => (
                 <Line key={adId} type="monotone" dataKey={adId} name={adLabel[adId] || adId} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={false} connectNulls />
@@ -256,9 +283,9 @@ export default function AdPerformancePage() {
       {/* Table */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         {loading ? (
-          <div className="p-8 text-center text-gray-400">Đang tải...</div>
+          <div className="p-8 text-center text-gray-400">Loading...</div>
         ) : rows.length === 0 ? (
-          <div className="p-8 text-center text-gray-400">Chưa có dữ liệu. Bấm "Sync from Meta" để kéo về.</div>
+          <div className="p-8 text-center text-gray-400">No data yet. Click "Sync from Meta" to pull it in.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -285,11 +312,11 @@ export default function AdPerformancePage() {
                     <td className="py-2 px-2 text-xs text-gray-600 max-w-[160px] truncate" title={r.adset_name || ''}>{r.adset_name || '—'}</td>
                     <td className="py-2 px-2 text-xs font-medium text-gray-900 max-w-[200px] truncate" title={r.ad_name || ''}>{r.ad_name || '—'}</td>
                     <td className="py-2 px-2 text-xs text-gray-600">{accName(r.account_id)}</td>
-                    <td className="py-2 px-2 text-right text-xs">{r.spend != null ? fmtNum(r.spend) : '—'}</td>
+                    <td className="py-2 px-2 text-right text-xs">{money(r.spend, accountCurrency[r.account_id])}</td>
                     <td className="py-2 px-2 text-right text-xs font-semibold">{r.roas != null ? `${r.roas.toFixed(2)}x` : '—'}</td>
                     <td className="py-2 px-2 text-right text-xs">{r.conversions}</td>
                     <td className="py-2 px-2 text-right text-xs">{r.leads}</td>
-                    <td className="py-2 px-2 text-right text-xs">{r.cost_per_lead != null ? fmtNum(r.cost_per_lead) : '—'}</td>
+                    <td className="py-2 px-2 text-right text-xs">{money(r.cost_per_lead, accountCurrency[r.account_id])}</td>
                     <td className="py-2 px-2 text-right text-xs">{r.ctr != null ? `${(r.ctr * 100).toFixed(2)}%` : '—'}</td>
                     <td className="py-2 px-2 text-right text-xs">{r.hook_rate != null ? `${(r.hook_rate * 100).toFixed(1)}%` : '—'}</td>
                   </tr>
