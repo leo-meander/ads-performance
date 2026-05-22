@@ -21,7 +21,8 @@ from app.models.reservation import Reservation
 from app.models.user import User
 from app.routers.accounts import BRANCH_ACCOUNT_MAP, branch_name_patterns
 from app.services.booking_match_service import (
-    AMOUNT_TOLERANCE,
+    AMOUNT_TOLERANCE_PCT,
+    amount_tolerance,
     country_iso_matches_reservation,
     normalize_branch,
     run_matching,
@@ -728,7 +729,7 @@ def diagnose_reservation(
                         "ads_bookings": bk,
                         "revenue_delta_vs_grand_total": delta,
                         "within_tolerance": (
-                            delta is not None and abs(delta) < AMOUNT_TOLERANCE
+                            delta is not None and abs(delta) < amount_tolerance(rev)
                         ),
                     })
 
@@ -757,7 +758,7 @@ def diagnose_reservation(
                 c["within_tolerance"] for c in matching_country
             ):
                 reasons.append(
-                    f"ads revenue does not equal grand_total within ±{AMOUNT_TOLERANCE} "
+                    f"ads revenue does not equal grand_total within ±{AMOUNT_TOLERANCE_PCT:.0%} "
                     f"on any same-kind + same-country row"
                 )
             if not matching_country:
@@ -785,7 +786,7 @@ def diagnose_reservation(
             "existing_match": _serialize_match(existing_match) if existing_match else None,
             "ads_candidates": ads_candidates,
             "likely_reasons": reasons,
-            "amount_tolerance": AMOUNT_TOLERANCE,
+            "amount_tolerance_pct": AMOUNT_TOLERANCE_PCT,
         })
     except Exception as e:
         return _api_response(error=str(e))

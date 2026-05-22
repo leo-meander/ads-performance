@@ -55,8 +55,20 @@ from app.utils.country_normalize import normalize_country_to_iso
 logger = logging.getLogger(__name__)
 
 HOTEL_BRANCH_KEYS = ["Saigon", "Taipei", "1948", "Osaka", "Oani"]
-AMOUNT_TOLERANCE = 0.5
 WEBSITE_SOURCE = "website/booking engine"
+
+# Amount match tolerance. The ad platforms report a purchase value that drifts a
+# few % from the PMS grand_total — currency conversion, rounding, fees — so a
+# flat ±0.5 was far too tight (e.g. Google reports 2686.91 for a 2,700 booking,
+# 5249.67 for 5,400). We allow ±2% of the ads revenue, with a tiny absolute
+# floor so near-zero values don't collapse the window to nothing.
+AMOUNT_TOLERANCE_PCT = 0.02
+AMOUNT_TOLERANCE_FLOOR = 0.5
+
+
+def amount_tolerance(target: float) -> float:
+    """Max allowed |grand_total - ads_revenue| for a match: ±2% (floor ±0.5)."""
+    return max(AMOUNT_TOLERANCE_FLOOR, abs(float(target)) * AMOUNT_TOLERANCE_PCT)
 
 # country_match_method records how a match's country comparison resolved. It is
 # bookkeeping only (the UI does not filter on it); the field exists so a future
@@ -143,14 +155,15 @@ def _find_combination(
     candidates: list[Reservation], n: int, target: float
 ) -> list[Reservation] | None:
     """Find the first combination of exactly n reservations whose grand_totals
-    sum to target within AMOUNT_TOLERANCE."""
+    sum to target within the amount tolerance (±2%)."""
     result: list[list[Reservation]] = []
+    tol = amount_tolerance(target)
 
     def search(start: int, current: list[Reservation], current_sum: float):
         if result:
             return
         if len(current) == n:
-            if abs(current_sum - target) < AMOUNT_TOLERANCE:
+            if abs(current_sum - target) < tol:
                 result.append(list(current))
             return
         for i in range(start, len(candidates)):
@@ -180,9 +193,10 @@ def _try_match(
     bookings: int,
     revenue: float,
 ) -> tuple[list[Reservation], str] | None:
+    tol = amount_tolerance(revenue)
     exact = _dedupe([
         r for r in candidates
-        if r.grand_total is not None and abs(float(r.grand_total) - revenue) < AMOUNT_TOLERANCE
+        if r.grand_total is not None and abs(float(r.grand_total) - revenue) < tol
     ])
 
     bookings = max(bookings, 1)
