@@ -75,10 +75,14 @@ def _sum_actions(arr, action_types: set[str]) -> float:
 
 
 def sync_daily_ad_metrics_for_account(
-    db: Session, account: AdAccount, since_date: date = DEFAULT_SINCE
+    db: Session,
+    account: AdAccount,
+    since_date: date = DEFAULT_SINCE,
+    until_date: date | None = None,
 ) -> dict:
-    """Pull per-day ad-level insights for one Meta account from `since_date` to
-    today and replace the ad_daily_metrics rows for that account window.
+    """Pull per-day ad-level insights for one Meta account over
+    [since_date, until_date] (until_date defaults to today) and replace the
+    ad_daily_metrics rows for exactly that account window.
 
     Does NOT commit — the caller owns the transaction.
     """
@@ -92,7 +96,7 @@ def sync_daily_ad_metrics_for_account(
         if account.account_id.startswith("act_")
         else f"act_{account.account_id}"
     )
-    date_to = date.today()
+    date_to = until_date or date.today()
 
     try:
         FacebookAdsApi.init(app_id="", app_secret="", access_token=account.access_token_enc)
@@ -166,16 +170,28 @@ def sync_daily_ad_metrics_for_account(
     return summary
 
 
-def sync_all_daily_ad_metrics(db: Session, since_date: date = DEFAULT_SINCE) -> dict:
-    """Sync daily ad metrics for every active Meta account. Commits once."""
-    accounts = db.query(AdAccount).filter(AdAccount.is_active.is_(True)).all()
+def sync_all_daily_ad_metrics(
+    db: Session,
+    since_date: date = DEFAULT_SINCE,
+    until_date: date | None = None,
+    account_ids: list[str] | None = None,
+) -> dict:
+    """Sync daily ad metrics over [since_date, until_date] (until_date defaults
+    to today). When `account_ids` is given, only those accounts are synced;
+    otherwise every active Meta account is. Commits once."""
+    q = db.query(AdAccount).filter(AdAccount.is_active.is_(True))
+    if account_ids is not None:
+        q = q.filter(AdAccount.id.in_(account_ids or ["__no_match__"]))
+    accounts = q.all()
     totals = {"accounts": 0, "rows_written": 0, "errors": []}
 
     for account in accounts:
         if account.platform != "meta" or not account.access_token_enc:
             continue
         totals["accounts"] += 1
-        res = sync_daily_ad_metrics_for_account(db, account, since_date=since_date)
+        res = sync_daily_ad_metrics_for_account(
+            db, account, since_date=since_date, until_date=until_date
+        )
         totals["rows_written"] += res["rows_written"]
         totals["errors"].extend(f"{account.account_name}: {e}" for e in res["errors"])
         logger.info(
@@ -186,7 +202,8 @@ def sync_all_daily_ad_metrics(db: Session, since_date: date = DEFAULT_SINCE) -> 
 
     db.commit()
     logger.info(
-        "[ad-daily] done: %d rows across %d accounts (since=%s)",
+        "[ad-daily] done: %d rows across %d accounts (since=%s until=%s)",
         totals["rows_written"], totals["accounts"], since_date.isoformat(),
+        (until_date or date.today()).isoformat(),
     )
     return totals

@@ -39,8 +39,36 @@ interface DailyRow {
 }
 interface Account { id: string; account_name: string; platform: string; currency: string }
 
-// Today as YYYY-MM-DD (local).
-const todayISO = () => new Date().toISOString().slice(0, 10)
+// Local YYYY-MM-DD (avoids the UTC drift of toISOString()).
+const fmtISO = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+// Quick date-range presets for the filter bar. Returns [from, to] inclusive.
+type PresetKey = 'yesterday' | 'last7' | 'last30' | 'thisMonth' | 'lastMonth' | 'custom'
+const PRESETS: { key: PresetKey; label: string }[] = [
+  { key: 'last7', label: 'Last 7 days' },
+  { key: 'last30', label: 'Last 30 days' },
+  { key: 'thisMonth', label: 'This month' },
+  { key: 'lastMonth', label: 'Last month' },
+  { key: 'yesterday', label: 'Yesterday' },
+  { key: 'custom', label: 'Custom' },
+]
+const presetRange = (key: PresetKey): [string, string] => {
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const shift = (days: number) => { const d = new Date(today); d.setDate(d.getDate() + days); return d }
+  switch (key) {
+    case 'yesterday': return [fmtISO(shift(-1)), fmtISO(shift(-1))]
+    case 'last7': return [fmtISO(shift(-6)), fmtISO(today)]
+    case 'last30': return [fmtISO(shift(-29)), fmtISO(today)]
+    case 'thisMonth': return [fmtISO(new Date(today.getFullYear(), today.getMonth(), 1)), fmtISO(today)]
+    case 'lastMonth': return [
+      fmtISO(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
+      fmtISO(new Date(today.getFullYear(), today.getMonth(), 0)),
+    ]
+    default: return [fmtISO(today), fmtISO(today)]
+  }
+}
 
 const fmtNum = (n: number) => Math.round(n).toLocaleString()
 
@@ -76,9 +104,19 @@ export default function AdPerformancePage() {
   // Filters
   const [fBranch, setFBranch] = useState('')
   const [fCampaign, setFCampaign] = useState('')
-  const [dateFrom, setDateFrom] = useState('2026-05-01')
-  const [dateTo, setDateTo] = useState(todayISO())
+  const [preset, setPreset] = useState<PresetKey>('thisMonth')
+  const [dateFrom, setDateFrom] = useState(() => presetRange('thisMonth')[0])
+  const [dateTo, setDateTo] = useState(() => presetRange('thisMonth')[1])
   const [metric, setMetric] = useState<MetricKey>('roas')
+
+  // Pick a preset -> set both date inputs. Manually editing a date below
+  // flips the selector back to "Custom".
+  const applyPreset = (key: PresetKey) => {
+    setPreset(key)
+    if (key === 'custom') return
+    const [f, t] = presetRange(key)
+    setDateFrom(f); setDateTo(t)
+  }
 
   // Sort (server-side)
   const [sortBy, setSortBy] = useState('spend')
@@ -142,8 +180,13 @@ export default function AdPerformancePage() {
 
   const runSync = () => {
     setSyncing(true)
-    setSyncMsg('Syncing from Meta...')
-    fetch(`${API_BASE}/api/ad-performance/sync`, { method: 'POST', credentials: 'include' })
+    const params = new URLSearchParams()
+    if (dateFrom) params.set('since', dateFrom)
+    if (dateTo) params.set('until', dateTo)
+    if (fBranch) params.set('branch_id', fBranch)
+    const branchLabel = fBranch ? accName(fBranch) : 'all branches'
+    setSyncMsg(`Syncing ${branchLabel}, ${dateFrom} → ${dateTo}...`)
+    fetch(`${API_BASE}/api/ad-performance/sync?${params}`, { method: 'POST', credentials: 'include' })
       .then(r => r.json())
       .then(d => {
         if (!d.success) { setSyncMsg(`Error: ${d.error}`); setSyncing(false); return }
@@ -163,6 +206,11 @@ export default function AdPerformancePage() {
   const toggleSelect = (adId: string) => {
     setSelected(prev => prev.includes(adId) ? prev.filter(x => x !== adId) : [...prev, adId])
   }
+
+  // Header tick: select every visible ad, or clear when all are already on.
+  const allSelected = rows.length > 0 && rows.every(r => selected.includes(r.ad_id))
+  const someSelected = rows.some(r => selected.includes(r.ad_id))
+  const toggleSelectAll = () => setSelected(allSelected ? [] : rows.map(r => r.ad_id))
 
   const accName = (id: string) => accounts.find(a => a.id === id)?.account_name || '—'
 
@@ -247,9 +295,12 @@ export default function AdPerformancePage() {
           <option value="">All Campaigns</option>
           {campaigns.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </select>
-        <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="px-2 py-1.5 border border-gray-200 rounded-lg text-sm" />
+        <select value={preset} onChange={e => applyPreset(e.target.value as PresetKey)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+          {PRESETS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+        </select>
+        <input type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPreset('custom') }} className="px-2 py-1.5 border border-gray-200 rounded-lg text-sm" />
         <span className="text-gray-400 text-sm">→</span>
-        <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="px-2 py-1.5 border border-gray-200 rounded-lg text-sm" />
+        <input type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setPreset('custom') }} className="px-2 py-1.5 border border-gray-200 rounded-lg text-sm" />
         <span className="text-xs text-gray-400 ml-2">Chart metric:</span>
         <select value={metric} onChange={e => setMetric(e.target.value as MetricKey)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
           {(Object.keys(METRICS) as MetricKey[]).map(k => <option key={k} value={k}>{METRICS[k].label}</option>)}
@@ -290,7 +341,16 @@ export default function AdPerformancePage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="bg-gray-50 border-b">
-                <th className="py-2 px-2 w-8"></th>
+                <th className="py-2 px-2 w-8 text-center">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={el => { if (el) el.indeterminate = someSelected && !allSelected }}
+                    onChange={toggleSelectAll}
+                    className="w-3.5 h-3.5 cursor-pointer"
+                    title={allSelected ? 'Clear all' : 'Select all'}
+                  />
+                </th>
                 <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Campaign</th>
                 <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Ad Set</th>
                 <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Ad Name</th>
