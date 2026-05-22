@@ -7,6 +7,12 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
 type CellValue = 'none' | Level
 
+interface AvailablePage {
+  page: string
+  section: string
+  label: string
+}
+
 const SECTION_LABELS: Record<string, string> = {
   analytics: 'Analytics',
   meta_ads: 'Meta Ads',
@@ -51,6 +57,11 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
   const [matrix, setMatrix] = useState<Record<string, Record<string, CellValue>>>(() =>
     buildEmptyMatrix(),
   )
+  // Page access: list of {page, section, label} from the API + page -> level.
+  // 'none' on a page means "inherit" (no restriction). Setting any page in a
+  // section to view/edit restricts the user to only the set pages of it.
+  const [availablePages, setAvailablePages] = useState<AvailablePage[]>([])
+  const [pageMatrix, setPageMatrix] = useState<Record<string, CellValue>>({})
 
   useEffect(() => {
     ;(async () => {
@@ -73,6 +84,17 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
           }
         })
         setMatrix(filled)
+
+        const pages = (data.data.available_pages || []) as AvailablePage[]
+        setAvailablePages(pages)
+        const pm: Record<string, CellValue> = {}
+        pages.forEach((pg) => {
+          pm[pg.page] = 'none'
+        })
+        ;(data.data.page_permissions || []).forEach((pp: { page: string; level: Level }) => {
+          if (pm[pp.page] !== undefined) pm[pp.page] = pp.level
+        })
+        setPageMatrix(pm)
       } catch {
         setError('Network error')
       } finally {
@@ -112,6 +134,43 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
     })
   }
 
+  const togglePage = (page: string) => {
+    if (isAdmin) return
+    setPageMatrix((prev) => ({
+      ...prev,
+      [page]: LEVEL_CYCLE[prev[page] ?? 'none'],
+    }))
+  }
+
+  const setPagesForSection = (section: string, value: CellValue) => {
+    if (isAdmin) return
+    setPageMatrix((prev) => {
+      const next = { ...prev }
+      for (const pg of availablePages) {
+        if (pg.section === section) next[pg.page] = value
+      }
+      return next
+    })
+  }
+
+  // Group available pages by section, preserving the section order from the matrix.
+  const pagesBySection = useMemo(() => {
+    const out: Array<{ section: string; pages: AvailablePage[] }> = []
+    for (const s of ALL_SECTIONS) {
+      const pages = availablePages.filter((p) => p.section === s)
+      if (pages.length) out.push({ section: s, pages })
+    }
+    return out
+  }, [availablePages])
+
+  const pageItems = useMemo(
+    () =>
+      Object.entries(pageMatrix)
+        .filter(([, v]) => v !== 'none')
+        .map(([page, level]) => ({ page, level: level as Level })),
+    [pageMatrix],
+  )
+
   const items = useMemo(() => {
     const out: Permission[] = []
     for (const b of ALL_BRANCHES) {
@@ -133,7 +192,7 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ items }),
+        body: JSON.stringify({ items, page_items: pageItems }),
       })
       const data = await res.json()
       if (data.success) {
@@ -270,6 +329,53 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
                 </tbody>
               </table>
             </div>
+
+            {pagesBySection.length > 0 && (
+              <div className="mt-8 border-t border-gray-100 pt-5">
+                <h3 className="text-sm font-semibold text-gray-900">Phân quyền trang (tuỳ chọn)</h3>
+                <p className="text-xs text-gray-500 mt-1 mb-4">
+                  Để trống cả nhóm = user thấy <span className="font-medium">tất cả</span> trang của mục đó
+                  (theo quyền branch ở trên). Bật{' '}
+                  <span className="font-medium text-blue-700">View</span>/
+                  <span className="font-medium text-green-700">Edit</span> cho vài trang = user{' '}
+                  <span className="font-medium">chỉ</span> xem được đúng những trang đó trong mục.
+                </p>
+                <div className="space-y-4">
+                  {pagesBySection.map(({ section, pages }) => (
+                    <div key={section}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs font-semibold text-gray-700">
+                          {SECTION_LABELS[section] ?? section}
+                        </span>
+                        <button
+                          onClick={() => setPagesForSection(section, 'none')}
+                          disabled={isAdmin}
+                          className="text-[10px] text-gray-400 hover:text-gray-600 disabled:opacity-30"
+                          title="Bỏ giới hạn (thấy tất cả trang của mục)"
+                        >
+                          Bỏ giới hạn
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {pages.map((pg) => {
+                          const v = pageMatrix[pg.page] ?? 'none'
+                          return (
+                            <button
+                              key={pg.page}
+                              onClick={() => togglePage(pg.page)}
+                              disabled={isAdmin}
+                              className={`text-xs font-medium px-3 py-1.5 rounded-md border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${LEVEL_STYLES[v]}`}
+                            >
+                              {pg.label} <span className="opacity-60">· {LEVEL_SYMBOLS[v]}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         )}
 

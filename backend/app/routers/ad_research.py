@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.dependencies.auth import require_section
+from app.dependencies.auth import require_page
 from app.models.spy_analysis_report import SpyAnalysisReport
 from app.models.spy_saved_ad import SpySavedAd
 from app.models.spy_tracked_page import SpyTrackedPage
@@ -47,7 +47,7 @@ def search_ad_library(
     page_id: str = "",
     limit: int = Query(default=25, le=50),
     after: str | None = None,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("ad_research")),
 ):
     try:
         result = search_ads(
@@ -87,7 +87,7 @@ class TrackedPageUpdate(BaseModel):
 @router.get("/spy-ads/tracked-pages")
 def list_tracked_pages(
     category: str | None = None,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("ad_research")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -112,7 +112,7 @@ def list_tracked_pages(
 @router.post("/spy-ads/tracked-pages")
 def create_tracked_page(
     body: TrackedPageCreate,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("ad_research", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -143,7 +143,7 @@ def create_tracked_page(
 def update_tracked_page(
     page_db_id: str,
     body: TrackedPageUpdate,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("ad_research", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -168,7 +168,7 @@ def update_tracked_page(
 @router.delete("/spy-ads/tracked-pages/{page_db_id}")
 def delete_tracked_page(
     page_db_id: str,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("ad_research", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -189,7 +189,7 @@ def get_tracked_page_ads(
     limit: int = Query(default=25, le=50),
     active_status: str = "ACTIVE",
     after: str | None = None,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("ad_research")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -256,7 +256,7 @@ def list_saved_ads(
     sort_dir: str = "desc",
     limit: int = Query(default=50, le=200),
     offset: int = 0,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("ad_research")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -307,7 +307,7 @@ def list_saved_ads(
 @router.post("/spy-ads/saved-ads")
 def save_ad(
     body: SaveAdBody,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("ad_research", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -375,7 +375,7 @@ def save_ad(
 def update_saved_ad(
     ad_db_id: str,
     body: UpdateSavedAdBody,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("ad_research", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -398,7 +398,7 @@ def update_saved_ad(
 @router.delete("/spy-ads/saved-ads/{ad_db_id}")
 def delete_saved_ad(
     ad_db_id: str,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("ad_research", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -415,7 +415,7 @@ def delete_saved_ad(
 
 @router.get("/spy-ads/saved-ads/collections")
 def list_collections(
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("ad_research")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -434,7 +434,7 @@ def list_collections(
 @router.post("/spy-ads/saved-ads/bulk-tag")
 def bulk_tag(
     body: BulkTagBody,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("ad_research", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -481,7 +481,7 @@ class AnalyzeBody(BaseModel):
 @router.post("/spy-ads/analyze")
 def analyze_ads(
     body: AnalyzeBody,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("ad_research", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -570,7 +570,7 @@ def analyze_ads(
 def list_reports(
     limit: int = Query(default=20, le=100),
     offset: int = 0,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("ad_research")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -595,7 +595,7 @@ def list_reports(
 @router.get("/spy-ads/reports/{report_id}")
 def get_report(
     report_id: str,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("ad_research")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -619,7 +619,7 @@ def get_report(
 
 @router.get("/spy-ads/stats")
 def get_stats(
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("ad_research")),
     db: Session = Depends(get_db),
 ):
     try:

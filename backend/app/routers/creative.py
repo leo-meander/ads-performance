@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
-from app.dependencies.auth import require_section
+from app.dependencies.auth import require_page, require_section
 from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
@@ -46,7 +46,7 @@ class KeypointCreate(BaseModel):
 def list_keypoints(
     branch_id: str | None = None,
     category: str | None = None,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("keypoints")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -125,7 +125,7 @@ def list_keypoints(
 @router.post("/keypoints")
 def create_keypoint(
     body: KeypointCreate,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("keypoints", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -147,7 +147,7 @@ def create_keypoint(
 @router.delete("/keypoints/{kp_id}")
 def delete_keypoint(
     kp_id: str,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("keypoints", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -192,7 +192,7 @@ class AngleUpdate(BaseModel):
 def list_angles(
     branch_id: str | None = None,
     status: str | None = None,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("angles")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -295,7 +295,7 @@ def list_angles(
 @router.post("/angles")
 def create_angle(
     body: AngleCreate,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("angles", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -319,7 +319,7 @@ def create_angle(
 def update_angle(
     angle_id: str,
     body: AngleUpdate,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("angles", "edit")),
     db: Session = Depends(get_db),
 ):
     try:

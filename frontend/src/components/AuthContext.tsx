@@ -19,9 +19,42 @@ export type Branch = (typeof ALL_BRANCHES)[number]
 export type Section = (typeof ALL_SECTIONS)[number]
 export type Level = 'view' | 'edit'
 
+// Canonical pages — one screen each, mapped to the section they live under.
+// Keep in sync with backend app.core.permissions.PAGES.
+export const PAGE_SECTION: Record<string, string> = {
+  dashboard: 'analytics',
+  booking_matches: 'analytics',
+  meta_recommendations: 'meta_ads',
+  angles: 'meta_ads',
+  creative: 'meta_ads',
+  figma: 'meta_ads',
+  approvals: 'meta_ads',
+  keypoints: 'meta_ads',
+  ad_research: 'meta_ads',
+  google_pmax: 'google_ads',
+  google_search: 'google_ads',
+  google_recommendations: 'google_ads',
+  budget_planner: 'budget',
+  landing_pages_all: 'landing_pages',
+  landing_pages_approvals: 'landing_pages',
+  tactics: 'automation',
+  logs: 'automation',
+  insights: 'ai',
+  transcriptions: 'ai',
+  accounts: 'settings',
+  users: 'settings',
+  api_keys: 'settings',
+  currency_rates: 'settings',
+}
+
 export interface Permission {
   branch: string
   section: string
+  level: Level
+}
+
+export interface PagePermission {
+  page: string
   level: Level
 }
 
@@ -36,6 +69,8 @@ export interface User {
   is_admin?: boolean
   permissions?: Permission[]
   accessible_sections?: Record<string, string[]>
+  page_permissions?: PagePermission[]
+  restricted_sections?: string[]
 }
 
 interface AuthContextType {
@@ -47,6 +82,8 @@ interface AuthContextType {
   canAccessSection: (section: string) => boolean
   canEditSection: (section: string, branch?: string) => boolean
   branchesForSection: (section: string, minLevel?: Level) => string[]
+  canAccessPage: (page: string) => boolean
+  canEditPage: (page: string) => boolean
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -58,6 +95,8 @@ const AuthContext = createContext<AuthContextType>({
   canAccessSection: () => false,
   canEditSection: () => false,
   branchesForSection: () => [],
+  canAccessPage: () => false,
+  canEditPage: () => false,
 })
 
 function isAdmin(user: User | null): boolean {
@@ -143,6 +182,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return perms.filter((p) => p.section === section).map((p) => p.branch)
   }
 
+  // Page-level access. A user with NO page rows for a section sees ALL pages
+  // of that section (falls back to section access). A user WITH page rows for
+  // a section is restricted to exactly those pages.
+  const canAccessPage = (page: string): boolean => {
+    if (!user) return false
+    if (isAdmin(user)) return true
+    const section = PAGE_SECTION[page]
+    if (!section) return false
+    if (!canAccessSection(section)) return false
+    const relevant = (user.page_permissions || []).filter(
+      (pp) => PAGE_SECTION[pp.page] === section,
+    )
+    if (relevant.length === 0) return true // no page restriction for this section
+    return relevant.some((pp) => pp.page === page)
+  }
+
+  const canEditPage = (page: string): boolean => {
+    if (!user) return false
+    if (isAdmin(user)) return true
+    const section = PAGE_SECTION[page]
+    if (!section) return false
+    const relevant = (user.page_permissions || []).filter(
+      (pp) => PAGE_SECTION[pp.page] === section,
+    )
+    if (relevant.length === 0) return canEditSection(section)
+    return relevant.some((pp) => pp.page === page && pp.level === 'edit')
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -154,6 +221,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         canAccessSection,
         canEditSection,
         branchesForSection,
+        canAccessPage,
+        canEditPage,
       }}
     >
       {children}

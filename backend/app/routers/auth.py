@@ -92,7 +92,11 @@ def logout(response: Response):
 
 @router.get("/auth/me")
 def get_me(current_user: User = Depends(get_current_user)):
-    perms_payload = permission_dict(current_user, current_user.permissions or [])
+    perms_payload = permission_dict(
+        current_user,
+        current_user.permissions or [],
+        current_user.page_permissions or [],
+    )
     return _api_response(
         data={
             "id": current_user.id,
@@ -111,7 +115,11 @@ def get_me(current_user: User = Depends(get_current_user)):
 @router.get("/auth/me/permissions")
 def get_my_permissions(current_user: User = Depends(get_current_user)):
     return _api_response(
-        data=permission_dict(current_user, current_user.permissions or [])
+        data=permission_dict(
+            current_user,
+            current_user.permissions or [],
+            current_user.page_permissions or [],
+        )
     )
 
 

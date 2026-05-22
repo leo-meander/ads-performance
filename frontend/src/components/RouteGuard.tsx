@@ -42,6 +42,44 @@ function sectionForPath(pathname: string): string | null {
   return null
 }
 
+// Maps URL paths to canonical page keys for per-page permission gating.
+// Order matters: longer/more-specific prefixes come first. Keep page keys in
+// sync with PAGE_SECTION in AuthContext + backend PAGES registry.
+const ROUTE_PAGE_MAP: Array<[string, string]> = [
+  ['/booking-matches', 'booking_matches'],
+  ['/meta/recommendations', 'meta_recommendations'],
+  ['/angles', 'angles'],
+  ['/creative', 'creative'],
+  ['/winning-ads', 'figma'],
+  ['/approvals', 'approvals'],
+  ['/keypoints', 'keypoints'],
+  ['/ad-research', 'ad_research'],
+  ['/google/pmax', 'google_pmax'],
+  ['/google/search', 'google_search'],
+  ['/google/recommendations', 'google_recommendations'],
+  ['/budget', 'budget_planner'],
+  ['/landing-pages/approvals', 'landing_pages_approvals'],
+  ['/landing-pages', 'landing_pages_all'],
+  ['/tactics', 'tactics'],
+  ['/logs', 'logs'],
+  ['/insights', 'insights'],
+  ['/transcriptions', 'transcriptions'],
+  ['/accounts', 'accounts'],
+  ['/users', 'users'],
+  ['/api-keys', 'api_keys'],
+  ['/settings', 'currency_rates'],
+]
+
+function pageForPath(pathname: string): string | null {
+  if (pathname === '/') return 'dashboard'
+  for (const [prefix, page] of ROUTE_PAGE_MAP) {
+    if (pathname === prefix || pathname.startsWith(prefix + '/')) {
+      return page
+    }
+  }
+  return null
+}
+
 export default function RouteGuard({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
@@ -88,5 +126,10 @@ export default function RouteGuard({ children }: { children: ReactNode }) {
   const section = sectionForPath(pathname)
   if (!section) return <>{children}</>
 
-  return <SectionGuard section={section}>{children}</SectionGuard>
+  const page = pageForPath(pathname)
+  return (
+    <SectionGuard section={section} page={page ?? undefined}>
+      {children}
+    </SectionGuard>
+  )
 }

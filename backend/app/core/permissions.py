@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models.user import User
 from app.models.user_permission import UserPermission
+from app.models.user_page_permission import UserPagePermission
 
 # ── Canonical constants ────────────────────────────────────────
 
@@ -31,10 +32,57 @@ SECTIONS: list[str] = [
     "landing_pages",
 ]
 
+# Canonical pages — one screen each, grouped by the section they belong to.
+# `page` keys are stored in user_page_permissions.page. Keep in sync with the
+# frontend PAGES map (AuthContext) and the Sidebar nav.
+PAGES: dict[str, dict[str, str]] = {
+    # analytics
+    "dashboard": {"section": "analytics", "label": "Dashboard"},
+    "booking_matches": {"section": "analytics", "label": "Booking from Ads"},
+    # meta_ads
+    "meta_recommendations": {"section": "meta_ads", "label": "Recommendations"},
+    "angles": {"section": "meta_ads", "label": "Ad Angles"},
+    "creative": {"section": "meta_ads", "label": "Creative Library"},
+    "figma": {"section": "meta_ads", "label": "Figma"},
+    "approvals": {"section": "meta_ads", "label": "Approvals"},
+    "keypoints": {"section": "meta_ads", "label": "Keypoints"},
+    "ad_research": {"section": "meta_ads", "label": "Spy Ads"},
+    # google_ads
+    "google_pmax": {"section": "google_ads", "label": "PMax Campaigns"},
+    "google_search": {"section": "google_ads", "label": "Search Campaigns"},
+    "google_recommendations": {"section": "google_ads", "label": "Recommendations"},
+    # budget
+    "budget_planner": {"section": "budget", "label": "Budget Planner"},
+    # landing_pages
+    "landing_pages_all": {"section": "landing_pages", "label": "All Pages"},
+    "landing_pages_approvals": {"section": "landing_pages", "label": "Approvals"},
+    # automation
+    "tactics": {"section": "automation", "label": "Tactics"},
+    "logs": {"section": "automation", "label": "Action Logs"},
+    # ai
+    "insights": {"section": "ai", "label": "AI Insights"},
+    "transcriptions": {"section": "ai", "label": "Video Transcriptions"},
+    # settings
+    "accounts": {"section": "settings", "label": "Accounts"},
+    "users": {"section": "settings", "label": "Users"},
+    "api_keys": {"section": "settings", "label": "API Keys"},
+    "currency_rates": {"section": "settings", "label": "Currency Rates"},
+}
+
 LEVELS: list[str] = ["view", "edit"]
 
 # 'edit' implies 'view' — use this for comparisons
 _LEVEL_RANK = {"view": 1, "edit": 2}
+
+
+def pages_for_section(section: str) -> list[str]:
+    """All canonical page keys that belong to `section`."""
+    return [pg for pg, meta in PAGES.items() if meta["section"] == section]
+
+
+def section_for_page(page: str) -> str | None:
+    meta = PAGES.get(page)
+    return meta["section"] if meta else None
 
 
 # ── Core helpers ───────────────────────────────────────────────
@@ -99,6 +147,74 @@ def has_branch_access(
         return True
     branches = accessible_branches(db, user, section, min_level)
     return branch in (branches or [])
+
+
+def accessible_pages(
+    db: Session,
+    user: User,
+    section: str,
+    min_level: str = "view",
+) -> list[str] | None:
+    """Page keys within `section` the user may open at >= min_level.
+
+    Returns None when there is NO page-level restriction for this section —
+    meaning the user can open ALL pages of the section (subject to ordinary
+    section access). This is the default for any user with no page rows, so
+    existing users are unaffected.
+
+    Returns a list (possibly empty) when the user HAS page rows for this
+    section — access is then restricted to exactly those pages.
+
+    Admin => None (no restriction).
+    """
+    if is_admin(user):
+        return None
+
+    section_pages = set(pages_for_section(section))
+    if not section_pages:
+        return None
+
+    rows = (
+        db.query(UserPagePermission.page, UserPagePermission.level)
+        .filter(UserPagePermission.user_id == user.id)
+        .all()
+    )
+    relevant = [(pg, lvl) for (pg, lvl) in rows if pg in section_pages]
+    if not relevant:
+        return None  # no page-level restriction for this section
+    return [pg for (pg, lvl) in relevant if _level_at_least(lvl, min_level)]
+
+
+def has_page_access(
+    db: Session,
+    user: User,
+    page: str,
+    min_level: str = "view",
+) -> bool:
+    """True if the user may open `page` at >= min_level.
+
+    Layered on top of section access: the user must first have section access
+    (which governs data scope). When no page restriction exists for the page's
+    section, this falls back to plain section-level access — identical to the
+    old behaviour. When a page restriction exists, the page must be listed at
+    >= min_level.
+    """
+    if is_admin(user):
+        return True
+
+    section = section_for_page(page)
+    if section is None:
+        return False
+
+    # Must have at least view access to the section to see any of its pages.
+    if not has_section_access(db, user, section, "view"):
+        return False
+
+    pages = accessible_pages(db, user, section, min_level)
+    if pages is None:
+        # No page restriction — defer to section-level capability.
+        return has_section_access(db, user, section, min_level)
+    return page in pages
 
 
 def resolve_branch_filter(
@@ -187,7 +303,11 @@ def scoped_account_ids(
     return True, list(allowed_ids), None
 
 
-def permission_dict(user: User, permissions: Iterable[UserPermission]) -> dict:
+def permission_dict(
+    user: User,
+    permissions: Iterable[UserPermission],
+    page_permissions: Iterable[UserPagePermission] | None = None,
+) -> dict:
     """Shape used by /auth/me and /users/{id}/permissions responses."""
     items = [
         {"branch": p.branch, "section": p.section, "level": p.level}
@@ -198,8 +318,22 @@ def permission_dict(user: User, permissions: Iterable[UserPermission]) -> dict:
     for p in permissions:
         if p.section in accessible and p.branch not in accessible[p.section]:
             accessible[p.section].append(p.branch)
+
+    page_items = [
+        {"page": pp.page, "level": pp.level}
+        for pp in (page_permissions or [])
+        if pp.page in PAGES
+    ]
+    # restricted_sections lists sections where the user has explicit page rows
+    # (i.e. their page access is narrowed). The frontend uses this to know when
+    # to apply page filtering vs. show all pages.
+    restricted_sections = sorted(
+        {PAGES[pi["page"]]["section"] for pi in page_items}
+    )
     return {
         "is_admin": is_admin(user),
         "permissions": items,
         "accessible_sections": accessible,
+        "page_permissions": page_items,
+        "restricted_sections": restricted_sections,
     }

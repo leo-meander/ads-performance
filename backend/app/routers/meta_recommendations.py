@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
-from app.dependencies.auth import require_section
+from app.dependencies.auth import require_page
 from app.models.campaign import Campaign
 from app.models.meta_recommendation import MetaRecommendation
 from app.models.user import User
@@ -98,7 +98,7 @@ def list_recommendations(
     campaign_id: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("meta_recommendations")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -152,7 +152,7 @@ def list_recommendations(
 @router.get("/meta/recommendations/{rec_id}")
 def get_recommendation(
     rec_id: str,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("meta_recommendations")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -185,7 +185,7 @@ class ApplyBody(BaseModel):
 def apply_recommendation(
     rec_id: str,
     body: ApplyBody,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("meta_recommendations", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -229,7 +229,7 @@ class MarkManualBody(BaseModel):
 def mark_recommendation_manual(
     rec_id: str,
     body: MarkManualBody,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("meta_recommendations", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -265,7 +265,7 @@ class DismissBody(BaseModel):
 def dismiss_recommendation(
     rec_id: str,
     body: DismissBody,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("meta_recommendations", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -296,7 +296,7 @@ def dismiss_recommendation(
 @router.post("/meta/recommendations/{rec_id}/regenerate")
 def regenerate_recommendation(
     rec_id: str,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("meta_recommendations", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -327,7 +327,7 @@ def regenerate_recommendation(
 @router.get("/meta/recommendations-counts/campaign/{campaign_id}")
 def count_for_campaign(
     campaign_id: str,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("meta_recommendations")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -352,7 +352,7 @@ def count_for_campaign(
 @router.get("/meta/recommendations-counts/branch/{account_id}")
 def count_for_branch(
     account_id: str,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("meta_recommendations")),
     db: Session = Depends(get_db),
 ):
     """Branch roll-up: pending recommendation severity counts for an account."""
@@ -387,7 +387,7 @@ class RunBody(BaseModel):
 @router.post("/meta/recommendations/run")
 def run_on_demand(
     body: RunBody,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("meta_recommendations", "edit")),
     db: Session = Depends(get_db),
 ):
     try:

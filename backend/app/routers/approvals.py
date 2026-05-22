@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies.auth import get_current_user, require_role, require_section
+from app.dependencies.auth import get_current_user, require_page, require_role
 from app.models.approval import ApprovalReviewer, ComboApproval
 from app.models.user import User
 from app.services.approval_service import (
@@ -76,7 +76,7 @@ class ReviseRequest(BaseModel):
 def submit_approval(
     body: SubmitApprovalRequest,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads", "edit")),
+    _section: User = Depends(require_page("approvals", "edit")),
     db: Session = Depends(get_db),
 ):
     """Submit a combo for approval."""
@@ -106,7 +106,7 @@ def list_approvals(
     combo_id: str | None = None,
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("approvals")),
     db: Session = Depends(get_db),
 ):
     """List approvals. Creator sees own. Admin sees all. Reviewer sees assigned."""
@@ -155,7 +155,7 @@ def list_approvals(
 @router.get("/approvals/pending")
 def list_pending_reviews(
     current_user: User = Depends(require_role(["reviewer", "admin"])),
-    _section: User = Depends(require_section("meta_ads")),
+    _section: User = Depends(require_page("approvals")),
     db: Session = Depends(get_db),
 ):
     """List approvals awaiting this reviewer's decision."""
@@ -183,7 +183,7 @@ def list_pending_reviews(
 @router.get("/approvals/{approval_id}")
 def get_approval(
     approval_id: str,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("approvals")),
     db: Session = Depends(get_db),
 ):
     """Get approval detail."""
@@ -210,7 +210,7 @@ def decide_approval(
     approval_id: str,
     body: DecisionRequest,
     current_user: User = Depends(require_role(["reviewer", "admin"])),
-    _section: User = Depends(require_section("meta_ads")),
+    _section: User = Depends(require_page("approvals")),
     db: Session = Depends(get_db),
 ):
     """Submit reviewer decision (APPROVED or REJECTED).
@@ -242,7 +242,7 @@ def decide_approval(
 def resend_request(
     approval_id: str,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads", "edit")),
+    _section: User = Depends(require_page("approvals", "edit")),
     db: Session = Depends(get_db),
 ):
     """Resend the review-request email to all reviewers still PENDING."""
@@ -265,7 +265,7 @@ def revise_approval(
     approval_id: str,
     body: ReviseRequest,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads", "edit")),
+    _section: User = Depends(require_page("approvals", "edit")),
     db: Session = Depends(get_db),
 ):
     """In-place edit while pending: bumps round, resets reviewer decisions, re-notifies."""
@@ -300,7 +300,7 @@ def resubmit_approval(
     approval_id: str,
     body: ResubmitRequest,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads", "edit")),
+    _section: User = Depends(require_page("approvals", "edit")),
     db: Session = Depends(get_db),
 ):
     """Re-submit a rejected approval with new round."""

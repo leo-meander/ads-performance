@@ -41,6 +41,7 @@ from app.models.landing_page_clarity import LandingPageClaritySnapshot
 from app.models.landing_page_ga4 import LandingPageGA4Snapshot
 from app.models.user import User
 from app.models.user_permission import UserPermission
+from app.models.user_page_permission import UserPagePermission
 
 __all__ = [
     "AdAccount",
@@ -92,4 +93,5 @@ __all__ = [
     "SpyAnalysisReport",
     "User",
     "UserPermission",
+    "UserPagePermission",
 ]

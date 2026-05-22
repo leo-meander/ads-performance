@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
-from app.dependencies.auth import require_section
+from app.dependencies.auth import require_page
 from app.models.api_key import ApiKey
 from app.models.figma import FigmaJob, FigmaTemplate
 from app.models.user import User
@@ -48,7 +48,7 @@ def _api_response(data=None, error=None):
 def list_templates_endpoint(
     branch_id: str | None = None,
     platform: str | None = None,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("figma")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -79,7 +79,7 @@ class TemplateCreate(BaseModel):
 @router.post("/figma/templates")
 def create_template_endpoint(
     body: TemplateCreate,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("figma", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -125,7 +125,7 @@ class TemplateUpdate(BaseModel):
 def update_template_endpoint(
     template_id: str,
     body: TemplateUpdate,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("figma", "edit")),
     db: Session = Depends(get_db),
 ):
     """Patch a template — typically to replace the noisy auto-inferred
@@ -160,7 +160,7 @@ def update_template_endpoint(
 @router.delete("/figma/templates/{template_id}")
 def delete_template_endpoint(
     template_id: str,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("figma", "edit")),
     db: Session = Depends(get_db),
 ):
     """Soft-delete a template (is_active = False) — per the project's
@@ -178,7 +178,7 @@ def delete_template_endpoint(
 @router.post("/figma/templates/{template_id}/refresh-schema")
 def refresh_template_schema_endpoint(
     template_id: str,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("figma", "edit")),
     db: Session = Depends(get_db),
 ):
     """Re-scan the Figma frame and rebuild placeholder_schema from current
@@ -199,7 +199,7 @@ def refresh_template_schema_endpoint(
 @router.post("/figma/templates/{template_id}/refresh-preview")
 def refresh_template_preview_endpoint(
     template_id: str,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("figma", "edit")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -225,7 +225,7 @@ class JobCreate(BaseModel):
 @router.post("/figma/jobs")
 def create_job_endpoint(
     body: JobCreate,
-    current_user: User = Depends(require_section("meta_ads", "edit")),
+    current_user: User = Depends(require_page("figma", "edit")),
     db: Session = Depends(get_db),
 ):
     """Queue a variant request. Returns a job row + a Figma deep-link the
@@ -251,7 +251,7 @@ def list_jobs_endpoint(
     template_id: str | None = None,
     status: str | None = Query(None, description="PENDING | RUNNING | COMPLETED | FAILED"),
     limit: int = Query(50, le=200),
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("figma")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -269,7 +269,7 @@ def list_jobs_endpoint(
 @router.get("/figma/jobs/{job_id}")
 def get_job_endpoint(
     job_id: str,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("figma")),
     db: Session = Depends(get_db),
 ):
     try:

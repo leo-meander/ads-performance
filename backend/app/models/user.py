@@ -22,3 +22,10 @@ class User(Base, TimestampMixin):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+
+    page_permissions = relationship(
+        "UserPagePermission",
+        backref="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )

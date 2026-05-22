@@ -6,11 +6,12 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.permissions import BRANCHES, LEVELS, SECTIONS, permission_dict
+from app.core.permissions import BRANCHES, LEVELS, PAGES, SECTIONS, permission_dict
 from app.database import get_db
 from app.dependencies.auth import require_role
 from app.models.user import User
 from app.models.user_permission import UserPermission
+from app.models.user_page_permission import UserPagePermission
 from app.services.auth_service import hash_password
 
 router = APIRouter()
@@ -69,8 +70,14 @@ class PermissionItem(BaseModel):
     level: str
 
 
+class PagePermissionItem(BaseModel):
+    page: str
+    level: str
+
+
 class ReplacePermissionsRequest(BaseModel):
     items: list[PermissionItem]
+    page_items: list[PagePermissionItem] | None = None
 
 
 class ResetPasswordRequest(BaseModel):
@@ -254,10 +261,16 @@ def get_user_permissions(
         return _api_response(
             data={
                 "user": _user_to_dict(user),
-                **permission_dict(user, user.permissions or []),
+                **permission_dict(
+                    user, user.permissions or [], user.page_permissions or []
+                ),
                 "available_branches": BRANCHES,
                 "available_sections": SECTIONS,
                 "available_levels": LEVELS,
+                "available_pages": [
+                    {"page": pg, "section": meta["section"], "label": meta["label"]}
+                    for pg, meta in PAGES.items()
+                ],
             }
         )
     except Exception as e:
@@ -292,10 +305,22 @@ def replace_user_permissions(
                 return _api_response(error=f"Invalid level: {item.level}")
             seen[(item.branch, item.section)] = item.level
 
-        # Wipe + reinsert atomically
+        # Validate + dedupe page rows by page, keeping the last value
+        seen_pages: dict[str, str] = {}
+        for pitem in body.page_items or []:
+            if pitem.page not in PAGES:
+                return _api_response(error=f"Invalid page: {pitem.page}")
+            if pitem.level not in LEVELS:
+                return _api_response(error=f"Invalid level: {pitem.level}")
+            seen_pages[pitem.page] = pitem.level
+
+        # Wipe + reinsert atomically (both section and page permissions)
         db.query(UserPermission).filter(UserPermission.user_id == user.id).delete(
             synchronize_session=False
         )
+        db.query(UserPagePermission).filter(
+            UserPagePermission.user_id == user.id
+        ).delete(synchronize_session=False)
         for (branch, section), level in seen.items():
             db.add(
                 UserPermission(
@@ -305,12 +330,22 @@ def replace_user_permissions(
                     level=level,
                 )
             )
+        for page, level in seen_pages.items():
+            db.add(
+                UserPagePermission(
+                    user_id=user.id,
+                    page=page,
+                    level=level,
+                )
+            )
         db.commit()
         db.refresh(user)
         return _api_response(
             data={
                 "user": _user_to_dict(user),
-                **permission_dict(user, user.permissions or []),
+                **permission_dict(
+                    user, user.permissions or [], user.page_permissions or []
+                ),
             }
         )
     except Exception as e:

@@ -11,6 +11,7 @@ type NavItem = {
   href: string
   label: string
   section: string
+  page: string
   badge?: boolean
   adminOnly?: boolean
 }
@@ -24,69 +25,69 @@ const navSections: NavSection[] = [
   {
     label: 'Analytics',
     items: [
-      { href: '/', label: 'Dashboard', section: 'analytics' },
-      { href: '/booking-matches', label: 'Booking from Ads', section: 'analytics' },
+      { href: '/', label: 'Dashboard', section: 'analytics', page: 'dashboard' },
+      { href: '/booking-matches', label: 'Booking from Ads', section: 'analytics', page: 'booking_matches' },
     ],
   },
   {
     label: 'Meta Ads',
     items: [
-      { href: '/meta/recommendations', label: 'Recommendations', section: 'meta_ads' },
-      { href: '/angles', label: 'Ad Angles', section: 'meta_ads' },
-      { href: '/creative', label: 'Creative Library', section: 'meta_ads' },
-      { href: '/winning-ads', label: 'Figma', section: 'meta_ads' },
-      { href: '/approvals', label: 'Approvals', section: 'meta_ads', badge: true },
-      { href: '/keypoints', label: 'Keypoints', section: 'meta_ads' },
-      { href: '/ad-research', label: 'Spy Ads', section: 'meta_ads' },
+      { href: '/meta/recommendations', label: 'Recommendations', section: 'meta_ads', page: 'meta_recommendations' },
+      { href: '/angles', label: 'Ad Angles', section: 'meta_ads', page: 'angles' },
+      { href: '/creative', label: 'Creative Library', section: 'meta_ads', page: 'creative' },
+      { href: '/winning-ads', label: 'Figma', section: 'meta_ads', page: 'figma' },
+      { href: '/approvals', label: 'Approvals', section: 'meta_ads', page: 'approvals', badge: true },
+      { href: '/keypoints', label: 'Keypoints', section: 'meta_ads', page: 'keypoints' },
+      { href: '/ad-research', label: 'Spy Ads', section: 'meta_ads', page: 'ad_research' },
     ],
   },
   {
     label: 'Google Ads',
     items: [
-      { href: '/google/pmax', label: 'PMax Campaigns', section: 'google_ads' },
-      { href: '/google/search', label: 'Search Campaigns', section: 'google_ads' },
-      { href: '/google/recommendations', label: 'Recommendations', section: 'google_ads' },
+      { href: '/google/pmax', label: 'PMax Campaigns', section: 'google_ads', page: 'google_pmax' },
+      { href: '/google/search', label: 'Search Campaigns', section: 'google_ads', page: 'google_search' },
+      { href: '/google/recommendations', label: 'Recommendations', section: 'google_ads', page: 'google_recommendations' },
     ],
   },
   {
     label: 'Budget',
-    items: [{ href: '/budget', label: 'Budget Planner', section: 'budget' }],
+    items: [{ href: '/budget', label: 'Budget Planner', section: 'budget', page: 'budget_planner' }],
   },
   {
     label: 'Landing Pages',
     items: [
-      { href: '/landing-pages', label: 'All Pages', section: 'landing_pages' },
-      { href: '/landing-pages/approvals', label: 'Approvals', section: 'landing_pages', badge: true },
+      { href: '/landing-pages', label: 'All Pages', section: 'landing_pages', page: 'landing_pages_all' },
+      { href: '/landing-pages/approvals', label: 'Approvals', section: 'landing_pages', page: 'landing_pages_approvals', badge: true },
     ],
   },
   {
     label: 'Automation',
     items: [
-      { href: '/tactics', label: 'Tactics', section: 'automation' },
-      { href: '/logs', label: 'Action Logs', section: 'automation' },
+      { href: '/tactics', label: 'Tactics', section: 'automation', page: 'tactics' },
+      { href: '/logs', label: 'Action Logs', section: 'automation', page: 'logs' },
     ],
   },
   {
     label: 'AI',
     items: [
-      { href: '/insights', label: 'AI Insights', section: 'ai' },
-      { href: '/transcriptions', label: 'Video Transcriptions', section: 'ai' },
+      { href: '/insights', label: 'AI Insights', section: 'ai', page: 'insights' },
+      { href: '/transcriptions', label: 'Video Transcriptions', section: 'ai', page: 'transcriptions' },
     ],
   },
   {
     label: 'Settings',
     items: [
-      { href: '/accounts', label: 'Accounts', section: 'settings' },
-      { href: '/users', label: 'Users', section: 'settings', adminOnly: true },
-      { href: '/api-keys', label: 'API Keys', section: 'settings', adminOnly: true },
-      { href: '/settings', label: 'Currency Rates', section: 'settings' },
+      { href: '/accounts', label: 'Accounts', section: 'settings', page: 'accounts' },
+      { href: '/users', label: 'Users', section: 'settings', page: 'users', adminOnly: true },
+      { href: '/api-keys', label: 'API Keys', section: 'settings', page: 'api_keys', adminOnly: true },
+      { href: '/settings', label: 'Currency Rates', section: 'settings', page: 'currency_rates' },
     ],
   },
 ]
 
 export default function Sidebar() {
   const pathname = usePathname()
-  const { user, canAccessSection } = useAuth()
+  const { user, canAccessPage } = useAuth()
   const [unreadCount, setUnreadCount] = useState(0)
 
   const isAdmin = !!user && (user.is_admin || (user.roles || []).includes('admin'))
@@ -109,7 +110,7 @@ export default function Sidebar() {
 
   const isItemVisible = (item: NavItem): boolean => {
     if (item.adminOnly && !isAdmin) return false
-    return canAccessSection(item.section)
+    return canAccessPage(item.page)
   }
 
   return (

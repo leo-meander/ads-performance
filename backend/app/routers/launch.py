@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies.auth import require_role, require_section
+from app.dependencies.auth import require_page, require_role
 from app.models.approval import ComboApproval
 from app.models.user import User
 from app.services.launch_service import (
@@ -64,7 +64,7 @@ class AutoConfigCreateRequest(BaseModel):
 def list_launch_campaigns(
     account_id: str | None = None,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads")),
+    _section: User = Depends(require_page("approvals")),
     db: Session = Depends(get_db),
 ):
     """List campaigns available to launch ads into."""
@@ -79,7 +79,7 @@ def list_launch_campaigns(
 def list_launch_adsets(
     campaign_id: str = Query(...),
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads")),
+    _section: User = Depends(require_page("approvals")),
     db: Session = Depends(get_db),
 ):
     """List active ad sets under a campaign for launch selection."""
@@ -94,7 +94,7 @@ def list_launch_adsets(
 def launch_existing(
     body: LaunchExistingRequest,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads", "edit")),
+    _section: User = Depends(require_page("approvals", "edit")),
     db: Session = Depends(get_db),
 ):
     """Launch approved combo into existing campaign."""
@@ -123,7 +123,7 @@ def launch_existing(
 def launch_new_campaign(
     body: LaunchNewCampaignRequest,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads", "edit")),
+    _section: User = Depends(require_page("approvals", "edit")),
     db: Session = Depends(get_db),
 ):
     """Auto-create campaign + launch combo."""
@@ -156,7 +156,7 @@ def get_launch_auto_config(
     language: str = Query(...),
     account_id: str | None = None,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads")),
+    _section: User = Depends(require_page("approvals")),
     db: Session = Depends(get_db),
 ):
     """Get auto-config for campaign creation."""
@@ -185,7 +185,7 @@ def launch_preflight(
     ta: str | None = None,
     language: str | None = None,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads")),
+    _section: User = Depends(require_page("approvals")),
     db: Session = Depends(get_db),
 ):
     """Checklist of what must be in place before this combo can publish to
@@ -212,7 +212,7 @@ def launch_preflight(
 def create_launch_auto_config(
     body: AutoConfigCreateRequest,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads", "edit")),
+    _section: User = Depends(require_page("approvals", "edit")),
     db: Session = Depends(get_db),
 ):
     """Create (or overwrite) a campaign auto-config so the Auto-Create New
@@ -251,7 +251,7 @@ def create_launch_auto_config(
 def get_launch_status(
     approval_id: str,
     current_user: User = Depends(require_role(["creator", "admin"])),
-    _section: User = Depends(require_section("meta_ads")),
+    _section: User = Depends(require_page("approvals")),
     db: Session = Depends(get_db),
 ):
     """Check launch status for an approval."""

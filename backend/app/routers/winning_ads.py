@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
-from app.dependencies.auth import require_section
+from app.dependencies.auth import require_page
 from app.models.user import User
 from app.services.winning_ads_service import (
     get_winning_ad_detail,
@@ -39,7 +39,7 @@ def list_winning_ads_endpoint(
     sort_dir: str = Query("desc"),
     limit: int = Query(100, le=200),
     offset: int = Query(0, ge=0),
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("figma")),
     db: Session = Depends(get_db),
 ):
     try:
@@ -69,7 +69,7 @@ def list_winning_ads_endpoint(
 @router.get("/winning-ads/{material_id}")
 def get_winning_ad_endpoint(
     material_id: str,
-    current_user: User = Depends(require_section("meta_ads")),
+    current_user: User = Depends(require_page("figma")),
     db: Session = Depends(get_db),
 ):
     try:
