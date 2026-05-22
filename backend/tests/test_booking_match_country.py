@@ -16,6 +16,7 @@ from app.services.booking_match_service import (
     METHOD_MIXED,
     METHOD_NULL,
     _classify_match_method,
+    _match_country_tiers,
     _try_match,
     amount_tolerance,
     country_iso_matches_reservation,
@@ -26,8 +27,33 @@ def _res(country_iso):
     return SimpleNamespace(country_iso=country_iso)
 
 
-def _booking(grand_total, num="R1"):
-    return SimpleNamespace(grand_total=grand_total, reservation_number=num)
+def _booking(grand_total, num="R1", country_iso=None):
+    return SimpleNamespace(
+        grand_total=grand_total, reservation_number=num, country_iso=country_iso
+    )
+
+
+class TestMatchCountryTiers:
+    def test_prefers_same_country_when_both_match_amount(self):
+        same = _booking(1000.0, "SAME", country_iso="VN")
+        cross = _booking(1000.0, "CROSS", country_iso="US")
+        res = _match_country_tiers([cross, same], "VN", 1, 1000.0)
+        assert res is not None
+        matched, _ = res
+        assert [r.reservation_number for r in matched] == ["SAME"]
+
+    def test_cross_country_fallback_when_no_same_country(self):
+        cross = _booking(1000.0, "CROSS", country_iso="US")
+        res = _match_country_tiers([cross], "VN", 1, 1000.0)
+        assert res is not None and res[0][0].reservation_number == "CROSS"
+
+    def test_tolerance_applies_within_2pct(self):
+        # 988 is 1.2% off 1000 → within ±2%.
+        b = _booking(988.0, "B", country_iso="VN")
+        assert _match_country_tiers([b], "VN", 1, 1000.0) is not None
+
+    def test_empty_pool(self):
+        assert _match_country_tiers([], "VN", 1, 1000.0) is None
 
 
 class TestAmountTolerance:
