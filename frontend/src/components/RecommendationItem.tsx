@@ -302,7 +302,7 @@ export default function RecommendationItem({
                     </label>
                   ) : (
                     <p className="text-xs text-gray-500">
-                      Guidance only — apply manually in {platform === 'meta' ? 'Meta Ads Manager' : 'Google Ads UI'}, then click <span className="font-semibold">Đã Manual Apply</span> to log it.
+                      Guidance only — apply manually in {platform === 'meta' ? 'Meta Ads Manager' : 'Google Ads UI'}, then click <span className="font-semibold">Mark as manually applied</span> to log it.
                     </p>
                   )}
                 </div>
@@ -320,7 +320,7 @@ export default function RecommendationItem({
                       className="px-3 py-1.5 text-xs font-semibold text-violet-700 bg-violet-50 border border-violet-200 rounded hover:bg-violet-100"
                       title="Mark this guidance-only recommendation as already applied manually"
                     >
-                      Đã Manual Apply
+                      Mark as manually applied
                     </button>
                   )}
                   {rec.auto_applicable && (

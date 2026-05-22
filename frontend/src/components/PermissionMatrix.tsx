@@ -212,7 +212,7 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
       <div className="bg-white rounded-xl shadow-xl max-w-5xl w-full p-6 my-8">
         <div className="flex items-start justify-between mb-4">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Phân quyền</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Permissions</h2>
             <p className="text-sm text-gray-500">{userEmail}</p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
@@ -220,8 +220,8 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
 
         {isAdmin && (
           <div className="bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg text-sm mb-4">
-            User này có role <code>admin</code> — bypass toàn bộ permission. Bỏ role admin trước nếu
-            muốn giới hạn.
+            This user has the <code>admin</code> role — bypasses all permissions. Remove the admin role
+            first if you want to restrict access.
           </div>
         )}
         {error && (
@@ -235,10 +235,10 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
         ) : (
           <>
             <p className="text-xs text-gray-500 mb-3">
-              Click vào ô để đổi giữa <span className="font-medium text-gray-400">—</span> (không có) →{' '}
+              Click a cell to cycle between <span className="font-medium text-gray-400">—</span> (none) →{' '}
               <span className="font-medium text-blue-700">View</span> →{' '}
-              <span className="font-medium text-green-700">Edit</span>. Dùng nút ở đầu hàng/cột để áp
-              nhanh cả dãy.
+              <span className="font-medium text-green-700">Edit</span>. Use the buttons at the start of each
+              row/column to apply across the range quickly.
             </p>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse">
@@ -332,13 +332,13 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
 
             {pagesBySection.length > 0 && (
               <div className="mt-8 border-t border-gray-100 pt-5">
-                <h3 className="text-sm font-semibold text-gray-900">Phân quyền trang (tuỳ chọn)</h3>
+                <h3 className="text-sm font-semibold text-gray-900">Page permissions (optional)</h3>
                 <p className="text-xs text-gray-500 mt-1 mb-4">
-                  Để trống cả nhóm = user thấy <span className="font-medium">tất cả</span> trang của mục đó
-                  (theo quyền branch ở trên). Bật{' '}
+                  Leave the whole group empty = the user sees <span className="font-medium">all</span> pages in
+                  that section (per the branch permissions above). Enable{' '}
                   <span className="font-medium text-blue-700">View</span>/
-                  <span className="font-medium text-green-700">Edit</span> cho vài trang = user{' '}
-                  <span className="font-medium">chỉ</span> xem được đúng những trang đó trong mục.
+                  <span className="font-medium text-green-700">Edit</span> for a few pages = the user can{' '}
+                  <span className="font-medium">only</span> see those specific pages in the section.
                 </p>
                 <div className="space-y-4">
                   {pagesBySection.map(({ section, pages }) => (
@@ -351,9 +351,9 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
                           onClick={() => setPagesForSection(section, 'none')}
                           disabled={isAdmin}
                           className="text-[10px] text-gray-400 hover:text-gray-600 disabled:opacity-30"
-                          title="Bỏ giới hạn (thấy tất cả trang của mục)"
+                          title="Remove restriction (see all pages in the section)"
                         >
-                          Bỏ giới hạn
+                          Remove restriction
                         </button>
                       </div>
                       <div className="flex flex-wrap gap-2">
@@ -384,14 +384,14 @@ export default function PermissionMatrix({ userId, userEmail, onClose, onSaved }
             onClick={onClose}
             className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50"
           >
-            Huỷ
+            Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={saving || loading || isAdmin}
             className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
           >
-            {saving ? 'Đang lưu…' : 'Lưu thay đổi'}
+            {saving ? 'Saving…' : 'Save changes'}
           </button>
         </div>
       </div>

@@ -36,10 +36,10 @@ export default function SectionGuard({ section, page, children, fallback }: Sect
     return (
       <div className="max-w-md mx-auto mt-20 bg-white border border-gray-200 rounded-xl p-8 text-center">
         <div className="text-5xl mb-3">🔒</div>
-        <h1 className="text-lg font-semibold text-gray-900 mb-1">Bạn không có quyền truy cập</h1>
+        <h1 className="text-lg font-semibold text-gray-900 mb-1">You don't have access</h1>
         <p className="text-sm text-gray-500">
-          Mục <span className="font-mono">{section}</span> chưa được cấp quyền cho tài khoản của
-          bạn. Liên hệ admin để được cấp quyền.
+          The <span className="font-mono">{section}</span> section hasn't been granted to your
+          account. Contact an admin to request access.
         </p>
       </div>
     )
