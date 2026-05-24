@@ -1,9 +1,11 @@
-# Daily 21:30 UTC — Meta Ads recommendation engine (seasonality cadence).
+# Weekly Mon 21:30 UTC — Meta Ads recommendation engine (seasonality cadence).
+# Seasonality lookahead doesn't change day-to-day, so weekly is enough and
+# cuts ~7x the Claude enrichment cost of this cadence.
 name: Cron — Meta recs (seasonality)
 
 on:
   schedule:
-    - cron: "30 21 * * *"
+    - cron: "30 21 * * 1"
   workflow_dispatch:
 
 env:

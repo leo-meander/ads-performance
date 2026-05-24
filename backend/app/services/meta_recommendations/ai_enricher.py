@@ -37,9 +37,9 @@ from app.services.meta_recommendations.sop_text import (
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 768
-MAX_BATCH_PER_CADENCE = 50
+MAX_BATCH_PER_CADENCE = 20  # hard cap on enrichments per run to control cost
 
 _SYSTEM_PROMPT = (
     "You are a performance-marketing analyst for MEANDER Group's Meta Ads, "
