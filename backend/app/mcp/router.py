@@ -360,7 +360,7 @@ def _login_html(
       <button type="submit">Sign in</button>
     </form>
     <div class="note">
-      Claude will get read-only access to campaign metrics, spend, budgets, and country breakdowns.
+      Claude will get read-only access to campaign metrics, spend, budgets, country breakdowns, and creative angle / keypoint performance.
     </div>
   </div>
 </body>
