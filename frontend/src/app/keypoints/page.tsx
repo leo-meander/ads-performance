@@ -117,12 +117,10 @@ export default function KeypointsPage() {
           <option value="">All Audiences</option>
           {TARGET_AUDIENCES.map(ta => <option key={ta} value={ta}>{ta}</option>)}
         </select>
-        {countries.length > 0 && (
-          <select value={fCountry} onChange={e => setFCountry(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
-            <option value="">All Countries</option>
-            {countries.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-        )}
+        <select value={fCountry} onChange={e => setFCountry(e.target.value)} disabled={countries.length === 0} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+          <option value="">{countries.length === 0 ? 'No country data' : 'All Countries'}</option>
+          {countries.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
         {(fTA || fCountry) && <span className="self-center text-xs text-gray-400">metrics shown for <strong className="text-gray-600">{[fTA, fCountry].filter(Boolean).join(' · ')}</strong> only</span>}
       </div>
 

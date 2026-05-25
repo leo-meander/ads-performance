@@ -195,3 +195,35 @@ def test_facets_returns_distinct_countries():
     assert resp["success"] is True
     assert resp["data"]["countries"] == ["JP", "PH"]  # sorted, distinct
     db.close()
+
+
+def test_facets_lists_countries_even_without_keypoint_assignment():
+    """The country dropdown must populate from all combos on the branch, not
+    only keypoint-tagged ones — otherwise it stays empty until combos are
+    tagged and the filter looks broken."""
+    db = TestSession()
+    account = AdAccount(
+        id=str(uuid.uuid4()), platform="meta",
+        account_id=f"act_{uuid.uuid4().hex[:8]}",
+        account_name="Oani", currency="TWD",
+    )
+    db.add(account)
+    db.flush()
+    db.add(AdCopy(
+        copy_id="CPY-X", branch_id=account.id, target_audience="Couple",
+        headline="h", body_text="b", cta="Book", language="en",
+    ))
+    db.add(AdMaterial(
+        branch_id=account.id, material_id="MAT-X", material_type="image",
+        file_url="https://x/x.jpg", url_source="auto",
+    ))
+    db.add(AdCombo(  # country set, but NO keypoint_ids
+        id=str(uuid.uuid4()), combo_id="CMB-X", branch_id=account.id,
+        ad_name="Ad X", target_audience="Couple", country="TW",
+        copy_id="CPY-X", material_id="MAT-X", keypoint_ids=None,
+    ))
+    db.commit()
+
+    resp = keypoint_facets(current_user=_admin(), db=db)
+    assert resp["data"]["countries"] == ["TW"]
+    db.close()
