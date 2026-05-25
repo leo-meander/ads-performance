@@ -188,12 +188,18 @@ def test_ta_and_country_combine_as_and():
     db.close()
 
 
-def test_facets_returns_distinct_countries():
+def test_facets_returns_named_countries_and_drops_junk():
     branch_id, kp_id = _seed_countries()
+    # a badly-named adset parsed to junk ("25") must not pollute the dropdown
+    _combo(branch_id, 99, "Solo", kp_id, spend=10, revenue=10, country="25")
     db = TestSession()
     resp = keypoint_facets(current_user=_admin(), db=db)
     assert resp["success"] is True
-    assert resp["data"]["countries"] == ["JP", "PH"]  # sorted, distinct
+    # sorted by display name, each with a full name; "25" filtered out
+    assert resp["data"]["countries"] == [
+        {"code": "JP", "name": "Japan"},
+        {"code": "PH", "name": "Philippines"},
+    ]
     db.close()
 
 
@@ -225,5 +231,5 @@ def test_facets_lists_countries_even_without_keypoint_assignment():
     db.commit()
 
     resp = keypoint_facets(current_user=_admin(), db=db)
-    assert resp["data"]["countries"] == ["TW"]
+    assert resp["data"]["countries"] == [{"code": "TW", "name": "Taiwan"}]
     db.close()
