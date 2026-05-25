@@ -46,6 +46,7 @@ class KeypointCreate(BaseModel):
 def list_keypoints(
     branch_id: str | None = None,
     category: str | None = None,
+    target_audience: str | None = None,
     current_user: User = Depends(require_page("keypoints")),
     db: Session = Depends(get_db),
 ):
@@ -64,8 +65,15 @@ def list_keypoints(
             q = q.filter(BranchKeypoint.category == category)
         rows = q.order_by(BranchKeypoint.category, BranchKeypoint.title).all()
 
-        # Aggregate combo metrics per keypoint
-        all_combos = db.query(AdCombo).filter(AdCombo.keypoint_ids.isnot(None)).all()
+        # Aggregate combo metrics per keypoint. When target_audience is set,
+        # only combos for that audience feed the metrics + verdict — this is
+        # how we learn which keypoints win for Solo vs Couple vs Group, etc.
+        # The benchmark below stays branch-wide so the WIN bar is a stable,
+        # cross-audience baseline (the branch's overall ROAS).
+        combo_q = db.query(AdCombo).filter(AdCombo.keypoint_ids.isnot(None))
+        if target_audience:
+            combo_q = combo_q.filter(AdCombo.target_audience == target_audience)
+        all_combos = combo_q.all()
         kp_metrics: dict[str, dict] = {}
         for combo in all_combos:
             ids = combo.keypoint_ids if isinstance(combo.keypoint_ids, list) else []

@@ -22,6 +22,8 @@ const VERDICT_COLORS: Record<string, string> = {
   TEST: 'bg-yellow-100 text-yellow-700',
   LOSE: 'bg-red-100 text-red-700',
 }
+// TA_WHITELIST — keep in sync with backend parse_utils.TA_WHITELIST
+const TARGET_AUDIENCES = ['Solo', 'Couple', 'Friend', 'Group', 'Business']
 
 export default function KeypointsPage() {
   const { canEditSection } = useAuth()
@@ -39,16 +41,21 @@ export default function KeypointsPage() {
   // Filters
   const [fBranch, setFBranch] = useState('')
   const [fVerdict, setFVerdict] = useState('')
+  const [fTA, setFTA] = useState('')
 
-  const fetch_kp = () => {
+  // TA filter is server-side: metrics + verdict are recomputed from only that
+  // audience's combos, so we refetch whenever it changes.
+  const fetch_kp = (ta: string) => {
     setLoading(true)
-    fetch(`${API_BASE}/api/keypoints`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setKeypoints(d.data) }).catch(() => {}).finally(() => setLoading(false))
+    const qs = ta ? `?target_audience=${encodeURIComponent(ta)}` : ''
+    fetch(`${API_BASE}/api/keypoints${qs}`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setKeypoints(d.data) }).catch(() => {}).finally(() => setLoading(false))
   }
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
-    fetch_kp()
   }, [])
+
+  useEffect(() => { fetch_kp(fTA) }, [fTA])
 
   const handleCreate = () => {
     if (!formBranch || !formTitle) return
@@ -56,11 +63,11 @@ export default function KeypointsPage() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ branch_id: formBranch, category: formCategory, title: formTitle }),
-    }).then(r => r.json()).then(d => { if (d.success) { setShowCreate(false); setFormTitle(''); fetch_kp() } })
+    }).then(r => r.json()).then(d => { if (d.success) { setShowCreate(false); setFormTitle(''); fetch_kp(fTA) } })
   }
 
   const deleteKp = (id: string) => {
-    fetch(`${API_BASE}/api/keypoints/${id}`, { method: 'DELETE', credentials: 'include' }).then(() => fetch_kp())
+    fetch(`${API_BASE}/api/keypoints/${id}`, { method: 'DELETE', credentials: 'include' }).then(() => fetch_kp(fTA))
   }
 
   // Apply filters
@@ -100,6 +107,11 @@ export default function KeypointsPage() {
           <option value="">All Verdicts</option>
           {VERDICTS.map(v => <option key={v} value={v}>{v}</option>)}
         </select>
+        <select value={fTA} onChange={e => setFTA(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+          <option value="">All Audiences</option>
+          {TARGET_AUDIENCES.map(ta => <option key={ta} value={ta}>{ta}</option>)}
+        </select>
+        {fTA && <span className="self-center text-xs text-gray-400">metrics shown for <strong className="text-gray-600">{fTA}</strong> audience only</span>}
       </div>
 
       {showCreate && (
