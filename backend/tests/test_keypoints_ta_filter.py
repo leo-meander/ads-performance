@@ -21,7 +21,7 @@ from app.models.ad_material import AdMaterial
 from app.models.base import Base
 from app.models.keypoint import BranchKeypoint
 from app.models.user import User
-from app.routers.creative import list_keypoints
+from app.routers.creative import keypoint_facets, list_keypoints
 
 
 engine = create_engine(
@@ -45,7 +45,7 @@ def _admin() -> User:
     )
 
 
-def _combo(branch_id: str, n: int, ta: str, kp_id: str, spend: float, revenue: float) -> AdCombo:
+def _combo(branch_id: str, n: int, ta: str, kp_id: str, spend: float, revenue: float, country: str = "VN") -> AdCombo:
     db = TestSession()
     db.add(AdCopy(
         copy_id=f"CPY-{n}", branch_id=branch_id, target_audience=ta,
@@ -57,7 +57,7 @@ def _combo(branch_id: str, n: int, ta: str, kp_id: str, spend: float, revenue: f
     ))
     combo = AdCombo(
         id=str(uuid.uuid4()), combo_id=f"CMB-{n}", branch_id=branch_id,
-        ad_name=f"Ad {n}", target_audience=ta, country="VN",
+        ad_name=f"Ad {n}", target_audience=ta, country=country,
         copy_id=f"CPY-{n}", material_id=f"MAT-{n}", keypoint_ids=[kp_id],
         spend=spend, revenue=revenue, clicks=5000, impressions=100000,
         conversions=10,
@@ -130,4 +130,68 @@ def test_ta_with_no_combos_shows_keypoint_with_zero_metrics():
     kp = _only(resp["data"], kp_id)
     assert kp["combos"] == 0
     assert kp["verdict"] == "TEST"  # no data for this audience
+    db.close()
+
+
+def _seed_countries():
+    """One branch + keypoint, two Solo combos in different countries:
+    a strong JP combo and a weak PH combo. Branch benchmark = 550/200 = 2.75x."""
+    db = TestSession()
+    account = AdAccount(
+        id=str(uuid.uuid4()), platform="meta",
+        account_id=f"act_{uuid.uuid4().hex[:8]}",
+        account_name="Saigon", currency="VND",
+    )
+    db.add(account)
+    db.flush()
+    kp = BranchKeypoint(branch_id=account.id, category="amenity", title="Free breakfast")
+    db.add(kp)
+    db.commit()
+    branch_id, kp_id = account.id, kp.id
+    db.close()
+
+    _combo(branch_id, 1, "Solo", kp_id, spend=100, revenue=500, country="JP")  # roas 5.0
+    _combo(branch_id, 2, "Solo", kp_id, spend=100, revenue=50, country="PH")   # roas 0.5
+    return branch_id, kp_id
+
+
+def test_country_filter_scopes_metrics_to_that_country():
+    branch_id, kp_id = _seed_countries()
+    db = TestSession()
+
+    jp = _only(list_keypoints(country="JP", current_user=_admin(), db=db)["data"], kp_id)
+    assert jp["combos"] == 1
+    assert jp["roas"] == pytest.approx(5.0)
+    assert jp["verdict"] == "WIN"  # 5.0 >= branch benchmark 2.75
+
+    ph = _only(list_keypoints(country="PH", current_user=_admin(), db=db)["data"], kp_id)
+    assert ph["combos"] == 1
+    assert ph["roas"] == pytest.approx(0.5)
+    assert ph["verdict"] == "LOSE"  # same keypoint loses for PH traffic
+    db.close()
+
+
+def test_ta_and_country_combine_as_and():
+    branch_id, kp_id = _seed_countries()  # both combos are Solo
+    db = TestSession()
+    # Solo + JP narrows to the single JP combo
+    kp = _only(list_keypoints(target_audience="Solo", country="JP", current_user=_admin(), db=db)["data"], kp_id)
+    assert kp["combos"] == 1
+    assert kp["roas"] == pytest.approx(5.0)
+    # Solo + PH narrows to the single PH combo
+    kp = _only(list_keypoints(target_audience="Solo", country="PH", current_user=_admin(), db=db)["data"], kp_id)
+    assert kp["combos"] == 1
+    assert kp["roas"] == pytest.approx(0.5)
+    # Couple + JP → no combos match both
+    kp = _only(list_keypoints(target_audience="Couple", country="JP", current_user=_admin(), db=db)["data"], kp_id)
+    assert kp["combos"] == 0
+    db.close()
+
+
+def test_facets_returns_distinct_countries():
+    branch_id, kp_id = _seed_countries()
+    db = TestSession()
+    resp = keypoint_facets(current_user=_admin(), db=db)
+    assert resp["success"] is True
+    assert resp["data"]["countries"] == ["JP", "PH"]  # sorted, distinct
     db.close()

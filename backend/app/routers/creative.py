@@ -47,6 +47,7 @@ def list_keypoints(
     branch_id: str | None = None,
     category: str | None = None,
     target_audience: str | None = None,
+    country: str | None = None,
     current_user: User = Depends(require_page("keypoints")),
     db: Session = Depends(get_db),
 ):
@@ -65,14 +66,17 @@ def list_keypoints(
             q = q.filter(BranchKeypoint.category == category)
         rows = q.order_by(BranchKeypoint.category, BranchKeypoint.title).all()
 
-        # Aggregate combo metrics per keypoint. When target_audience is set,
-        # only combos for that audience feed the metrics + verdict — this is
-        # how we learn which keypoints win for Solo vs Couple vs Group, etc.
-        # The benchmark below stays branch-wide so the WIN bar is a stable,
-        # cross-audience baseline (the branch's overall ROAS).
+        # Aggregate combo metrics per keypoint. The target_audience / country
+        # filters narrow which combos feed the metrics + verdict (combined as
+        # AND) — this is how we learn which keypoints win for Solo vs Couple,
+        # for JP vs PH traffic, or any slice of the two. The benchmark below
+        # stays branch-wide so the WIN bar is a stable, cross-slice baseline
+        # (the branch's overall ROAS).
         combo_q = db.query(AdCombo).filter(AdCombo.keypoint_ids.isnot(None))
         if target_audience:
             combo_q = combo_q.filter(AdCombo.target_audience == target_audience)
+        if country:
+            combo_q = combo_q.filter(AdCombo.country == country)
         all_combos = combo_q.all()
         kp_metrics: dict[str, dict] = {}
         for combo in all_combos:
@@ -126,6 +130,31 @@ def list_keypoints(
                 "verdict": verdict,
             })
         return _api_response(data=result)
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/keypoints/facets")
+def keypoint_facets(
+    current_user: User = Depends(require_page("keypoints")),
+    db: Session = Depends(get_db),
+):
+    """Distinct filter values for the keypoints page. Countries are open-ended
+    (parsed from adset names) so the dropdown is built from real combo data;
+    target audiences come from the fixed TA_WHITELIST on the frontend."""
+    try:
+        ok, scoped_ids, err = scoped_account_ids(db, current_user, "meta_ads")
+        if not ok:
+            return _api_response(error=err)
+        q = db.query(AdCombo.country).filter(
+            AdCombo.country.isnot(None), AdCombo.keypoint_ids.isnot(None)
+        )
+        if scoped_ids is not None:
+            q = q.filter(AdCombo.branch_id.in_(scoped_ids or ["__no_match__"]))
+        countries = sorted(
+            {c for (c,) in q.distinct().all() if c and c != "Unknown"}
+        )
+        return _api_response(data={"countries": countries})
     except Exception as e:
         return _api_response(error=str(e))
 
