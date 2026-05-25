@@ -34,6 +34,31 @@ def _detect_ta(name: str) -> str:
     return parse_campaign_metadata(name)["ta"]
 
 
+def _country_by_ad_name(db: Session, account_id) -> dict[str, str]:
+    """Map ad_name -> parsed country via the synced Ad -> AdSet link for one
+    branch.
+
+    Country lives on AdSet (parsed from the adset-name prefix at sync time);
+    combos are keyed by Meta ad name and never carried a country of their own.
+    creative_sync runs after the Ad table is upserted, so this join is fresh.
+    'Unknown'/blank countries are skipped so they don't shadow a real value.
+    """
+    from app.models.ad import Ad
+    from app.models.ad_set import AdSet
+
+    rows = (
+        db.query(Ad.name, AdSet.country)
+        .join(AdSet, AdSet.id == Ad.ad_set_id)
+        .filter(Ad.account_id == account_id, AdSet.country.isnot(None))
+        .all()
+    )
+    out: dict[str, str] = {}
+    for name, country in rows:
+        if name and country and country != "Unknown":
+            out.setdefault(name, country)
+    return out
+
+
 def _detect_material_type(ad_name: str) -> str:
     n = (ad_name or "").lower()
     if "[video]" in n:
@@ -92,6 +117,8 @@ def sync_creative_library_for_account(db: Session, account: AdAccount) -> dict:
         for c in db.query(AdCombo).filter(AdCombo.branch_id == account.id).all()
         if c.ad_name
     }
+    # ad_name -> country, derived from the already-synced Ad -> AdSet link.
+    country_by_ad = _country_by_ad_name(db, account.id)
 
     seen_ad_names: set[str] = set()
 
@@ -177,6 +204,7 @@ def sync_creative_library_for_account(db: Session, account: AdAccount) -> dict:
                     copy_id=copy.copy_id,
                     material_id=material.material_id,
                     target_audience=ta,
+                    country=country_by_ad.get(ad_name),
                     verdict="TEST",
                     verdict_source="auto",
                 )
