@@ -104,7 +104,7 @@ Rules:
             combo = db.query(AdCombo).filter(AdCombo.combo_id == combo_id).first()
             if combo:
                 if kp_id:
-                    combo.keypoint_id = kp_id
+                    combo.keypoint_ids = [kp_id]  # column is a JSON array of keypoint ids
                 if ang_id:
                     combo.angle_id = ang_id
                 updated += 1

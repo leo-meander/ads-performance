@@ -580,7 +580,6 @@ class ComboCreate(BaseModel):
     branch_id: str
     ad_name: str | None = None
     target_audience: str | None = None
-    keypoint_id: str | None = None
     keypoint_ids: list[str] | None = None
     angle_id: str | None = None
     copy_id: str
@@ -933,46 +932,50 @@ def analytics_by_keypoint(
         if not ok:
             return _api_response(error=err)
 
-        from sqlalchemy import func
-        q = db.query(
-            AdCombo.keypoint_id,
-            func.count(AdCombo.id).label("combo_count"),
-            func.sum(AdCombo.spend).label("spend"),
-            func.sum(AdCombo.impressions).label("impressions"),
-            func.sum(AdCombo.clicks).label("clicks"),
-            func.sum(AdCombo.conversions).label("conversions"),
-            func.sum(AdCombo.revenue).label("revenue"),
-        ).filter(AdCombo.keypoint_id.isnot(None))
-
+        # A combo carries a JSON array of keypoint ids (a combo can target
+        # multiple keypoints), so we can't GROUP BY a column — expand the
+        # array in Python and accumulate per keypoint id, mirroring
+        # list_keypoints above.
+        combo_q = db.query(AdCombo).filter(AdCombo.keypoint_ids.isnot(None))
         if branch_id:
-            q = q.filter(AdCombo.branch_id == branch_id)
+            combo_q = combo_q.filter(AdCombo.branch_id == branch_id)
         elif scoped_ids is not None:
-            q = q.filter(AdCombo.branch_id.in_(scoped_ids or ["__no_match__"]))
+            combo_q = combo_q.filter(AdCombo.branch_id.in_(scoped_ids or ["__no_match__"]))
 
-        rows = q.group_by(AdCombo.keypoint_id).all()
+        kp_metrics: dict[str, dict] = {}
+        for combo in combo_q.all():
+            ids = combo.keypoint_ids if isinstance(combo.keypoint_ids, list) else []
+            for kid in ids:
+                if kid not in kp_metrics:
+                    kp_metrics[kid] = {"combo_count": 0, "spend": 0, "revenue": 0, "clicks": 0, "conversions": 0}
+                m = kp_metrics[kid]
+                m["combo_count"] += 1
+                m["spend"] += float(combo.spend or 0)
+                m["revenue"] += float(combo.revenue or 0)
+                m["clicks"] += int(combo.clicks or 0)
+                m["conversions"] += int(combo.conversions or 0)
 
-        kp_ids = [r.keypoint_id for r in rows]
         kp_map = {}
-        if kp_ids:
+        if kp_metrics:
             from app.models.keypoint import BranchKeypoint as KP
-            kps = db.query(KP).filter(KP.id.in_(kp_ids)).all()
+            kps = db.query(KP).filter(KP.id.in_(list(kp_metrics.keys()))).all()
             kp_map = {k.id: {"title": k.title, "category": k.category} for k in kps}
 
         result = []
-        for r in rows:
-            kp = kp_map.get(r.keypoint_id, {})
-            spend = float(r.spend or 0)
-            revenue = float(r.revenue or 0)
+        for kid, m in kp_metrics.items():
+            kp = kp_map.get(kid, {})
+            spend = m["spend"]
+            revenue = m["revenue"]
             result.append({
-                "keypoint_id": r.keypoint_id,
+                "keypoint_id": kid,
                 "keypoint_title": kp.get("title", ""),
                 "category": kp.get("category", ""),
-                "combo_count": r.combo_count,
+                "combo_count": m["combo_count"],
                 "spend": spend,
                 "revenue": revenue,
                 "roas": revenue / spend if spend > 0 else 0,
-                "clicks": int(r.clicks or 0),
-                "conversions": int(r.conversions or 0),
+                "clicks": m["clicks"],
+                "conversions": m["conversions"],
             })
         result.sort(key=lambda x: x["roas"], reverse=True)
         return _api_response(data=result)
