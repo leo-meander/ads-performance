@@ -42,20 +42,26 @@ export default function KeypointsPage() {
   const [fBranch, setFBranch] = useState('')
   const [fVerdict, setFVerdict] = useState('')
   const [fTA, setFTA] = useState('')
+  const [fCountry, setFCountry] = useState('')
+  const [countries, setCountries] = useState<string[]>([])
 
-  // TA filter is server-side: metrics + verdict are recomputed from only that
-  // audience's combos, so we refetch whenever it changes.
-  const fetch_kp = (ta: string) => {
+  // TA + Country filters are server-side: metrics + verdict are recomputed from
+  // only the matching combos (combined as AND), so we refetch when they change.
+  const fetch_kp = (ta: string, country: string) => {
     setLoading(true)
-    const qs = ta ? `?target_audience=${encodeURIComponent(ta)}` : ''
+    const params = new URLSearchParams()
+    if (ta) params.set('target_audience', ta)
+    if (country) params.set('country', country)
+    const qs = params.toString() ? `?${params}` : ''
     fetch(`${API_BASE}/api/keypoints${qs}`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setKeypoints(d.data) }).catch(() => {}).finally(() => setLoading(false))
   }
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: any) => a.platform === 'meta')) }).catch(() => {})
+    fetch(`${API_BASE}/api/keypoints/facets`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setCountries(d.data.countries || []) }).catch(() => {})
   }, [])
 
-  useEffect(() => { fetch_kp(fTA) }, [fTA])
+  useEffect(() => { fetch_kp(fTA, fCountry) }, [fTA, fCountry])
 
   const handleCreate = () => {
     if (!formBranch || !formTitle) return
@@ -63,11 +69,11 @@ export default function KeypointsPage() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ branch_id: formBranch, category: formCategory, title: formTitle }),
-    }).then(r => r.json()).then(d => { if (d.success) { setShowCreate(false); setFormTitle(''); fetch_kp(fTA) } })
+    }).then(r => r.json()).then(d => { if (d.success) { setShowCreate(false); setFormTitle(''); fetch_kp(fTA, fCountry) } })
   }
 
   const deleteKp = (id: string) => {
-    fetch(`${API_BASE}/api/keypoints/${id}`, { method: 'DELETE', credentials: 'include' }).then(() => fetch_kp(fTA))
+    fetch(`${API_BASE}/api/keypoints/${id}`, { method: 'DELETE', credentials: 'include' }).then(() => fetch_kp(fTA, fCountry))
   }
 
   // Apply filters
@@ -111,7 +117,13 @@ export default function KeypointsPage() {
           <option value="">All Audiences</option>
           {TARGET_AUDIENCES.map(ta => <option key={ta} value={ta}>{ta}</option>)}
         </select>
-        {fTA && <span className="self-center text-xs text-gray-400">metrics shown for <strong className="text-gray-600">{fTA}</strong> audience only</span>}
+        {countries.length > 0 && (
+          <select value={fCountry} onChange={e => setFCountry(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+            <option value="">All Countries</option>
+            {countries.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        )}
+        {(fTA || fCountry) && <span className="self-center text-xs text-gray-400">metrics shown for <strong className="text-gray-600">{[fTA, fCountry].filter(Boolean).join(' · ')}</strong> only</span>}
       </div>
 
       {showCreate && (
