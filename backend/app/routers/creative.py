@@ -141,14 +141,15 @@ def keypoint_facets(
 ):
     """Distinct filter values for the keypoints page. Countries are open-ended
     (parsed from adset names) so the dropdown is built from real combo data;
-    target audiences come from the fixed TA_WHITELIST on the frontend."""
+    target audiences come from the fixed TA_WHITELIST on the frontend.
+
+    Lists every country on the branch's combos (not just keypoint-tagged ones)
+    so the dropdown stays useful even when keypoint assignment is sparse."""
     try:
         ok, scoped_ids, err = scoped_account_ids(db, current_user, "meta_ads")
         if not ok:
             return _api_response(error=err)
-        q = db.query(AdCombo.country).filter(
-            AdCombo.country.isnot(None), AdCombo.keypoint_ids.isnot(None)
-        )
+        q = db.query(AdCombo.country).filter(AdCombo.country.isnot(None))
         if scoped_ids is not None:
             q = q.filter(AdCombo.branch_id.in_(scoped_ids or ["__no_match__"]))
         countries = sorted(
