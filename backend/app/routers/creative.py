@@ -15,6 +15,7 @@ from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
 from app.models.keypoint import BranchKeypoint
 from app.models.user import User
+from app.services.country_utils import country_name, is_valid_country
 from app.services.creative_service import (
     auto_classify_all_combos, classify_verdict, next_angle_id, next_combo_id,
     next_copy_id, next_material_id, propagate_derived_verdicts,
@@ -139,12 +140,15 @@ def keypoint_facets(
     current_user: User = Depends(require_page("keypoints")),
     db: Session = Depends(get_db),
 ):
-    """Distinct filter values for the keypoints page. Countries are open-ended
-    (parsed from adset names) so the dropdown is built from real combo data;
-    target audiences come from the fixed TA_WHITELIST on the frontend.
+    """Distinct filter values for the keypoints page. Countries come from real
+    combo data; target audiences come from the fixed TA_WHITELIST on the
+    frontend.
 
     Lists every country on the branch's combos (not just keypoint-tagged ones)
-    so the dropdown stays useful even when keypoint assignment is sparse."""
+    so the dropdown stays useful even when keypoint assignment is sparse. Only
+    known ISO codes (+ the 'ALL' multi-country marker) are returned — this
+    drops parse junk like '25' / '[E' / CJK fragments from badly-named adsets.
+    Each entry carries a display name so the UI can show 'Japan' not 'JP'."""
     try:
         ok, scoped_ids, err = scoped_account_ids(db, current_user, "meta_ads")
         if not ok:
@@ -152,8 +156,10 @@ def keypoint_facets(
         q = db.query(AdCombo.country).filter(AdCombo.country.isnot(None))
         if scoped_ids is not None:
             q = q.filter(AdCombo.branch_id.in_(scoped_ids or ["__no_match__"]))
+        codes = {c.upper() for (c,) in q.distinct().all() if is_valid_country(c)}
         countries = sorted(
-            {c for (c,) in q.distinct().all() if c and c != "Unknown"}
+            ({"code": c, "name": country_name(c)} for c in codes),
+            key=lambda x: x["name"],
         )
         return _api_response(data={"countries": countries})
     except Exception as e:
