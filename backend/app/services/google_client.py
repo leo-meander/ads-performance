@@ -883,24 +883,48 @@ def fetch_campaign_user_country_metrics(
         raise
 
 
-# Conversion action name patterns → metrics_cache column.
-# NOTE: "purchase" intentionally absent — the main per-entity metrics queries
-# already filter by `conversion_action_category = PURCHASE` and write the
-# count into `conversions`. Adding it here would double-count.
-_CONVERSION_ACTION_MAP = {
+# Conversion action CATEGORY (Google enum) → metrics_cache column. Category is
+# stable across accounts regardless of the action's display name, so it's the
+# primary signal. NOTE: "PURCHASE" intentionally absent — the main per-entity
+# metrics queries already filter by `conversion_action_category = PURCHASE` and
+# write the count into `conversions`; mapping it here would double-count.
+_CONVERSION_CATEGORY_MAP = {
+    "ADD_TO_CART": "add_to_cart",
+    "BEGIN_CHECKOUT": "checkouts",
+    "SUBMIT_LEAD_FORM": "leads",
+}
+
+# Fallback: conversion action NAME substring → column. Used only when the
+# category is generic (DEFAULT / PAGE_VIEW / UNKNOWN) and tells us nothing.
+# "search" has no dedicated Google category, so a name match is its only signal.
+# Display names vary per account ("Shopping Cart", "Add to cart", "add_to_cart"),
+# which is exactly why category is preferred whenever it's available.
+_CONVERSION_NAME_MAP = {
     "add_to_cart": "add_to_cart",
+    "add to cart": "add_to_cart",
+    "shopping cart": "add_to_cart",
     "begin_checkout": "checkouts",
     "checkout": "checkouts",
+    "search": "searches",
     "lead": "leads",
     "website visits": "landing_page_views",
     "website_visit": "landing_page_views",
 }
 
 
-def _match_conversion_column(action_name: str) -> str | None:
-    """Map a GA4 conversion action name to the metrics_cache column."""
-    name_lower = action_name.lower()
-    for pattern, column in _CONVERSION_ACTION_MAP.items():
+def _match_conversion_column(action_name: str, category: str | None = None) -> str | None:
+    """Map a Google conversion action to its metrics_cache column.
+
+    Prefers `conversion_action_category` (stable across accounts) and falls back
+    to the action's display name when the category is generic. PURCHASE is never
+    mapped — it's counted by the main per-entity query (see _fetch_purchase_metrics).
+    """
+    if category:
+        column = _CONVERSION_CATEGORY_MAP.get(category.upper())
+        if column:
+            return column
+    name_lower = (action_name or "").lower()
+    for pattern, column in _CONVERSION_NAME_MAP.items():
         if pattern in name_lower:
             return column
     return None
@@ -914,7 +938,7 @@ def fetch_conversion_action_metrics(
     """Fetch daily campaign-level conversion metrics segmented by conversion action.
 
     Returns list of dicts with campaign_id, date, conversion_action_name,
-    conversions count, and the mapped column name.
+    conversion_action_category, conversions count, and the mapped column name.
     """
     customer_id = customer_id.replace("-", "")
     client = _get_client()
@@ -929,6 +953,7 @@ def fetch_conversion_action_metrics(
             campaign.id,
             segments.date,
             segments.conversion_action_name,
+            segments.conversion_action_category,
             metrics.all_conversions
         FROM campaign
         WHERE segments.date BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
@@ -941,16 +966,18 @@ def fetch_conversion_action_metrics(
         results = []
         for row in rows:
             action_name = row.segments.conversion_action_name
-            column = _match_conversion_column(action_name)
+            category = _enum_name(row.segments.conversion_action_category)
+            column = _match_conversion_column(action_name, category)
             # `conversions` column is filled by the PURCHASE-filtered main
             # query (see fetch_campaign_metrics + _fetch_purchase_metrics);
-            # the action map intentionally excludes "purchase" so this branch
-            # only sees secondary actions (add_to_cart, lead, etc.).
+            # the maps intentionally exclude PURCHASE so this branch only sees
+            # secondary actions (add_to_cart, begin_checkout, search, ...).
             if column:
                 results.append({
                     "campaign_id": str(row.campaign.id),
                     "date": row.segments.date,
                     "conversion_action_name": action_name,
+                    "conversion_action_category": category,
                     "column": column,
                     "value": int(row.metrics.all_conversions or 0),
                 })

@@ -175,6 +175,88 @@ class TestFetchCampaignMetrics:
         assert m["ctr"] == 0
 
 
+class TestConversionColumnMatching:
+    """Conversion action → metrics_cache column mapping.
+
+    Category (Google enum) is the primary, account-stable signal; the action's
+    display name is only a fallback. Regression coverage for branches whose
+    add-to-cart action is renamed (e.g. Saigon/Osaka use "Shopping Cart") and
+    so never matched the old name-only substring map.
+    """
+
+    def test_category_matches_regardless_of_name(self):
+        from app.services.google_client import _match_conversion_column
+        # "Shopping Cart" name would NOT contain "add_to_cart", but the
+        # ADD_TO_CART category resolves it correctly.
+        assert _match_conversion_column("Shopping Cart", "ADD_TO_CART") == "add_to_cart"
+        assert _match_conversion_column("Reserva", "BEGIN_CHECKOUT") == "checkouts"
+        assert _match_conversion_column("Contact Form", "SUBMIT_LEAD_FORM") == "leads"
+
+    def test_category_is_case_insensitive(self):
+        from app.services.google_client import _match_conversion_column
+        assert _match_conversion_column("whatever", "add_to_cart") == "add_to_cart"
+
+    def test_name_fallback_when_category_generic(self):
+        from app.services.google_client import _match_conversion_column
+        # DEFAULT/PAGE_VIEW carry no funnel meaning → fall back to the name.
+        assert _match_conversion_column("Add to cart", "DEFAULT") == "add_to_cart"
+        assert _match_conversion_column("add_to_cart", "DEFAULT") == "add_to_cart"
+        assert _match_conversion_column("Checkout started", "DEFAULT") == "checkouts"
+
+    def test_search_has_no_category_uses_name(self):
+        from app.services.google_client import _match_conversion_column
+        # Google has no SEARCH category; the name is the only signal.
+        assert _match_conversion_column("Search", "DEFAULT") == "searches"
+        assert _match_conversion_column("Site Search", None) == "searches"
+
+    def test_purchase_never_maps(self):
+        from app.services.google_client import _match_conversion_column
+        # PURCHASE is counted by the main query — must NOT be mapped here
+        # (would double-count into a funnel column).
+        assert _match_conversion_column("Purchase", "PURCHASE") is None
+
+    def test_unrecognized_returns_none(self):
+        from app.services.google_client import _match_conversion_column
+        assert _match_conversion_column("Random Event", "ENGAGEMENT") is None
+        assert _match_conversion_column("", None) is None
+
+
+class TestFetchConversionActionMetrics:
+    def test_maps_rows_via_category(self, mock_google_ads):
+        mock_ga_service = MagicMock()
+        mock_google_ads.get_service.return_value = mock_ga_service
+
+        def _conv_row(cid, date_str, name, category, value):
+            row = MagicMock()
+            row.campaign.id = cid
+            row.segments.date = date_str
+            row.segments.conversion_action_name = name
+            # _enum_name reads .name off the proto-plus enum
+            row.segments.conversion_action_category.name = category
+            row.metrics.all_conversions = value
+            return row
+
+        rows = [
+            _conv_row("123", "2026-05-01", "Shopping Cart", "ADD_TO_CART", 128.99),
+            _conv_row("123", "2026-05-01", "Begin checkout", "BEGIN_CHECKOUT", 45.0),
+            _conv_row("123", "2026-05-01", "Purchase", "PURCHASE", 21.0),  # skipped
+        ]
+        mock_batch = MagicMock()
+        mock_batch.results = rows
+        mock_ga_service.search_stream.return_value = [mock_batch]
+
+        from app.services.google_client import fetch_conversion_action_metrics
+        from datetime import date
+        out = fetch_conversion_action_metrics("1234567890", date(2026, 5, 1), date(2026, 5, 1))
+
+        cols = {(r["column"], r["value"]) for r in out}
+        assert ("add_to_cart", 128) in cols  # int() truncates 128.99
+        assert ("checkouts", 45) in cols
+        # PURCHASE row dropped (handled by the main per-entity query)
+        assert all(r["column"] != "conversions" for r in out)
+        assert len(out) == 2
+
+
 class TestFieldTypeMapping:
     def test_asset_type_map(self):
         from app.services.google_client import _FIELD_TYPE_MAP
