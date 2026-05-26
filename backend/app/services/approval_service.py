@@ -207,6 +207,19 @@ def record_decision(
             _notify_creator_of_result(db, approval, "APPROVED", None, email_tasks)
 
     db.commit()
+
+    # If this decision pushed the combo to fully APPROVED and the approval
+    # carried a Figma working file, queue a render job that pushes the approved
+    # copy into that exact frame. The approval outcome is already committed
+    # above, so a Figma hiccup here can never change it.
+    if approval.status == "APPROVED":
+        try:
+            _auto_queue_figma_render(db, approval)
+        except Exception:
+            logger.exception(
+                "Auto-queue Figma render on approval failed for %s", approval_id
+            )
+
     _queue_emails(email_tasks)
     return approval
 
@@ -816,6 +829,113 @@ def _notify_creator_of_result(
                 platform_url=settings.FRONTEND_URL,
             )
             email_tasks.append((creator.email, subject, html))
+
+
+def _auto_queue_figma_render(db: Session, approval: ComboApproval) -> None:
+    """On full approval, push the approved copy into the Figma frame shipped
+    with this approval.
+
+    Strict by design (per product decision): fires ONLY when the approval has a
+    working_file_url pointing at a specific Figma frame — that frame was
+    auto-registered as a template at submit time (see submit_for_approval).
+    There is no branch-template fallback: we render the exact frame that was
+    reviewed, never a guessed one. The queued job carries source_combo_id so the
+    combo surfaces under the Figma list's "Figma only" filter. Skips silently
+    when there's no Figma working file or no active template registered for it.
+    """
+    if not approval.working_file_url:
+        return
+
+    from app.models.figma import FigmaTemplate
+    from app.services.figma_service import create_job, parse_figma_url
+
+    file_key, node_id = parse_figma_url(approval.working_file_url)
+    if not file_key or not node_id:
+        return
+
+    template = (
+        db.query(FigmaTemplate)
+        .filter(
+            FigmaTemplate.file_key == file_key,
+            FigmaTemplate.node_id == node_id,
+            FigmaTemplate.is_active.is_(True),
+        )
+        .first()
+    )
+    if not template:
+        return
+
+    combo = db.query(AdCombo).filter(AdCombo.id == approval.combo_id).first()
+    if not combo:
+        return
+
+    job = create_job(
+        db,
+        template_id=template.id,
+        request_payload=_build_render_payload(db, combo),
+        requested_by=approval.submitted_by,
+        source_combo_id=combo.combo_id,
+    )
+
+    # create_job already committed the job. Notify the creator and commit the
+    # notification on its own so neither write is lost.
+    if approval.submitted_by:
+        combo_name = combo.ad_name or combo.combo_id
+        create_notification(
+            db,
+            user_id=approval.submitted_by,
+            type="FIGMA_RENDER_QUEUED",
+            title=f"Render job queued: {combo_name}",
+            body=(
+                f"{combo_name} was approved — a Figma render job (#{str(job.id)[:8]}) "
+                f"was queued into template '{template.name}'. A designer runs the "
+                f"MEANDER plugin to fill it."
+            ),
+            reference_id=approval.id,
+            reference_type="combo_approval",
+        )
+        db.commit()
+
+
+def _build_render_payload(db: Session, combo: AdCombo) -> dict:
+    """Map an approved combo's copy + keypoints onto the common $-slot names a
+    template might declare (headline/hook/title, subhead/body, cta, benefit_N).
+
+    Over-supplies on purpose — create_job() drops any key the template doesn't
+    declare, so each template just takes the slots it actually has.
+    """
+    from app.models.ad_copy import AdCopy
+    from app.models.keypoint import BranchKeypoint
+
+    payload: dict[str, str] = {}
+
+    copy = (
+        db.query(AdCopy).filter(AdCopy.copy_id == combo.copy_id).first()
+        if combo.copy_id else None
+    )
+    if copy:
+        if copy.headline:
+            payload["headline"] = copy.headline
+            payload["hook"] = copy.headline
+            payload["title"] = copy.headline
+        if copy.body_text:
+            payload["subhead"] = copy.body_text
+            payload["body"] = copy.body_text
+        if copy.cta:
+            payload["cta"] = copy.cta
+
+    kp_ids = combo.keypoint_ids if isinstance(combo.keypoint_ids, list) else []
+    if kp_ids:
+        rows = db.query(BranchKeypoint).filter(BranchKeypoint.id.in_(kp_ids)).all()
+        by_id = {k.id: k for k in rows}
+        titles = [
+            by_id[kid].title for kid in kp_ids
+            if kid in by_id and by_id[kid].title
+        ]
+        for i, title in enumerate(titles, start=1):
+            payload[f"benefit_{i}"] = title
+
+    return payload
 
 
 def _queue_emails(email_tasks: list):

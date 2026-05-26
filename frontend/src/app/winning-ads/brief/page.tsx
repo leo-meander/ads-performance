@@ -55,6 +55,7 @@ export default function AIBriefPage() {
   const [err, setErr] = useState('')
   const [sendBrief, setSendBrief] = useState<Brief | null>(null)
   const [queuedMsg, setQueuedMsg] = useState('')
+  const [sourceComboId, setSourceComboId] = useState('')
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
@@ -63,14 +64,18 @@ export default function AIBriefPage() {
   }, [])
 
   // Pre-fill from query params when arriving via "Brief" on the Figma list
-  // (e.g. /winning-ads/brief?branch_id=...&ta=Couple). Reads window.location
-  // directly so we don't need a Suspense boundary for useSearchParams.
+  // (e.g. /winning-ads/brief?branch_id=...&ta=Couple&combo_id=AbC123). Reads
+  // window.location directly so we don't need a Suspense boundary for
+  // useSearchParams. combo_id is the winning ad being reused — it rides through
+  // to the render job as source_combo_id so it shows under "Figma only".
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search)
     const b = sp.get('branch_id')
     const t = sp.get('ta')
+    const c = sp.get('combo_id')
     if (b) setBranchId(b)
     if (t) setTa(t)
+    if (c) setSourceComboId(c)
   }, [])
 
   const generate = async () => {
@@ -264,6 +269,7 @@ export default function AIBriefPage() {
         <SendToFigmaModal
           brief={sendBrief}
           branchId={branchId}
+          sourceComboId={sourceComboId || undefined}
           onClose={() => setSendBrief(null)}
           onQueued={(jobId) => {
             setSendBrief(null)

@@ -32,6 +32,7 @@ const TYPE_ICON: Record<string, string> = {
   COMBO_REJECTED: '\u274C',
   LAUNCH_SUCCESS: '\uD83D\uDE80',
   LAUNCH_FAILED: '\u26A0\uFE0F',
+  FIGMA_RENDER_QUEUED: '\uD83C\uDFA8',
 }
 
 export default function NotificationBell() {

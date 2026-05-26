@@ -55,6 +55,7 @@ export default function FigmaCreativesPage() {
   const [sortBy, setSortBy] = useState('roas')
   const [keyword, setKeyword] = useState('')
   const [tagSel, setTagSel] = useState<Record<string, string>>({})
+  const [figmaOnly, setFigmaOnly] = useState(true) // only combos sent to Figma
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
@@ -66,11 +67,13 @@ export default function FigmaCreativesPage() {
 
   const load = () => {
     setLoading(true)
-    // Lists all combos regardless of source. The figma_only filter (gated by
-    // figma_jobs.source_combo_id) is left available on the API but unused
-    // here — every flow that creates a job today is AI-Brief-from-scratch,
-    // so no combo ever has a source_combo_id pointing at it.
+    // figma_only restricts to combos that have a figma_jobs row pointing at
+    // them (combo_id = figma_jobs.source_combo_id). The "Brief" button now
+    // carries combo_id all the way into the render job, so a combo becomes
+    // Figma-sourced the moment it's sent to Figma. Toggle off to see every
+    // winning ad regardless of source.
     const params = new URLSearchParams({ sort_by: sortBy, limit: '100', match: 'all' })
+    if (figmaOnly) params.set('figma_only', 'true')
     if (fBranch) params.set('branch_id', fBranch)
     if (fTA) params.set('target_audience', fTA)
     if (fCountry) params.set('country', fCountry)
@@ -92,15 +95,18 @@ export default function FigmaCreativesPage() {
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [fBranch, fTA, fCountry, fVerdict, sortBy, tagSel])
+  useEffect(() => { load() }, [fBranch, fTA, fCountry, fVerdict, sortBy, tagSel, figmaOnly])
 
   const activeTagCount = Object.values(tagSel).filter(Boolean).length
 
   // "Reuse" a creative → jump to the AI Brief pre-filtered to its branch + TA.
+  // combo_id rides along so the eventual render job records source_combo_id,
+  // which is what makes this combo show up under the "Figma only" filter.
   const briefHref = (ad: FigmaCreative) => {
     const p = new URLSearchParams()
     if (ad.branch_id) p.set('branch_id', ad.branch_id)
     if (ad.target_audience) p.set('ta', ad.target_audience)
+    if (ad.combo_id) p.set('combo_id', ad.combo_id)
     return `/winning-ads/brief?${p}`
   }
 
@@ -110,7 +116,7 @@ export default function FigmaCreativesPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Figma</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Creatives sourced from Figma — all verdicts. Click a row to reuse it as a brief.
+            Winning ads sent through the Figma pipeline. Click “Brief” to reuse one — toggle off “Figma only” to browse every winner.
           </p>
         </div>
         <div className="flex gap-2">
@@ -175,8 +181,17 @@ export default function FigmaCreativesPage() {
             Search
           </button>
         </form>
-        <div className="ml-auto text-xs text-gray-500 self-center">
-          {loading ? 'Loading…' : `${total} Figma creative${total === 1 ? '' : 's'}`}
+        <label className="flex items-center gap-1.5 text-sm text-gray-700 self-center cursor-pointer ml-auto">
+          <input
+            type="checkbox"
+            checked={figmaOnly}
+            onChange={e => setFigmaOnly(e.target.checked)}
+            className="rounded border-gray-300"
+          />
+          Figma only
+        </label>
+        <div className="text-xs text-gray-500 self-center">
+          {loading ? 'Loading…' : `${total} ${figmaOnly ? 'Figma' : ''} creative${total === 1 ? '' : 's'}`.replace('  ', ' ')}
         </div>
       </div>
 
@@ -261,7 +276,9 @@ export default function FigmaCreativesPage() {
             {!loading && items.length === 0 && (
               <tr>
                 <td colSpan={9} className="px-4 py-12 text-center text-gray-500">
-                  No Figma-sourced creatives match the current filters.
+                  {figmaOnly
+                    ? 'No ads have been sent to Figma yet. Turn off “Figma only” to browse every winner, then click “Brief” on one to send it through the Figma pipeline.'
+                    : 'No creatives match the current filters.'}
                   {activeTagCount > 0 && ' Try fewer visual tags, or check that materials have been vision-tagged.'}
                 </td>
               </tr>
