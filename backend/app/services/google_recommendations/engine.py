@@ -48,6 +48,15 @@ def run_recommendations(
 
     Safe to call repeatedly — fully idempotent thanks to dedup_key upserts.
     """
+    from app.config import settings
+
+    if not settings.RECOMMENDATIONS_ENABLED:
+        logger.info(
+            "run_recommendations skipped (cadence=%s): RECOMMENDATIONS_ENABLED is false",
+            cadence,
+        )
+        return {"inserted": 0, "updated": 0, "superseded": 0, "expired": 0, "skipped": 1}
+
     detectors = registry.by_cadence(cadence)
     if not detectors:
         logger.info("run_recommendations: no detectors for cadence=%s", cadence)
