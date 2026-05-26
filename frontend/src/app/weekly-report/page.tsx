@@ -8,10 +8,12 @@ import {
   Printer,
   Activity,
   ArrowRight,
+  Filter as FilterIcon,
 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import {
   fmtMoney,
+  fmtNum,
   ChangeTag,
   getDateRange,
   DATE_PRESETS,
@@ -24,7 +26,9 @@ import type { ChangeLogItem } from '@/components/dashboard/activity/ActivityLogP
 import {
   buildInsights,
   buildNextActions,
+  diagnoseConversionFunnel,
   MIN_SPEND_SHARE,
+  type FunnelStep,
 } from '@/components/weekly-report/analysis'
 
 type Branch = { name: string; currency: string }
@@ -52,11 +56,19 @@ type CampaignsResponse = {
 }
 
 type ChangelogResponse = { items: ChangeLogItem[]; total: number }
+type FunnelResponse = { steps: FunnelStep[] }
 
 const SEVERITY_STYLES: Record<string, string> = {
   high: 'bg-red-100 text-red-700 border-red-200',
   medium: 'bg-amber-100 text-amber-700 border-amber-200',
   low: 'bg-gray-100 text-gray-600 border-gray-200',
+}
+
+const LEAK_PILL: Record<string, string> = {
+  'Impression → Click': 'bg-blue-100 text-blue-700',
+  'Post-click · 0 bookings': 'bg-red-100 text-red-700',
+  'Click cost · CPC': 'bg-amber-100 text-amber-700',
+  Profitability: 'bg-gray-100 text-gray-600',
 }
 
 // --- small presentational helpers -----------------------------------------
@@ -130,6 +142,7 @@ export default function WeeklyReportPage() {
   const [prevPeriod, setPrevPeriod] = useState<{ from: string; to: string } | null>(null)
   const [agg, setAgg] = useState<CountryKpiAgg | null>(null)
   const [changelog, setChangelog] = useState<ChangeLogItem[]>([])
+  const [funnel, setFunnel] = useState<FunnelStep[]>([])
   const [loading, setLoading] = useState(true)
 
   const branchParam = selectedBranches.length > 0 ? selectedBranches.join(',') : ''
@@ -168,8 +181,9 @@ export default function WeeklyReportPage() {
       apiFetch<CampaignsResponse>(`/api/dashboard/country/campaigns?${qs}`),
       apiFetch<{ aggregate: CountryKpiAgg | null; currency: string }>(`/api/dashboard/country?${qs}`),
       apiFetch<ChangelogResponse>(`/api/dashboard/country/changelog?${qs}&limit=200`),
+      apiFetch<FunnelResponse>(`/api/dashboard/funnel?${qs}`),
     ])
-      .then(([camp, kpi, log]) => {
+      .then(([camp, kpi, log, fun]) => {
         if (camp.success && camp.data) {
           setRows(camp.data.items || [])
           setCurrency(camp.data.currency || 'VND')
@@ -179,8 +193,8 @@ export default function WeeklyReportPage() {
           setRows([])
         }
         if (kpi.success && kpi.data) setAgg(kpi.data.aggregate || null)
-        if (log.success && log.data) setChangelog(log.data.items || [])
-        else setChangelog([])
+        setChangelog(log.success && log.data ? log.data.items || [] : [])
+        setFunnel(fun.success && fun.data ? fun.data.steps || [] : [])
       })
       .catch(() => setRows([]))
       .finally(() => setLoading(false))
@@ -200,8 +214,10 @@ export default function WeeklyReportPage() {
     setSelectedBranches((prev) => (prev.includes(name) ? prev.filter((b) => b !== name) : [...prev, name]))
 
   // --- analysis ---
-  const insights = useMemo(() => buildInsights(rows, changelog), [rows, changelog])
-  const nextActions = useMemo(() => buildNextActions(insights), [insights])
+  const money = useCallback((n: number) => fmtMoney(n, currency), [currency])
+  const insights = useMemo(() => buildInsights(rows, changelog, money), [rows, changelog, money])
+  const funnelDiag = useMemo(() => diagnoseConversionFunnel(funnel), [funnel])
+  const nextActions = useMemo(() => buildNextActions(insights, funnelDiag), [insights, funnelDiag])
 
   const winners = useMemo(
     () =>
@@ -217,6 +233,8 @@ export default function WeeklyReportPage() {
         .sort((a, b) => b.bleed - a.bleed || b.row.spend - a.row.spend),
     [insights],
   )
+
+  const funnelMax = funnel.length > 0 ? Math.max(...funnel.map((s) => s.value), 1) : 1
 
   return (
     <div className="pb-10">
@@ -354,6 +372,76 @@ export default function WeeklyReportPage() {
             </div>
           )}
 
+          {/* Conversion funnel diagnosis */}
+          {funnel.length > 1 && (
+            <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
+              <div className="flex items-center gap-2 mb-1">
+                <FilterIcon className="w-4 h-4 text-blue-600" />
+                <h2 className="text-sm font-semibold text-gray-800">Conversion funnel — where we lose people</h2>
+              </div>
+              <p className="text-[11px] text-gray-400 mb-4">Impression → Click → Search → Add to cart → Checkout → Booking · drop-off shown between steps</p>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Funnel bars */}
+                <div className="space-y-2">
+                  {funnel.map((s, i) => {
+                    const width = Math.max((s.value / funnelMax) * 100, 6)
+                    const isLeak = funnelDiag?.stepKey === s.key
+                    return (
+                      <div key={s.key}>
+                        {i > 0 && (
+                          <div className="flex items-center gap-2 ml-3 mb-1">
+                            <span className="text-[11px] text-gray-400">
+                              {s.drop_off != null ? `${(s.drop_off * 100).toFixed(1)}% drop-off` : '—'}
+                            </span>
+                            <ChangeTag change={s.drop_off_change} inverseColor />
+                            {isLeak && (
+                              <span className="text-[10px] font-semibold text-red-600 bg-red-50 px-1.5 py-0.5 rounded">worst leak</span>
+                            )}
+                          </div>
+                        )}
+                        <div className="flex items-center gap-3">
+                          <div
+                            className={`rounded-lg py-2 px-3 flex items-center justify-between transition-all ${isLeak ? 'bg-red-100 ring-2 ring-inset ring-red-300' : 'bg-blue-50'}`}
+                            style={{ width: `${width}%`, minWidth: '150px' }}
+                          >
+                            <span className="text-xs text-gray-600">{s.label}</span>
+                            <span className="text-sm font-bold text-gray-900 ml-2">{fmtNum(s.value)}</span>
+                          </div>
+                          <ChangeTag change={s.change} />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* Diagnosis + fixes */}
+                <div className="flex flex-col justify-center">
+                  {funnelDiag ? (
+                    <div className={`rounded-lg border p-4 ${SEVERITY_STYLES[funnelDiag.severity]}`}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <AlertTriangle className="w-4 h-4" />
+                        <span className="text-sm font-semibold">{funnelDiag.transition}</span>
+                      </div>
+                      <p className="text-xs text-gray-700 mb-3">{funnelDiag.reason}</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1">How to fix</p>
+                      <ul className="space-y-1">
+                        {funnelDiag.fixes.map((f, idx) => (
+                          <li key={idx} className="text-xs text-gray-700 flex gap-1.5">
+                            <span className="text-blue-500">→</span>
+                            <span>{f}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400">Funnel looks healthy — no single step is leaking notably.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Winners */}
           <div className="mb-6">
             <div className="flex items-center gap-2 mb-3">
@@ -381,7 +469,7 @@ export default function WeeklyReportPage() {
                     </p>
                     <div className="grid grid-cols-3 gap-2 mt-3">
                       <Metric label="ROAS" value={`${i.row.roas.toFixed(2)}x`} change={i.row.roas_change} />
-                      <Metric label={`Spend`} value={fmtMoney(i.row.spend, currency)} change={i.row.spend_change} inverse />
+                      <Metric label="Spend" value={fmtMoney(i.row.spend, currency)} change={i.row.spend_change} inverse />
                       <Metric label="Conv" value={String(i.row.conversions)} change={i.row.conversions_change} />
                     </div>
                     <p className="text-xs text-gray-600 mt-3">{i.recommendations[0]}</p>
@@ -415,9 +503,9 @@ export default function WeeklyReportPage() {
                                 {i.row.funnel_stage}
                               </span>
                             )}
-                            {i.diagnosis && (
-                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${FUNNEL_STAGE_PILL[i.diagnosis.stage]}`}>
-                                ⚠ {i.diagnosis.stage} funnel
+                            {i.leakLabel && (
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${LEAK_PILL[i.leakLabel] || 'bg-gray-100 text-gray-600'}`}>
+                                ⚠ {i.leakLabel}
                               </span>
                             )}
                             <span className={`text-[10px] px-2 py-0.5 rounded ${PLATFORM_PILL[i.row.platform] || 'bg-gray-50 text-gray-600'}`}>
@@ -434,11 +522,11 @@ export default function WeeklyReportPage() {
                       </div>
 
                       <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mt-3">
-                        <Metric label={`Spend`} value={fmtMoney(i.row.spend, currency)} change={i.row.spend_change} inverse />
+                        <Metric label="Spend" value={fmtMoney(i.row.spend, currency)} change={i.row.spend_change} inverse />
                         <Metric label="CR" value={`${i.row.cr.toFixed(2)}%`} change={i.row.cr_change} />
                         <Metric label="CTR" value={`${i.row.ctr.toFixed(2)}%`} />
-                        <Metric label={`CPC`} value={i.row.cpc ? fmtMoney(Math.round(i.row.cpc), currency) : '--'} change={i.row.cpc_change} inverse />
-                        <Metric label={`AOV`} value={i.row.aov ? fmtMoney(Math.round(i.row.aov), currency) : '--'} change={i.row.aov_change} />
+                        <Metric label="CPC" value={i.row.cpc ? fmtMoney(Math.round(i.row.cpc), currency) : '--'} change={i.row.cpc_change} inverse />
+                        <Metric label="AOV" value={i.row.aov ? fmtMoney(Math.round(i.row.aov), currency) : '--'} change={i.row.aov_change} />
                         <Metric label="Conv" value={String(i.row.conversions)} change={i.row.conversions_change} />
                       </div>
                     </div>
@@ -447,7 +535,7 @@ export default function WeeklyReportPage() {
                       {/* Why */}
                       <div className="p-4 md:border-r border-gray-50">
                         <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Why it&apos;s underperforming</p>
-                        <p className="text-gray-700 text-xs">{i.diagnosis?.reason}</p>
+                        <p className="text-gray-700 text-xs">{i.reason}</p>
                       </div>
                       {/* Activity log */}
                       <div className="p-4 md:border-r border-gray-50">

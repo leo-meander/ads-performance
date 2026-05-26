@@ -1,21 +1,43 @@
-// Weekly Report analysis layer — pure, deterministic functions that turn raw
-// campaign rows + the Activity Log into a "what's working / what's broken /
-// why / what to do" verdict.
+// Weekly Report analysis layer — pure, deterministic functions that turn the
+// conversion funnel + per-campaign rows + the Activity Log into a concrete
+// "what's working / where we lose people / what to do next" verdict.
 //
-// All metrics come from /api/dashboard/country/campaigns (CampaignRow) so the
-// ROAS = CR × AOV / CPC decomposition is available per campaign, and change
-// fields are period-over-period FRACTIONS (0.334 = +33.4%).
+// Two data sources, both period-over-period (change fields are FRACTIONS,
+// 0.334 = +33.4%):
+//  - /api/dashboard/funnel        → the 6-step conversion funnel
+//    (Impression → Clicks → Search → Add to cart → Checkout → Booking) with
+//    per-step drop-off + WoW drop-off change. This answers "which funnel
+//    stage is leaking".
+//  - /api/dashboard/country/campaigns → per-campaign spend/ROAS/CTR/CR/CPC.
+//    Per campaign we only see Impression→Click (CTR) and click→booking (CR),
+//    so per-campaign diagnosis stays coarse and defers funnel-step detail to
+//    the funnel section.
 
 import type { CampaignRow } from '@/components/dashboard/CampaignBreakdownTable'
 import type { ChangeLogItem } from '@/components/dashboard/activity/ActivityLogPanel'
 
-export type FunnelStage = 'TOF' | 'MOF' | 'BOF'
 export type Verdict = 'winner' | 'watch' | 'loser'
+export type Severity = 'high' | 'medium' | 'low'
+export type Money = (n: number) => string
 
-export type Diagnosis = {
-  stage: FunnelStage
-  driver: 'cr' | 'cpc' | 'aov' | 'ctr' | 'roas'
+export type FunnelStep = {
+  key: string
+  label: string
+  value: number
+  change: number | null
+  drop_off: number | null
+  drop_off_change: number | null
+}
+
+export type FunnelDiagnosis = {
+  transition: string
+  stepKey: string
+  dropOff: number
+  dropOffChange: number | null
+  worsening: boolean
+  severity: Severity
   reason: string
+  fixes: string[]
 }
 
 export type CampaignInsight = {
@@ -25,22 +47,25 @@ export type CampaignInsight = {
   spendShare: number
   /** Money lost while ROAS < 1 (spend × (1 − roas)); 0 for profitable rows. */
   bleed: number
-  diagnosis: Diagnosis | null
+  /** Short tag for where this campaign leaks, e.g. "Impression → Click". */
+  leakLabel: string | null
+  /** Plain-English reason it's under-performing (with real numbers). */
+  reason: string | null
   recommendations: string[]
+  /** The single concrete next step (feeds the Next Actions list). */
+  action: string | null
+  severity: Severity
   activity: ChangeLogItem[]
 }
 
-export type NextAction = {
-  severity: 'high' | 'medium' | 'low'
-  text: string
-  campaign?: string
-}
+export type NextAction = { severity: Severity; text: string; campaign?: string }
 
 // Surface a loser/winner in the report only when it moves the needle.
 export const MIN_SPEND_SHARE = 0.02
 
-const pctAbs = (v: number | null | undefined): number =>
-  v == null ? 0 : Math.round(Math.abs(v) * 100)
+const pct = (v: number | null | undefined) => (v == null ? 0 : Math.round(v * 100))
+const pctAbs = (v: number | null | undefined) => (v == null ? 0 : Math.round(Math.abs(v) * 100))
+const num = (n: number) => n.toLocaleString('en-US')
 
 export function verdictOf(row: CampaignRow): Verdict {
   if (row.roas >= 1.5) return 'winner'
@@ -48,101 +73,167 @@ export function verdictOf(row: CampaignRow): Verdict {
   return 'loser'
 }
 
+// ---------------------------------------------------------------------------
+// Conversion funnel diagnosis (Impression → … → Booking)
+// ---------------------------------------------------------------------------
+
+// Each entry is keyed by the step you LAND on; the leak is the transition into
+// it from the previous step.
+const STEP_FIX: Record<string, { what: string; fixes: string[] }> = {
+  clicks: {
+    what: "people see the ad but don't click",
+    fixes: [
+      'Refresh the ad creative/hook and tighten targeting — this is an ad-relevance problem, not a landing-page one.',
+      'Pause the audiences/placements with the lowest CTR.',
+    ],
+  },
+  searches: {
+    what: 'they click the ad but leave before browsing rooms',
+    fixes: [
+      'Check landing-page load speed (mobile first) and that the ad → landing-page message matches.',
+      'Send them to a relevant room/offer page, not a generic homepage.',
+    ],
+  },
+  add_to_cart: {
+    what: "they browse but don't select a room",
+    fixes: [
+      'Check availability and rates for the searched dates — sold-out or overpriced kills this step.',
+      'Improve room photos/descriptions and make the "select room" CTA obvious.',
+    ],
+  },
+  checkouts: {
+    what: 'they pick a room but bail before starting checkout',
+    fixes: [
+      'Hunt for price shock — taxes/fees/deposit appearing only here. Show all-in pricing earlier.',
+      'Test the cart → checkout step on mobile for bugs; add trust signals (free cancellation, secure payment).',
+    ],
+  },
+  bookings: {
+    what: "they start checkout but don't finish paying",
+    fixes: [
+      'Check payment methods and for errors on the final step (card declines, form validation).',
+      'Cut required fields and confirm price/availability does not change at the last step.',
+    ],
+  },
+}
+
 /**
- * Pin the weak funnel stage. ROAS = CR × AOV / CPC, so a ROAS drop is caused by
- * CR falling, AOV falling, or CPC rising. When there's a strong week-over-week
- * move (≥10%) we attribute the drop to the dominant factor; otherwise we read
- * the absolute funnel levels (low CTR = top, low CR = bottom).
+ * Pick the funnel transition that's leaking worst. Priority: the step whose
+ * drop-off worsened most week-over-week (a NEW leak). If nothing worsened,
+ * fall back to the lower-funnel step with the highest standing drop-off (top-
+ * funnel drop-off is naturally huge, so we don't flag it).
  */
-export function diagnoseFunnel(row: CampaignRow): Diagnosis {
-  const crHurt = Math.max(0, -(row.cr_change ?? 0))
-  const aovHurt = Math.max(0, -(row.aov_change ?? 0))
-  const cpcHurt = Math.max(0, row.cpc_change ?? 0)
-  const maxHurt = Math.max(crHurt, aovHurt, cpcHurt)
+export function diagnoseConversionFunnel(steps: FunnelStep[]): FunnelDiagnosis | null {
+  if (!steps || steps.length < 2) return null
+  const cands = steps.filter((s) => s.drop_off != null)
+  if (cands.length === 0) return null
 
-  if (maxHurt >= 0.1) {
-    if (maxHurt === cpcHurt) {
-      return {
-        stage: 'MOF',
-        driver: 'cpc',
-        reason: `ROAS dropped mainly because CPC rose ${pctAbs(row.cpc_change)}% — paying more per click (mid-funnel / MOF).`,
-      }
-    }
-    if (maxHurt === aovHurt) {
-      return {
-        stage: 'BOF',
-        driver: 'aov',
-        reason: `ROAS dropped because AOV fell ${pctAbs(row.aov_change)}% — pulling in lower-value guests (bottom-funnel / BOF).`,
-      }
-    }
-    return {
-      stage: 'BOF',
-      driver: 'cr',
-      reason: `ROAS dropped mainly because CR fell ${pctAbs(row.cr_change)}% — traffic lands but doesn't book (bottom-funnel / BOF).`,
-    }
+  const worsened = cands
+    .filter((s) => (s.drop_off_change ?? 0) > 0.05)
+    .sort((a, b) => (b.drop_off_change ?? 0) - (a.drop_off_change ?? 0))
+
+  const lowerFunnel = ['add_to_cart', 'checkouts', 'bookings']
+  const pick =
+    worsened[0] ||
+    [...cands].filter((s) => lowerFunnel.includes(s.key)).sort((a, b) => (b.drop_off ?? 0) - (a.drop_off ?? 0))[0] ||
+    [...cands].sort((a, b) => (b.drop_off ?? 0) - (a.drop_off ?? 0))[0]
+
+  const idx = steps.findIndex((s) => s.key === pick.key)
+  const from = steps[idx - 1]
+  const transition = `${from ? from.label : '?'} → ${pick.label}`
+  const meta = STEP_FIX[pick.key] || { what: 'users drop off here', fixes: ['Investigate this step in analytics.'] }
+  const doc = pick.drop_off_change
+  const dOff = pick.drop_off ?? 0
+  const worsening = doc != null && doc > 0
+  const severity: Severity = doc != null && doc >= 0.3 ? 'high' : doc != null && doc >= 0.1 ? 'medium' : 'low'
+
+  const reason = worsening
+    ? `Biggest leak this week: ${transition}. ${(dOff * 100).toFixed(0)}% drop off here, and it worsened ${pct(doc)}% vs last week — ${meta.what}.`
+    : `Biggest standing leak: ${transition} — ${(dOff * 100).toFixed(0)}% drop off here (${meta.what}). No major week-over-week shift.`
+
+  return { transition, stepKey: pick.key, dropOff: dOff, dropOffChange: doc ?? null, worsening, severity, reason, fixes: meta.fixes }
+}
+
+// ---------------------------------------------------------------------------
+// Per-campaign diagnosis (concrete, with real numbers)
+// ---------------------------------------------------------------------------
+
+type Core = {
+  leakLabel: string | null
+  reason: string | null
+  recommendations: string[]
+  action: string | null
+  severity: Severity
+}
+
+function campaignCore(row: CampaignRow, verdict: Verdict, fmt: Money): Core {
+  const name = row.campaign_name
+  const stage = row.funnel_stage
+  const isTOF = stage === 'TOF'
+  const cpcUp = pctAbs(row.cpc_change)
+  const cpcSpiked = (row.cpc_change ?? 0) >= 1.0
+
+  if (verdict === 'winner') {
+    const recs = [`ROAS ${row.roas.toFixed(2)}x is profitable — scale daily budget 20–30% in steps and re-check CPA in 3 days.`]
+    if ((row.roas_change ?? 0) > 0.1) recs.push('Trending up — duplicate to similar audiences/keywords to widen reach.')
+    return { leakLabel: null, reason: null, recommendations: recs, action: null, severity: 'low' }
   }
 
-  // No strong WoW signal → diagnose from absolute funnel levels.
+  // Real traffic, zero bookings → tracking / landing, not bidding.
+  if (row.conversions === 0 && row.clicks >= 30) {
+    const reason = isTOF
+      ? `${num(row.clicks)} clicks, 0 bookings. It's a cold/TOF campaign so last-click under-reports — but zero is still a red flag.`
+      : `${num(row.clicks)} clicks, 0 bookings — warm/${stage ?? 'mid'} traffic that never converts is almost always broken tracking or a wrong landing/geo, not bidding.`
+    const recommendations = [
+      `Verify the conversion tag fires on this campaign's landing page — ${num(row.clicks)} clicks with 0 bookings usually means tracking is broken.`,
+      'Confirm the landing page matches the ad (right city / room / language) and actually loads.',
+      isTOF
+        ? 'If tracking is fine, judge this TOF campaign by assisted conversions, not last-click ROAS.'
+        : 'If tracking checks out and it still gets 0 bookings, pause it.',
+    ]
+    const action = `Fix tracking/landing for ${name} — ${num(row.clicks)} clicks → 0 bookings is a tracking or landing failure, not a budget one. Don't scale until it records a booking.`
+    return { leakLabel: 'Post-click · 0 bookings', reason, recommendations, action, severity: 'high' }
+  }
+
+  // Low CTR → Impression → Click leak (creative / targeting).
   if (row.ctr > 0 && row.ctr < 1) {
-    return {
-      stage: 'TOF',
-      driver: 'ctr',
-      reason: `CTR is only ${row.ctr.toFixed(2)}% — the ad isn't earning clicks (top-funnel / TOF).`,
-    }
+    const reason = `CTR is only ${row.ctr.toFixed(2)}% — losing people at Impression → Click; the ad isn't earning the click (${fmt(row.spend)} spent).`
+    const recommendations = [
+      `Refresh the creative/hook — CTR ${row.ctr.toFixed(2)}% is below 1%.`,
+      'Tighten or swap the audience; broad/irrelevant targeting drags CTR down.',
+    ]
+    const action = `Refresh creative & targeting on ${name} — CTR ${row.ctr.toFixed(2)}% (below 1%) is bleeding the Impression → Click step.`
+    return { leakLabel: 'Impression → Click', reason, recommendations, action, severity: 'medium' }
   }
-  if (row.clicks >= 50 && row.cr < 0.5) {
-    return {
-      stage: 'BOF',
-      driver: 'cr',
-      reason: `CR is only ${row.cr.toFixed(2)}% — ${row.clicks.toLocaleString('en-US')} clicks in but almost no bookings (bottom-funnel / BOF).`,
-    }
-  }
-  return {
-    stage: 'BOF',
-    driver: 'roas',
-    reason: `ROAS ${row.roas.toFixed(2)}x — no clear break at top/mid funnel; the bottleneck is the final booking step (BOF): review creative → landing → price.`,
-  }
-}
 
-export function recommend(row: CampaignRow, d: Diagnosis, verdict: Verdict): string[] {
-  const recs: string[] = []
-  if (verdict === 'loser') {
-    recs.push(
-      `ROAS ${row.roas.toFixed(2)}x is losing money — cut budget or pause until fixed, and shift spend to higher-ROAS campaigns.`,
-    )
-  }
-  switch (d.driver) {
-    case 'cr':
-      recs.push('Check the conversion tracking/pixel is still firing — an abnormal CR drop usually means broken tracking.')
-      recs.push('Review the landing page, room price & availability for this campaign.')
-      recs.push('Cut keywords/audiences with the wrong intent that are driving junk clicks.')
-      break
-    case 'cpc':
-      recs.push('Tighten targeting & bids; drop expensive placements/keywords.')
-      recs.push('Refresh the creative to lift relevance → bring CPC down.')
-      break
-    case 'ctr':
-      recs.push('Swap the hook/creative/offer at the top of funnel — CTR is low.')
-      recs.push('Narrow an over-broad audience; test new audiences with clear travel intent.')
-      break
-    case 'aov':
-      recs.push('Target higher-value audiences; push multi-night packages / premium rooms.')
-      recs.push('Add upsells/add-ons to raise AOV.')
-      break
-    default:
-      recs.push('Re-check creative → landing → price to find the drop-off at the bottom of funnel.')
-  }
-  return recs
-}
+  const cpaTxt = row.cpa ? fmt(Math.round(row.cpa)) : '—'
+  const aovTxt = row.aov ? fmt(Math.round(row.aov)) : '—'
+  const cpcTxt = row.cpc ? fmt(Math.round(row.cpc)) : '—'
 
-export function winnerRecommend(row: CampaignRow): string[] {
-  const recs = [
-    `ROAS ${row.roas.toFixed(2)}x is profitable — scale budget 20–30% in steps and watch whether CPA holds.`,
+  // Converts, but CPC blew up.
+  if (cpcSpiked || cpcUp >= 25) {
+    const reason = `Converts, but CPC rose ${cpcUp}% to ${cpcTxt} — paying too much per click dragged ROAS to ${row.roas.toFixed(2)}x.`
+    const recommendations = [
+      `Cap bids and cut the priciest keywords/placements — CPC is up ${cpcUp}%.`,
+      'Check for new competitors/seasonality on these terms; refresh creative to raise relevance and lower CPC.',
+    ]
+    const action = `Rein in CPC on ${name} — up ${cpcUp}% to ${cpcTxt}, ROAS now ${row.roas.toFixed(2)}x. Cap bids and drop the most expensive keywords/placements.`
+    return { leakLabel: 'Click cost · CPC', reason, recommendations, action, severity: cpcSpiked ? 'high' : 'medium' }
+  }
+
+  // Converts but the math doesn't work.
+  const reason = `Converts but unprofitable: ROAS ${row.roas.toFixed(2)}x — ${cpaTxt} cost per booking vs ${aovTxt} booking value.`
+  const recommendations = [
+    verdict === 'loser'
+      ? 'Cut daily budget ~50% now; if ROAS stays under 1x for 3 more days, pause and move the spend to a top performer.'
+      : `Hold steady and watch — ROAS ${row.roas.toFixed(2)}x is thin; don't scale until it clears 1.5x.`,
+    'Either lower cost per booking (tighter targeting) or lift AOV (longer stays / room upsells).',
   ]
-  if ((row.roas_change ?? 0) > 0.1) {
-    recs.push('Trending up — duplicate to similar audiences/keywords to expand.')
-  }
-  return recs
+  const action =
+    verdict === 'loser'
+      ? `Cut ${name} budget ~50% — ROAS ${row.roas.toFixed(2)}x is below break-even (${cpaTxt}/booking vs ${aovTxt} value). Pause in 3 days if it doesn't recover.`
+      : `Watch ${name} — ROAS ${row.roas.toFixed(2)}x is marginal; hold budget, don't scale yet.`
+  return { leakLabel: 'Profitability', reason, recommendations, action, severity: verdict === 'loser' ? 'medium' : 'low' }
 }
 
 /**
@@ -162,39 +253,49 @@ export function correlateActivity(row: CampaignRow, log: ChangeLogItem[]): Chang
   )
 }
 
-export function buildInsights(rows: CampaignRow[], log: ChangeLogItem[]): CampaignInsight[] {
+export function buildInsights(rows: CampaignRow[], log: ChangeLogItem[], fmt: Money): CampaignInsight[] {
   const totalSpend = rows.reduce((s, r) => s + (r.spend || 0), 0) || 1
   return rows.map((row) => {
     const verdict = verdictOf(row)
-    const diagnosis = verdict === 'winner' ? null : diagnoseFunnel(row)
-    const recommendations = diagnosis ? recommend(row, diagnosis, verdict) : winnerRecommend(row)
+    const core = campaignCore(row, verdict, fmt)
     return {
       row,
       verdict,
       spendShare: (row.spend || 0) / totalSpend,
       bleed: row.roas < 1 ? (row.spend || 0) * (1 - row.roas) : 0,
-      diagnosis,
-      recommendations,
+      leakLabel: core.leakLabel,
+      reason: core.reason,
+      recommendations: core.recommendations,
+      action: core.action,
+      severity: core.severity,
       activity: correlateActivity(row, log),
     }
   })
 }
 
-/** Prioritized to-do list: stop the bleeding, scale the winners, fix tracking. */
-export function buildNextActions(insights: CampaignInsight[]): NextAction[] {
+/** Prioritized to-do list: plug the funnel leak, stop the bleed, scale winners. */
+export function buildNextActions(insights: CampaignInsight[], funnelDiag: FunnelDiagnosis | null): NextAction[] {
   const actions: NextAction[] = []
 
-  const losers = insights
-    .filter((i) => i.verdict === 'loser' && i.spendShare >= MIN_SPEND_SHARE)
-    .sort((a, b) => b.bleed - a.bleed)
-  for (const i of losers.slice(0, 5)) {
+  // 1. The site-wide conversion-funnel leak comes first — it caps every campaign.
+  if (funnelDiag && funnelDiag.severity !== 'low') {
     actions.push({
-      severity: i.spendShare >= 0.1 ? 'high' : 'medium',
-      campaign: i.row.campaign_name,
-      text: `${i.diagnosis?.reason ?? ''} ${i.recommendations[0] ?? ''}`.trim(),
+      severity: funnelDiag.severity,
+      text: `Plug the ${funnelDiag.transition} leak (${(funnelDiag.dropOff * 100).toFixed(0)}% drop-off${
+        funnelDiag.worsening ? `, +${pct(funnelDiag.dropOffChange)}% WoW` : ''
+      }) — ${funnelDiag.fixes[0]}`,
     })
   }
 
+  // 2. Biggest money-losing campaigns, each with its concrete action.
+  const losers = insights
+    .filter((i) => i.verdict === 'loser' && i.spendShare >= MIN_SPEND_SHARE && i.action)
+    .sort((a, b) => b.bleed - a.bleed)
+  for (const i of losers.slice(0, 5)) {
+    actions.push({ severity: i.severity, campaign: i.row.campaign_name, text: i.action as string })
+  }
+
+  // 3. Winners worth scaling (high ROAS, small budget share).
   const scale = insights
     .filter((i) => i.verdict === 'winner' && i.row.roas >= 3 && i.spendShare < 0.05)
     .sort((a, b) => b.row.roas - a.row.roas)
@@ -202,22 +303,22 @@ export function buildNextActions(insights: CampaignInsight[]): NextAction[] {
     actions.push({
       severity: 'medium',
       campaign: i.row.campaign_name,
-      text: `ROAS ${i.row.roas.toFixed(2)}x but only ${(i.spendShare * 100).toFixed(1)}% of budget spent — raise budget to capture more bookings.`,
+      text: `Scale ${i.row.campaign_name} — ROAS ${i.row.roas.toFixed(2)}x on only ${(i.spendShare * 100).toFixed(1)}% of budget. Raise daily budget ~50% and re-check CPA in 3 days.`,
     })
   }
 
-  // Tracking-integrity changes that coincide with a CR-driven collapse.
+  // 4. Tracking change that coincides with a 0-booking campaign → top priority.
   const trackingFlag = insights.find(
     (i) =>
-      i.verdict !== 'winner' &&
-      i.diagnosis?.driver === 'cr' &&
+      i.severity === 'high' &&
+      (i.leakLabel?.startsWith('Post-click') ?? false) &&
       i.activity.some((a) => a.category === 'tracking_integrity'),
   )
   if (trackingFlag) {
     actions.unshift({
       severity: 'high',
       campaign: trackingFlag.row.campaign_name,
-      text: 'Activity Log shows a tracking change at the same time CR collapsed — verify the pixel/conversion before touching budget.',
+      text: 'Activity Log shows a tracking change right when bookings went to zero — verify the pixel/conversion before anything else.',
     })
   }
 

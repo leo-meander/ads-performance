@@ -33,7 +33,6 @@ const navSections: NavSection[] = [
   {
     label: 'Meta Ads',
     items: [
-      { href: '/meta/recommendations', label: 'Recommendations', section: 'meta_ads', page: 'meta_recommendations' },
       { href: '/angles', label: 'Ad Angles', section: 'meta_ads', page: 'angles' },
       { href: '/creative', label: 'Creative Library', section: 'meta_ads', page: 'creative' },
       { href: '/winning-ads', label: 'Figma', section: 'meta_ads', page: 'figma' },
@@ -48,7 +47,6 @@ const navSections: NavSection[] = [
     items: [
       { href: '/google/pmax', label: 'PMax Campaigns', section: 'google_ads', page: 'google_pmax' },
       { href: '/google/search', label: 'Search Campaigns', section: 'google_ads', page: 'google_search' },
-      { href: '/google/recommendations', label: 'Recommendations', section: 'google_ads', page: 'google_recommendations' },
     ],
   },
   {
