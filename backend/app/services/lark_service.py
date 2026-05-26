@@ -53,29 +53,33 @@ def _deadline_ms(deadline: Optional[str]) -> Optional[int]:
 
 # Always-on defaults (overridable via settings).
 DEFAULT_STATUS = "Not started"
-DEFAULT_PIC = "nora@staymeander.com"
 
-# Branch → the Projects-table label used for grouping ("[<tag>] Ads").
-# NOTE: the Project tag for Saigon is "Sai Gon" (with a space) — taken from the
-# live board — which differs from the Task-name tag "Saigon" (no space).
-_PROJECT_TAGS: list[tuple[str, str]] = [
-    ("1948", "1948"),
-    ("oani", "Oani"),
-    ("osaka", "Osaka"),
-    ("saigon", "Sai Gon"),
-    ("taipei", "Taipei"),
-    ("bread", "Bread"),
+# PIC + Project are DuplexLink fields, so they're written as arrays of linked
+# record ids — NOT plain text. These ids were introspected from the live Base
+# (table "🚩 Projects" / "🧑🏻‍💻 Members"); re-introspect (LarkClient.list_table_fields
+# + list records) if the board is rebuilt.
+DEFAULT_PIC_RECORD_ID = "recv6JxUlC2N9p"  # nora@staymeander.com (Members table)
+
+# branch-name substring → "[…] Ads" Project record id (order matters: "oani"
+# before "taipei" so Oani's "(Taipei)" suffix can't mis-match).
+_PROJECT_RECORD_IDS: list[tuple[str, str]] = [
+    ("1948", "recv8gCr8yrhVb"),   # [1948] Ads
+    ("oani", "recvfwkeNSVTRp"),   # [Oani] Ads
+    ("osaka", "recv6sswLo9olH"),  # [Osaka] Ads
+    ("saigon", "recv6sW5Nl2wBI"), # [Sai Gon]  Ads
+    ("taipei", "recv8gCt0GGu9B"), # [Taipei] Ads
+    ("bread", "recv6WJTeN5WHx"),  # [BE] Ads
 ]
 
 
-def project_for_branch(branch_name: Optional[str]) -> Optional[str]:
-    """Map a branch/account name to its "[<tag>] Ads" Project label."""
+def project_record_for_branch(branch_name: Optional[str]) -> Optional[str]:
+    """Map a branch/account name to its "[<tag>] Ads" Project record id."""
     if not branch_name:
         return None
     n = branch_name.lower()
-    for needle, tag in _PROJECT_TAGS:
+    for needle, rid in _PROJECT_RECORD_IDS:
         if needle in n:
-            return f"[{tag}] Ads"
+            return rid
     return None
 
 
@@ -85,10 +89,15 @@ def build_task_fields(
     description: str,
     branch_name: Optional[str] = None,
     status: Optional[str] = None,
-    pic: Optional[str] = None,
+    pic_record_id: Optional[str] = None,
     deadline: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Map final values + always-on fields onto the Base columns."""
+    """Map final values + always-on fields onto the Base columns.
+
+    PIC and Project are DuplexLink fields → written as arrays of record ids.
+    Status is a single-select (string), Deadline a datetime (ms), Task and
+    Description are text.
+    """
     name = (task_name or "").strip()
     if not name:
         raise LarkClientError("Task name is required")
@@ -102,13 +111,13 @@ def build_task_fields(
     if eff_status:
         fields[FIELD_STATUS] = eff_status
 
-    eff_pic = (pic or settings.LARK_DEFAULT_PIC or DEFAULT_PIC).strip()
-    if eff_pic:
-        fields[FIELD_PIC] = eff_pic
+    pic_rid = (pic_record_id or settings.LARK_DEFAULT_PIC_RECORD_ID or DEFAULT_PIC_RECORD_ID).strip()
+    if pic_rid:
+        fields[FIELD_PIC] = [pic_rid]
 
-    project = project_for_branch(branch_name)
-    if project:
-        fields[FIELD_PROJECT] = project
+    project_rid = project_record_for_branch(branch_name)
+    if project_rid:
+        fields[FIELD_PROJECT] = [project_rid]
 
     ms = _deadline_ms(deadline)
     if ms is not None:
@@ -123,7 +132,7 @@ def create_brief_task(
     description: str,
     branch_name: Optional[str] = None,
     status: Optional[str] = None,
-    pic: Optional[str] = None,
+    pic_record_id: Optional[str] = None,
     deadline: Optional[str] = None,
     client: Optional[LarkClient] = None,
 ) -> dict[str, Any]:
@@ -134,7 +143,7 @@ def create_brief_task(
         description=description,
         branch_name=branch_name,
         status=status,
-        pic=pic,
+        pic_record_id=pic_record_id,
         deadline=deadline,
     )
     record = c.create_bitable_record(

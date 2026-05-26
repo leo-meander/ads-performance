@@ -84,11 +84,11 @@ class Settings(BaseSettings):
     LARK_API_BASE_URL: str = "https://open.larksuite.com/open-apis"
     LARK_BASE_APP_TOKEN: str = ""
     LARK_TASKS_TABLE_ID: str = ""
-    # Defaults stamped on every new task. Empty here → lark_service falls back
-    # to its own constants (Status "Not started", PIC nora@staymeander.com).
-    # Override per-deployment if the board's option/column text differs.
+    # Defaults stamped on every new task. Empty → lark_service falls back to its
+    # own constants (Status "Not started"; PIC = nora's Member record). PIC and
+    # Project are DuplexLink fields, so PIC is set by Member record id.
     LARK_TASKS_DEFAULT_STATUS: str = ""
-    LARK_DEFAULT_PIC: str = ""
+    LARK_DEFAULT_PIC_RECORD_ID: str = ""
 
     # PMS (Reservation system)
     PMS_API_BASE_URL: str = "https://meander-hid-dashboard.zeabur.app"

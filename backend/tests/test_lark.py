@@ -7,6 +7,8 @@ from app.config import settings
 from app.services import lark_service
 from app.services.lark_client import LarkClient, LarkClientError
 
+NORA = "recv6JxUlC2N9p"  # nora's Member record (default PIC)
+
 
 class FakeLarkClient:
     """Captures create_bitable_record calls instead of hitting the network."""
@@ -26,9 +28,9 @@ def test_build_task_fields_core_defaults():
     )
     assert fields["Task"] == "[1948] Image_VN - Solo - Direct Call-Out"  # trimmed
     assert fields["Description"] == "Hook: x\n\nCTA: Book Now"
-    assert fields["Status"] == "Not started"        # always-on default
-    assert fields["PIC"] == "nora@staymeander.com"  # always-on default
-    assert "Project" not in fields                  # no branch → no project
+    assert fields["Status"] == "Not started"   # always-on default
+    assert fields["PIC"] == [NORA]             # DuplexLink → array of record ids
+    assert "Project" not in fields             # no branch → no project link
 
 
 def test_build_task_fields_requires_name():
@@ -36,18 +38,35 @@ def test_build_task_fields_requires_name():
         lark_service.build_task_fields(task_name="   ", description="x")
 
 
-def test_build_task_fields_project_from_branch():
-    f1 = lark_service.build_task_fields(task_name="T", description="d", branch_name="Meander Saigon")
-    assert f1["Project"] == "[Sai Gon] Ads"   # note the space — matches the live board
-    f2 = lark_service.build_task_fields(task_name="T", description="d", branch_name="Meander 1948")
-    assert f2["Project"] == "[1948] Ads"
-    f3 = lark_service.build_task_fields(task_name="T", description="d", branch_name="Oani (Taipei)")
-    assert f3["Project"] == "[Oani] Ads"
+def test_project_record_for_branch_links():
+    assert lark_service.project_record_for_branch("Meander Saigon") == "recv6sW5Nl2wBI"
+    assert lark_service.project_record_for_branch("Meander 1948") == "recv8gCr8yrhVb"
+    # Oani's name contains "(Taipei)" — must still resolve to Oani, not Taipei.
+    assert lark_service.project_record_for_branch("Oani (Taipei)") == "recvfwkeNSVTRp"
+    assert lark_service.project_record_for_branch("Meander Taipei") == "recv8gCt0GGu9B"
 
 
-def test_project_for_branch_unknown_returns_none():
-    assert lark_service.project_for_branch("Some Random Brand") is None
-    assert lark_service.project_for_branch(None) is None
+def test_build_task_fields_project_link():
+    f = lark_service.build_task_fields(task_name="T", description="d", branch_name="Meander Osaka")
+    assert f["Project"] == ["recv6sswLo9olH"]
+
+
+def test_project_record_for_branch_unknown_returns_none():
+    assert lark_service.project_record_for_branch("Some Random Brand") is None
+    assert lark_service.project_record_for_branch(None) is None
+
+
+def test_explicit_status_overrides_default(monkeypatch):
+    monkeypatch.setattr(settings, "LARK_TASKS_DEFAULT_STATUS", "")
+    fields = lark_service.build_task_fields(task_name="T", description="d", status="Review")
+    assert fields["Status"] == "Review"
+    assert fields["PIC"] == [NORA]  # untouched default
+
+
+def test_settings_override_pic_record_id(monkeypatch):
+    monkeypatch.setattr(settings, "LARK_DEFAULT_PIC_RECORD_ID", "recCUSTOM")
+    fields = lark_service.build_task_fields(task_name="T", description="d")
+    assert fields["PIC"] == ["recCUSTOM"]
 
 
 def test_build_task_fields_deadline_ms():
@@ -66,19 +85,6 @@ def test_build_task_fields_bad_deadline_omitted():
     assert "Deadline" not in fields
 
 
-def test_explicit_status_overrides_default(monkeypatch):
-    monkeypatch.setattr(settings, "LARK_TASKS_DEFAULT_STATUS", "")
-    fields = lark_service.build_task_fields(task_name="T", description="d", status="Review")
-    assert fields["Status"] == "Review"
-    assert fields["PIC"] == "nora@staymeander.com"  # untouched default
-
-
-def test_settings_override_pic(monkeypatch):
-    monkeypatch.setattr(settings, "LARK_DEFAULT_PIC", "someone@staymeander.com")
-    fields = lark_service.build_task_fields(task_name="T", description="d")
-    assert fields["PIC"] == "someone@staymeander.com"
-
-
 def test_create_brief_task_uses_client(monkeypatch):
     monkeypatch.setattr(settings, "LARK_BASE_APP_TOKEN", "basAPP")
     monkeypatch.setattr(settings, "LARK_TASKS_TABLE_ID", "tblTASKS")
@@ -88,6 +94,7 @@ def test_create_brief_task_uses_client(monkeypatch):
         task_name="[Osaka] Image_AU - Couple - Romantic theme",
         description="full brief",
         branch_name="Meander Osaka",
+        deadline="2026-07-01",
         client=fake,
     )
 
@@ -96,11 +103,13 @@ def test_create_brief_task_uses_client(monkeypatch):
     call = fake.calls[0]
     assert call["app_token"] == "basAPP"
     assert call["table_id"] == "tblTASKS"
-    assert call["fields"]["Task"] == "[Osaka] Image_AU - Couple - Romantic theme"
-    assert call["fields"]["Description"] == "full brief"
-    assert call["fields"]["Project"] == "[Osaka] Ads"
-    assert call["fields"]["Status"] == "Not started"
-    assert call["fields"]["PIC"] == "nora@staymeander.com"
+    f = call["fields"]
+    assert f["Task"] == "[Osaka] Image_AU - Couple - Romantic theme"
+    assert f["Description"] == "full brief"
+    assert f["Project"] == ["recv6sswLo9olH"]   # Osaka link
+    assert f["PIC"] == [NORA]
+    assert f["Status"] == "Not started"
+    assert "Deadline" in f
 
 
 def test_client_token_requires_credentials():
