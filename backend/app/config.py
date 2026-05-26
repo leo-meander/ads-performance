@@ -84,10 +84,11 @@ class Settings(BaseSettings):
     LARK_API_BASE_URL: str = "https://open.larksuite.com/open-apis"
     LARK_BASE_APP_TOKEN: str = ""
     LARK_TASKS_TABLE_ID: str = ""
-    # Optional single-select option to stamp on new tasks (e.g. "Not started").
-    # Left empty by default so the first create can't fail on a mismatched
-    # option name — set it once you've confirmed the exact Status option text.
+    # Defaults stamped on every new task. Empty here → lark_service falls back
+    # to its own constants (Status "Not started", PIC nora@staymeander.com).
+    # Override per-deployment if the board's option/column text differs.
     LARK_TASKS_DEFAULT_STATUS: str = ""
+    LARK_DEFAULT_PIC: str = ""
 
     # PMS (Reservation system)
     PMS_API_BASE_URL: str = "https://meander-hid-dashboard.zeabur.app"

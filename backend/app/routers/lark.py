@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
 from app.dependencies.auth import require_section
+from app.models.account import AdAccount
 from app.models.user import User
 from app.services.lark_client import LarkClientError
 from app.services.lark_service import create_brief_task
@@ -51,9 +52,14 @@ def create_lark_task(
         if not ok:
             return _api_response(error=err)
 
+        # Branch name drives the "[<tag>] Ads" Project label.
+        account = db.query(AdAccount).filter(AdAccount.id == body.branch_id).first()
+        branch_name = account.account_name if account else None
+
         result = create_brief_task(
             task_name=body.task_name,
             description=body.description,
+            branch_name=branch_name,
             status=body.status,
         )
         return _api_response(data=result)

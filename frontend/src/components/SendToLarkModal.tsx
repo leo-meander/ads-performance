@@ -207,6 +207,10 @@ export default function SendToLarkModal({ brief, branchId, branchName, country, 
             />
           </div>
 
+          <p className="text-[11px] text-gray-400">
+            Auto-set on create: PIC nora@staymeander.com · Status “Not started” · Project “[branch] Ads”.
+          </p>
+
           {err && <p className="text-sm text-red-600">{err}</p>}
 
           <div className="flex gap-2 pt-2 border-t border-gray-100">
