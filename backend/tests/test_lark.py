@@ -1,4 +1,6 @@
 """Tests for the Lark (Feishu) Bitable task integration."""
+from datetime import datetime, timezone
+
 import pytest
 
 from app.config import settings
@@ -46,6 +48,22 @@ def test_build_task_fields_project_from_branch():
 def test_project_for_branch_unknown_returns_none():
     assert lark_service.project_for_branch("Some Random Brand") is None
     assert lark_service.project_for_branch(None) is None
+
+
+def test_build_task_fields_deadline_ms():
+    fields = lark_service.build_task_fields(task_name="T", description="d", deadline="2026-06-30")
+    expected = int(datetime(2026, 6, 30, 12, tzinfo=timezone.utc).timestamp() * 1000)
+    assert fields["Deadline"] == expected
+
+
+def test_build_task_fields_no_deadline_omitted():
+    fields = lark_service.build_task_fields(task_name="T", description="d")
+    assert "Deadline" not in fields
+
+
+def test_build_task_fields_bad_deadline_omitted():
+    fields = lark_service.build_task_fields(task_name="T", description="d", deadline="not-a-date")
+    assert "Deadline" not in fields
 
 
 def test_explicit_status_overrides_default(monkeypatch):

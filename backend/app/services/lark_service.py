@@ -14,6 +14,7 @@ with LarkClient.list_table_fields() once app_token/table_id are set.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.config import settings
@@ -25,6 +26,30 @@ FIELD_DESCRIPTION = "Description"
 FIELD_STATUS = "Status"
 FIELD_PIC = "PIC"
 FIELD_PROJECT = "Project"
+FIELD_DEADLINE = "Deadline"
+
+
+def _deadline_ms(deadline: Optional[str]) -> Optional[int]:
+    """Parse a YYYY-MM-DD (or ISO) string into a Bitable date value.
+
+    Bitable date fields take a millisecond epoch timestamp. We anchor a
+    date-only value to 12:00 UTC so it can't slip to the previous/next day in
+    the tenant's timezone. Returns None on empty/invalid input so a bad date
+    never blocks the create.
+    """
+    if not deadline or not deadline.strip():
+        return None
+    s = deadline.strip()
+    try:
+        if len(s) == 10:  # YYYY-MM-DD from a date input
+            dt = datetime.strptime(s, "%Y-%m-%d").replace(hour=12, tzinfo=timezone.utc)
+        else:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+    return int(dt.timestamp() * 1000)
 
 # Always-on defaults (overridable via settings).
 DEFAULT_STATUS = "Not started"
@@ -61,6 +86,7 @@ def build_task_fields(
     branch_name: Optional[str] = None,
     status: Optional[str] = None,
     pic: Optional[str] = None,
+    deadline: Optional[str] = None,
 ) -> dict[str, Any]:
     """Map final values + always-on fields onto the Base columns."""
     name = (task_name or "").strip()
@@ -84,6 +110,10 @@ def build_task_fields(
     if project:
         fields[FIELD_PROJECT] = project
 
+    ms = _deadline_ms(deadline)
+    if ms is not None:
+        fields[FIELD_DEADLINE] = ms
+
     return fields
 
 
@@ -94,6 +124,7 @@ def create_brief_task(
     branch_name: Optional[str] = None,
     status: Optional[str] = None,
     pic: Optional[str] = None,
+    deadline: Optional[str] = None,
     client: Optional[LarkClient] = None,
 ) -> dict[str, Any]:
     """Create one row in the Lark Base "Tasks" table from an AI brief."""
@@ -104,6 +135,7 @@ def create_brief_task(
         branch_name=branch_name,
         status=status,
         pic=pic,
+        deadline=deadline,
     )
     record = c.create_bitable_record(
         app_token=settings.LARK_BASE_APP_TOKEN,

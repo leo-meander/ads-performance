@@ -67,6 +67,13 @@ function suggestTaskName(brief: Brief, branchName: string, country?: string, ta?
   return `[${tag}] ${segs.join(' - ')}`
 }
 
+// Default Deadline = a week out, as YYYY-MM-DD for the date input.
+function defaultDeadline(): string {
+  const d = new Date()
+  d.setDate(d.getDate() + 7)
+  return d.toISOString().slice(0, 10)
+}
+
 function formatVisualDirection(vd?: VisualDirection): string {
   if (!vd) return ''
   const parts: string[] = []
@@ -107,6 +114,7 @@ export default function SendToLarkModal({ brief, branchId, branchName, country, 
   const [loadingTpl, setLoadingTpl] = useState(true)
   const [templateId, setTemplateId] = useState('')
   const [taskName, setTaskName] = useState(() => suggestTaskName(brief, branchName, country, ta))
+  const [deadline, setDeadline] = useState(defaultDeadline())
   const [description, setDescription] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState('')
@@ -142,6 +150,7 @@ export default function SendToLarkModal({ brief, branchId, branchName, country, 
           branch_id: branchId,
           task_name: taskName.trim(),
           description,
+          deadline: deadline || undefined,
         }),
       })
       const d = await r.json()
@@ -177,6 +186,16 @@ export default function SendToLarkModal({ brief, branchId, branchName, country, 
             <p className="text-[11px] text-gray-400 mt-0.5">
               Rule: [Branch] Format_Country - TA - Theme. Edit Format/aspect ratio as needed.
             </p>
+          </div>
+
+          <div>
+            <label className="text-xs text-gray-600 block mb-1">Deadline</label>
+            <input
+              type="date"
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+              value={deadline}
+              onChange={e => setDeadline(e.target.value)}
+            />
           </div>
 
           <div>

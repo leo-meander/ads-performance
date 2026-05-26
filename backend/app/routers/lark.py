@@ -32,6 +32,7 @@ class LarkTaskCreate(BaseModel):
     task_name: str
     description: str = ""
     status: str | None = None
+    deadline: str | None = None  # YYYY-MM-DD
 
 
 @router.post("/lark/tasks")
@@ -61,6 +62,7 @@ def create_lark_task(
             description=body.description,
             branch_name=branch_name,
             status=body.status,
+            deadline=body.deadline,
         )
         return _api_response(data=result)
     except LarkClientError as e:
