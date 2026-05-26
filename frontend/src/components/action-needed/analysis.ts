@@ -56,7 +56,17 @@ export type CampaignInsight = {
   action: string | null
   severity: Severity
   activity: ChangeLogItem[]
+  /** Buttons offered for this item on the Action Needed page. */
+  applyOptions: ApplyOption[]
 }
+
+// What the user can do with an item. 'auto' actions hit
+// /api/action-needed/apply and mutate the live Meta campaign; 'manual' hits
+// /mark-done and only records the decision to the Activity Log.
+export type ApplyAction = 'pause_campaign' | 'cut_budget' | 'raise_budget'
+export type ApplyOption =
+  | { kind: 'auto'; action: ApplyAction; label: string }
+  | { kind: 'manual'; label: string }
 
 export type NextAction = { severity: Severity; text: string; campaign?: string }
 
@@ -253,6 +263,23 @@ export function correlateActivity(row: CampaignRow, log: ChangeLogItem[]): Chang
   )
 }
 
+/**
+ * Buttons for an item. Auto-apply (pause / budget) is Meta-only — Google/TikTok
+ * and human tasks fall back to "Mark as done" (log only).
+ */
+function applyOptionsFor(row: CampaignRow, verdict: Verdict): ApplyOption[] {
+  const isMeta = (row.platform || '').toLowerCase() === 'meta'
+  const opts: ApplyOption[] = []
+  if (verdict === 'winner') {
+    if (isMeta) opts.push({ kind: 'auto', action: 'raise_budget', label: 'Raise budget 25%' })
+  } else if (isMeta) {
+    opts.push({ kind: 'auto', action: 'pause_campaign', label: 'Pause campaign' })
+    opts.push({ kind: 'auto', action: 'cut_budget', label: 'Cut budget 50%' })
+  }
+  opts.push({ kind: 'manual', label: 'Mark as done' })
+  return opts
+}
+
 export function buildInsights(rows: CampaignRow[], log: ChangeLogItem[], fmt: Money): CampaignInsight[] {
   const totalSpend = rows.reduce((s, r) => s + (r.spend || 0), 0) || 1
   return rows.map((row) => {
@@ -269,6 +296,7 @@ export function buildInsights(rows: CampaignRow[], log: ChangeLogItem[], fmt: Mo
       action: core.action,
       severity: core.severity,
       activity: correlateActivity(row, log),
+      applyOptions: applyOptionsFor(row, verdict),
     }
   })
 }

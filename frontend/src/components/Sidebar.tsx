@@ -26,7 +26,7 @@ const navSections: NavSection[] = [
     label: 'Analytics',
     items: [
       { href: '/', label: 'Dashboard', section: 'analytics', page: 'dashboard' },
-      { href: '/weekly-report', label: 'Weekly Report', section: 'analytics', page: 'dashboard' },
+      { href: '/action-needed', label: 'Action Needed', section: 'analytics', page: 'dashboard' },
       { href: '/booking-matches', label: 'Booking from Ads', section: 'analytics', page: 'booking_matches' },
     ],
   },

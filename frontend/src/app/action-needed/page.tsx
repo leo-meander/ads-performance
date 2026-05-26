@@ -29,7 +29,9 @@ import {
   diagnoseConversionFunnel,
   MIN_SPEND_SHARE,
   type FunnelStep,
-} from '@/components/weekly-report/analysis'
+  type CampaignInsight,
+  type ApplyOption,
+} from '@/components/action-needed/analysis'
 
 type Branch = { name: string; currency: string }
 
@@ -125,7 +127,7 @@ function ActivityChips({ items }: { items: ChangeLogItem[] }) {
 
 // ---------------------------------------------------------------------------
 
-export default function WeeklyReportPage() {
+export default function ActionNeededPage() {
   // filters
   const [branches, setBranches] = useState<Branch[]>([])
   const [selectedBranches, setSelectedBranches] = useState<string[]>([])
@@ -144,6 +146,10 @@ export default function WeeklyReportPage() {
   const [changelog, setChangelog] = useState<ChangeLogItem[]>([])
   const [funnel, setFunnel] = useState<FunnelStep[]>([])
   const [loading, setLoading] = useState(true)
+  // Per-campaign apply/mark-done status, keyed by campaign_id.
+  const [actionState, setActionState] = useState<
+    Record<string, { status: 'loading' | 'done' | 'error'; msg?: string }>
+  >({})
 
   const branchParam = selectedBranches.length > 0 ? selectedBranches.join(',') : ''
 
@@ -236,12 +242,71 @@ export default function WeeklyReportPage() {
 
   const funnelMax = funnel.length > 0 ? Math.max(...funnel.map((s) => s.value), 1) : 1
 
+  // Apply (real Meta mutation) or mark-done (log only). Both write the Activity Log.
+  const handleApply = useCallback(async (insight: CampaignInsight, opt: ApplyOption) => {
+    const cid = insight.row.campaign_id
+    if (opt.kind === 'auto') {
+      const verb =
+        opt.action === 'pause_campaign' ? 'PAUSE' :
+        opt.action === 'cut_budget' ? 'CUT BUDGET 50% on' : 'RAISE BUDGET 25% on'
+      if (!window.confirm(`This will ${verb} "${insight.row.campaign_name}" on Meta (live ads). Continue?`)) return
+      setActionState((s) => ({ ...s, [cid]: { status: 'loading' } }))
+      const res = await apiFetch<{ campaign_id: string }>('/api/action-needed/apply', {
+        method: 'POST',
+        body: JSON.stringify({ campaign_id: cid, action: opt.action, confirm: true }),
+      })
+      setActionState((s) => ({
+        ...s,
+        [cid]: res.success ? { status: 'done', msg: opt.label } : { status: 'error', msg: res.error || 'Failed' },
+      }))
+    } else {
+      const title = insight.leakLabel ? `${insight.leakLabel} — ${insight.row.campaign_name}` : insight.row.campaign_name
+      setActionState((s) => ({ ...s, [cid]: { status: 'loading' } }))
+      const res = await apiFetch('/api/action-needed/mark-done', {
+        method: 'POST',
+        body: JSON.stringify({ campaign_id: cid, platform: insight.row.platform, title }),
+      })
+      setActionState((s) => ({
+        ...s,
+        [cid]: res.success ? { status: 'done', msg: 'Marked done' } : { status: 'error', msg: res.error || 'Failed' },
+      }))
+    }
+  }, [])
+
+  const renderActions = (insight: CampaignInsight) => {
+    const st = actionState[insight.row.campaign_id]
+    if (st?.status === 'done') {
+      return <p className="text-xs text-green-600 mt-2">✓ {st.msg} · logged to Activity Log</p>
+    }
+    return (
+      <div className="mt-2">
+        <div className="flex flex-wrap gap-2 print:hidden">
+          {insight.applyOptions.map((opt) => (
+            <button
+              key={opt.kind === 'auto' ? opt.action : 'manual'}
+              onClick={() => handleApply(insight, opt)}
+              disabled={st?.status === 'loading'}
+              className={`text-xs px-2.5 py-1 rounded-md border disabled:opacity-50 ${
+                opt.kind === 'auto'
+                  ? 'border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100'
+                  : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50'
+              }`}
+            >
+              {st?.status === 'loading' ? '…' : opt.label}
+            </button>
+          ))}
+        </div>
+        {st?.status === 'error' && <p className="text-xs text-red-600 mt-1">{st.msg}</p>}
+      </div>
+    )
+  }
+
   return (
     <div className="pb-10">
       {/* Header + filters */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-2 print:mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-blue-600">Weekly Report</h1>
+          <h1 className="text-2xl font-bold text-blue-600">Action Needed</h1>
           {period && prevPeriod && (
             <p className="text-xs text-gray-400 mt-0.5">
               {period.from} → {period.to} &nbsp;vs&nbsp; {prevPeriod.from} → {prevPeriod.to}
@@ -473,6 +538,7 @@ export default function WeeklyReportPage() {
                       <Metric label="Conv" value={String(i.row.conversions)} change={i.row.conversions_change} />
                     </div>
                     <p className="text-xs text-gray-600 mt-3">{i.recommendations[0]}</p>
+                    {renderActions(i)}
                   </div>
                 ))}
               </div>
@@ -555,6 +621,7 @@ export default function WeeklyReportPage() {
                             </li>
                           ))}
                         </ul>
+                        {renderActions(i)}
                       </div>
                     </div>
                   </div>

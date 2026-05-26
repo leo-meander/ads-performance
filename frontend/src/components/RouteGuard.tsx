@@ -22,7 +22,7 @@ const ROUTE_SECTION_MAP: Array<[string, string]> = [
   ['/keypoints', 'meta_ads'],
   ['/ad-research', 'meta_ads'],
   ['/country', 'analytics'],
-  ['/weekly-report', 'analytics'],
+  ['/action-needed', 'analytics'],
   ['/booking-matches', 'analytics'],
   ['/landing-pages', 'landing_pages'],
   ['/accounts', 'settings'],
@@ -47,7 +47,7 @@ function sectionForPath(pathname: string): string | null {
 // Order matters: longer/more-specific prefixes come first. Keep page keys in
 // sync with PAGE_SECTION in AuthContext + backend PAGES registry.
 const ROUTE_PAGE_MAP: Array<[string, string]> = [
-  ['/weekly-report', 'dashboard'],
+  ['/action-needed', 'dashboard'],
   ['/booking-matches', 'booking_matches'],
   ['/meta/recommendations', 'meta_recommendations'],
   ['/angles', 'angles'],

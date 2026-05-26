@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # Claude API
     ANTHROPIC_API_KEY: str = ""
 
+    # Feature flags
+    # When False, the Meta/Google AI recommendation engines no-op (no Claude
+    # calls). Set to false to stop token spend now that the Action Needed page
+    # is the single surface for taking action.
+    RECOMMENDATIONS_ENABLED: bool = True
+
     # JWT Auth
     JWT_SECRET_KEY: str = "change-me-to-a-random-32-char-secret"
     JWT_ALGORITHM: str = "HS256"

@@ -12,6 +12,8 @@ const nextConfig = {
       // Activity log was briefly its own page; it's now folded into /
       // dashboard so users see changes alongside performance.
       { source: '/activity-log', destination: '/', permanent: false },
+      // Weekly Report was renamed to Action Needed (it filters any range).
+      { source: '/weekly-report', destination: '/action-needed', permanent: false },
     ]
   },
 }
