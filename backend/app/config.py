@@ -73,6 +73,22 @@ class Settings(BaseSettings):
     FIGMA_TEAM_ID: str = ""
     FIGMA_API_BASE_URL: str = "https://api.figma.com/v1"
 
+    # Lark (Feishu) — Bitable "Tasks" board for design briefs.
+    # App credentials: open.larksuite.com/app → custom app → Credentials.
+    # app_token + table_id come from the Base URL:
+    #   https://<host>/base/<LARK_BASE_APP_TOKEN>?table=<LARK_TASKS_TABLE_ID>
+    # The custom app must have the bitable scope AND be added to the Base as a
+    # collaborator ("..." → More → Add document app).
+    LARK_APP_ID: str = ""
+    LARK_APP_SECRET: str = ""
+    LARK_API_BASE_URL: str = "https://open.larksuite.com/open-apis"
+    LARK_BASE_APP_TOKEN: str = ""
+    LARK_TASKS_TABLE_ID: str = ""
+    # Optional single-select option to stamp on new tasks (e.g. "Not started").
+    # Left empty by default so the first create can't fail on a mismatched
+    # option name — set it once you've confirmed the exact Status option text.
+    LARK_TASKS_DEFAULT_STATUS: str = ""
+
     # PMS (Reservation system)
     PMS_API_BASE_URL: str = "https://meander-hid-dashboard.zeabur.app"
     PMS_API_KEY: str = ""
