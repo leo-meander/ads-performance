@@ -1,7 +1,8 @@
+import json
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 
@@ -61,6 +62,74 @@ TOOLS = [
                 "limit": {
                     "type": "integer",
                     "description": "Max countries to return (default 20)",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_angle_performance",
+        "description": (
+            "Rank creative angles by performance. Aggregates every ad combo grouped by its "
+            "marketing angle — one of 13 fixed strategic approaches (e.g. 'Use an authority', "
+            "'Before and After', 'Stress the exclusiveness of the claim') — returning combo "
+            "count, spend, ROAS, CTR, conversions and cost-per-conversion per angle. Use this "
+            "to answer 'which angle is winning' overall or for a given branch / audience / "
+            "country. Metrics are lifetime cached combo totals, NOT date-bounded."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name substring, e.g. 'Saigon', 'Oani', 'Osaka'",
+                },
+                "target_audience": {
+                    "type": "string",
+                    "description": "Filter by audience: Solo, Couple, Friend, Group, or Business",
+                },
+                "country": {
+                    "type": "string",
+                    "description": "ISO-2 country code, e.g. 'JP', 'PH', 'AU'",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max angles to return (default 20)",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_keypoint_performance",
+        "description": (
+            "Rank selling-point keypoints by performance. A combo can carry several keypoints "
+            "(category is location / amenity / experience / value); this expands them and "
+            "aggregates spend, ROAS, CTR, conversions per keypoint. Use this to find which "
+            "specific selling points actually convert, overall or for a given branch / "
+            "audience / country. Metrics are lifetime cached combo totals, NOT date-bounded; "
+            "a combo with multiple keypoints contributes to each."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name substring, e.g. 'Saigon', 'Oani', 'Osaka'",
+                },
+                "target_audience": {
+                    "type": "string",
+                    "description": "Filter by audience: Solo, Couple, Friend, Group, or Business",
+                },
+                "country": {
+                    "type": "string",
+                    "description": "ISO-2 country code, e.g. 'JP', 'PH', 'AU'",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Filter by keypoint category: location, amenity, experience, or value",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max keypoints to return (default 25)",
                 },
             },
         },
@@ -127,6 +196,8 @@ def call_tool(name: str, arguments: dict, db: Session) -> Any:
     handlers = {
         "get_performance": _get_performance,
         "get_country_breakdown": _get_country_breakdown,
+        "get_angle_performance": _get_angle_performance,
+        "get_keypoint_performance": _get_keypoint_performance,
         "get_campaigns": _get_campaigns,
         "get_budget_status": _get_budget_status,
         "get_branches": _get_branches,
@@ -238,6 +309,169 @@ def _get_country_breakdown(args: dict, db: Session) -> dict:
         "date_from": date_from,
         "date_to": date_to,
         "countries": [dict(r) for r in rows],
+    }
+
+
+def _get_angle_performance(args: dict, db: Session) -> dict:
+    branch = args.get("branch")
+    ta = args.get("target_audience")
+    country = args.get("country")
+    limit = min(int(args.get("limit", 20)), 50)
+
+    filters = ["cb.angle_id IS NOT NULL"]
+    params: dict = {"limit": limit}
+    if branch:
+        filters.append("a.account_name ILIKE :branch")
+        params["branch"] = f"%{branch}%"
+    if ta:
+        filters.append("cb.target_audience = :ta")
+        params["ta"] = ta
+    if country:
+        filters.append("UPPER(cb.country) = :country")
+        params["country"] = country.upper()
+
+    where = " AND ".join(filters)
+    sql = text(f"""
+        SELECT
+            cb.angle_id,
+            MAX(aa.angle_type)              AS angle_type,
+            MAX(aa.status)                  AS angle_status,
+            COUNT(*)                        AS combos,
+            SUM(cb.spend)::float            AS spend,
+            SUM(cb.impressions)             AS impressions,
+            SUM(cb.clicks)                  AS clicks,
+            SUM(cb.conversions)             AS conversions,
+            SUM(cb.revenue)::float          AS revenue,
+            CASE WHEN SUM(cb.spend) > 0
+                 THEN ROUND((SUM(cb.revenue) / SUM(cb.spend))::numeric, 2)::float
+            END AS roas,
+            CASE WHEN SUM(cb.impressions) > 0
+                 THEN ROUND((SUM(cb.clicks)::numeric / SUM(cb.impressions) * 100), 2)::float
+            END AS ctr_pct,
+            CASE WHEN SUM(cb.conversions) > 0
+                 THEN ROUND((SUM(cb.spend) / SUM(cb.conversions))::numeric, 2)::float
+            END AS cost_per_conversion
+        FROM ad_combos cb
+        JOIN ad_accounts a ON a.id = cb.branch_id
+        LEFT JOIN ad_angles aa ON aa.angle_id = cb.angle_id
+        WHERE {where}
+        GROUP BY cb.angle_id
+        ORDER BY roas DESC NULLS LAST, SUM(cb.spend) DESC
+        LIMIT :limit
+    """)
+
+    rows = db.execute(sql, params).mappings().all()
+    return {
+        "filters": {"branch": branch, "target_audience": ta, "country": country},
+        "note": "Lifetime cached combo metrics, not date-bounded. Ordered by ROAS desc.",
+        "angles": [dict(r) for r in rows],
+    }
+
+
+def _get_keypoint_performance(args: dict, db: Session) -> dict:
+    branch = args.get("branch")
+    ta = args.get("target_audience")
+    country = args.get("country")
+    category = args.get("category")
+    limit = min(int(args.get("limit", 25)), 100)
+
+    # keypoint_ids is a JSON array (a combo carries several keypoints), so we
+    # fetch the matching combos and expand the array in Python — mirrors the
+    # canonical aggregation in the /keypoints endpoint rather than relying on
+    # DB-specific JSON unnesting.
+    filters = ["cb.keypoint_ids IS NOT NULL"]
+    params: dict = {}
+    if branch:
+        filters.append("a.account_name ILIKE :branch")
+        params["branch"] = f"%{branch}%"
+    if ta:
+        filters.append("cb.target_audience = :ta")
+        params["ta"] = ta
+    if country:
+        filters.append("UPPER(cb.country) = :country")
+        params["country"] = country.upper()
+
+    where = " AND ".join(filters)
+    sql = text(f"""
+        SELECT cb.keypoint_ids, cb.spend, cb.revenue,
+               cb.impressions, cb.clicks, cb.conversions
+        FROM ad_combos cb
+        JOIN ad_accounts a ON a.id = cb.branch_id
+        WHERE {where}
+    """)
+    combo_rows = db.execute(sql, params).mappings().all()
+
+    agg: dict[str, dict] = {}
+    for r in combo_rows:
+        # Postgres (psycopg2) hands back a parsed list; other drivers may return
+        # the raw JSON string — coerce either way.
+        raw = r["keypoint_ids"]
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (ValueError, TypeError):
+                raw = []
+        ids = raw if isinstance(raw, list) else []
+        for kid in ids:
+            m = agg.setdefault(
+                kid,
+                {"combos": 0, "spend": 0.0, "revenue": 0.0,
+                 "impressions": 0, "clicks": 0, "conversions": 0},
+            )
+            m["combos"] += 1
+            m["spend"] += float(r["spend"] or 0)
+            m["revenue"] += float(r["revenue"] or 0)
+            m["impressions"] += int(r["impressions"] or 0)
+            m["clicks"] += int(r["clicks"] or 0)
+            m["conversions"] += int(r["conversions"] or 0)
+
+    meta: dict[str, dict] = {}
+    if agg:
+        stmt = text(
+            "SELECT id, title, category, is_active "
+            "FROM branch_keypoints WHERE id IN :ids"
+        ).bindparams(bindparam("ids", expanding=True))
+        for k in db.execute(stmt, {"ids": list(agg.keys())}).mappings().all():
+            meta[k["id"]] = {
+                "title": k["title"],
+                "category": k["category"],
+                "is_active": k["is_active"],
+            }
+
+    result = []
+    for kid, m in agg.items():
+        info = meta.get(kid, {})
+        if category and info.get("category") != category:
+            continue
+        spend = m["spend"]
+        revenue = m["revenue"]
+        impressions = m["impressions"]
+        conversions = m["conversions"]
+        result.append({
+            "keypoint_id": kid,
+            "title": info.get("title", "(deleted keypoint)"),
+            "category": info.get("category", ""),
+            "is_active": info.get("is_active"),
+            "combos": m["combos"],
+            "spend": round(spend, 2),
+            "revenue": round(revenue, 2),
+            "roas": round(revenue / spend, 2) if spend > 0 else None,
+            "impressions": impressions,
+            "clicks": m["clicks"],
+            "conversions": conversions,
+            "ctr_pct": round(m["clicks"] / impressions * 100, 2) if impressions > 0 else None,
+            "cost_per_conversion": round(spend / conversions, 2) if conversions > 0 else None,
+        })
+
+    # ROAS desc, keypoints with no spend/ROAS last, ties broken by spend.
+    result.sort(key=lambda x: (x["roas"] is not None, x["roas"] or 0, x["spend"]), reverse=True)
+    return {
+        "filters": {"branch": branch, "target_audience": ta, "country": country, "category": category},
+        "note": (
+            "Lifetime cached combo metrics, not date-bounded. Ordered by ROAS desc. "
+            "A combo with multiple keypoints contributes to each."
+        ),
+        "keypoints": result[:limit],
     }
 
 
