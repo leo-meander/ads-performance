@@ -41,6 +41,7 @@ from app.routers import (
     google_recommendations,
     internal_tasks,
     landing_pages,
+    lark,
     launch,
     meta_recommendations,
     notifications,
@@ -146,6 +147,7 @@ app.include_router(action_needed.router, prefix="/api", tags=["action-needed"])
 app.include_router(auth.router, prefix="/api", tags=["auth"])
 app.include_router(users.router, prefix="/api", tags=["users"])
 app.include_router(approvals.router, prefix="/api", tags=["approvals"])
+app.include_router(lark.router, prefix="/api", tags=["lark"])
 app.include_router(launch.router, prefix="/api", tags=["launch"])
 app.include_router(notifications.router, prefix="/api", tags=["notifications"])
 app.include_router(google_campaigns.router, prefix="/api", tags=["google-ads"])

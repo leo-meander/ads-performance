@@ -24,6 +24,7 @@ interface Brief {
 interface Template {
   id: string
   name: string
+  branch_id?: string | null
   platform: string
   width: number
   height: number
@@ -33,6 +34,9 @@ interface Template {
 interface Props {
   brief: Brief
   branchId: string
+  // The winning ad this brief is reused from. Recorded on the render job as
+  // source_combo_id so the combo surfaces under the Figma list's "Figma only".
+  sourceComboId?: string
   onClose: () => void
   onQueued: (jobId: string) => void
 }
@@ -56,7 +60,7 @@ function formatVisualDirection(vd?: VisualDirection): string {
  * be supplied, but the job always carries the brief's visual_direction as a
  * `_visual_direction` note so the designer knows which photo to place.
  */
-export default function SendToFigmaModal({ brief, branchId, onClose, onQueued }: Props) {
+export default function SendToFigmaModal({ brief, branchId, sourceComboId, onClose, onQueued }: Props) {
   const [templates, setTemplates] = useState<Template[]>([])
   const [loading, setLoading] = useState(true)
   const [templateId, setTemplateId] = useState('')
@@ -69,7 +73,17 @@ export default function SendToFigmaModal({ brief, branchId, onClose, onQueued }:
     if (branchId) params.set('branch_id', branchId)
     fetch(`${API_BASE}/api/figma/templates?${params}`, { credentials: 'include' })
       .then(r => r.json())
-      .then(d => { if (d.success) setTemplates(d.data.items || []) })
+      .then(d => {
+        if (!d.success) return
+        const list: Template[] = d.data.items || []
+        setTemplates(list)
+        // Auto-select a template for this branch so the designer doesn't have
+        // to. The API returns branch-scoped + shared templates ordered by
+        // created_at, so prefer one whose branch_id matches; otherwise fall
+        // back to the most recent (likely a shared master). Still overridable.
+        const preferred = list.find(t => t.branch_id === branchId) || list[0]
+        if (preferred) setTemplateId(prev => prev || preferred.id)
+      })
       .finally(() => setLoading(false))
   }, [branchId])
 
@@ -115,7 +129,11 @@ export default function SendToFigmaModal({ brief, branchId, onClose, onQueued }:
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ template_id: templateId, request_payload: payload }),
+        body: JSON.stringify({
+          template_id: templateId,
+          request_payload: payload,
+          ...(sourceComboId ? { source_combo_id: sourceComboId } : {}),
+        }),
       })
       const d = await r.json()
       if (!d.success) { setErr(d.error || 'Failed to queue job'); return }

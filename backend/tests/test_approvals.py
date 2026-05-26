@@ -460,3 +460,144 @@ def test_pending_reviews_endpoint():
     data = resp.json()
     assert data["success"] is True
     assert len(data["data"]["items"]) == 1
+
+
+# ── Auto-queue Figma render on full approval ─────────────────
+
+
+def _seed_pending_approval(*, creator, reviewer, combo, working_file_url):
+    """Create an AdCopy for the combo + a PENDING approval (one reviewer)
+    carrying working_file_url. Returns approval_id."""
+    from datetime import datetime, timezone
+
+    from app.models.ad_copy import AdCopy
+    from app.models.approval import ApprovalReviewer, ComboApproval
+
+    db = TestSession()
+    db.add(AdCopy(
+        id=str(uuid.uuid4()),
+        branch_id=combo.branch_id,
+        copy_id=combo.copy_id,
+        target_audience="Solo",
+        headline="Stay solo, never alone",
+        body_text="Shared lounge + indoor slide",
+        cta="Book now",
+    ))
+    approval = ComboApproval(
+        id=str(uuid.uuid4()),
+        combo_id=combo.id,
+        round=1,
+        status="PENDING_APPROVAL",
+        submitted_by=creator.id,
+        submitted_at=datetime.now(timezone.utc),
+        working_file_url=working_file_url,
+    )
+    db.add(approval)
+    db.flush()
+    db.add(ApprovalReviewer(
+        id=str(uuid.uuid4()),
+        approval_id=approval.id,
+        reviewer_id=reviewer.id,
+        status="PENDING",
+    ))
+    db.commit()
+    approval_id = approval.id
+    db.close()
+    return approval_id
+
+
+def test_approval_auto_queues_figma_render_when_working_file_is_figma():
+    """Full approval + a Figma working file → a PENDING render job is queued
+    into the frame's template, tagged with source_combo_id and filled from the
+    combo's copy (cleaned to the template's declared slots)."""
+    from app.models.figma import FigmaJob, FigmaTemplate
+    from app.services.approval_service import record_decision
+
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"], email="rev_figma@meander.com")
+    combo = _create_combo()
+
+    db = TestSession()
+    tpl = FigmaTemplate(
+        id=str(uuid.uuid4()),
+        name="Hero Square",
+        file_key="ABC123",
+        node_id="143:22",
+        branch_id=combo.branch_id,
+        platform="meta",
+        placeholder_schema={"headline": {"type": "text"}, "cta": {"type": "text"}},
+        is_active=True,
+    )
+    db.add(tpl)
+    db.commit()
+    tpl_id = tpl.id
+    db.close()
+
+    approval_id = _seed_pending_approval(
+        creator=creator, reviewer=reviewer, combo=combo,
+        # node-id uses a dash in the URL; parse_figma_url converts it to a colon
+        working_file_url="https://www.figma.com/design/ABC123/Hero?node-id=143-22",
+    )
+
+    db = TestSession()
+    record_decision(db, approval_id, reviewer.id, "APPROVED")
+    db.close()
+
+    db = TestSession()
+    jobs = db.query(FigmaJob).filter(FigmaJob.source_combo_id == combo.combo_id).all()
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.template_id == tpl_id
+    assert job.status == "PENDING"
+    assert job.request_payload.get("headline") == "Stay solo, never alone"
+    assert job.request_payload.get("cta") == "Book now"
+    # subhead/body/hook are not declared slots on this template → dropped
+    assert "subhead" not in job.request_payload
+    db.close()
+
+
+def test_approval_no_render_when_working_file_not_figma():
+    """A non-Figma working file (e.g. Canva) must not queue any render job."""
+    from app.models.figma import FigmaJob
+    from app.services.approval_service import record_decision
+
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"], email="rev_canva@meander.com")
+    combo = _create_combo()
+
+    approval_id = _seed_pending_approval(
+        creator=creator, reviewer=reviewer, combo=combo,
+        working_file_url="https://canva.com/design/test",
+    )
+
+    db = TestSession()
+    record_decision(db, approval_id, reviewer.id, "APPROVED")
+    db.close()
+
+    db = TestSession()
+    assert db.query(FigmaJob).count() == 0
+    db.close()
+
+
+def test_approval_no_render_when_figma_url_has_no_registered_template():
+    """A Figma working file with no matching active template → skip silently
+    (strict: no branch-template fallback)."""
+    from app.models.figma import FigmaJob
+    from app.services.approval_service import record_decision
+
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"], email="rev_notpl@meander.com")
+    combo = _create_combo()
+
+    approval_id = _seed_pending_approval(
+        creator=creator, reviewer=reviewer, combo=combo,
+        working_file_url="https://www.figma.com/design/NOPE999/X?node-id=1-1",
+    )
+
+    db = TestSession()
+    record_decision(db, approval_id, reviewer.id, "APPROVED")
+    db.close()
+
+    db = TestSession()
+    assert db.query(FigmaJob).count() == 0
+    db.close()

@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Sparkles, Send } from 'lucide-react'
+import { ArrowLeft, Sparkles, Send, ListChecks } from 'lucide-react'
 import SendToFigmaModal from '@/components/SendToFigmaModal'
+import SendToLarkModal from '@/components/SendToLarkModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -55,6 +56,9 @@ export default function AIBriefPage() {
   const [err, setErr] = useState('')
   const [sendBrief, setSendBrief] = useState<Brief | null>(null)
   const [queuedMsg, setQueuedMsg] = useState('')
+  const [sourceComboId, setSourceComboId] = useState('')
+  const [sendLark, setSendLark] = useState<Brief | null>(null)
+  const [larkMsg, setLarkMsg] = useState('')
 
   useEffect(() => {
     fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
@@ -63,14 +67,18 @@ export default function AIBriefPage() {
   }, [])
 
   // Pre-fill from query params when arriving via "Brief" on the Figma list
-  // (e.g. /winning-ads/brief?branch_id=...&ta=Couple). Reads window.location
-  // directly so we don't need a Suspense boundary for useSearchParams.
+  // (e.g. /winning-ads/brief?branch_id=...&ta=Couple&combo_id=AbC123). Reads
+  // window.location directly so we don't need a Suspense boundary for
+  // useSearchParams. combo_id is the winning ad being reused — it rides through
+  // to the render job as source_combo_id so it shows under "Figma only".
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search)
     const b = sp.get('branch_id')
     const t = sp.get('ta')
+    const c = sp.get('combo_id')
     if (b) setBranchId(b)
     if (t) setTa(t)
+    if (c) setSourceComboId(c)
   }, [])
 
   const generate = async () => {
@@ -196,6 +204,12 @@ export default function AIBriefPage() {
             </div>
           )}
 
+          {larkMsg && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-sm text-blue-800">
+              {larkMsg} — check the Lark “Tasks” board.
+            </div>
+          )}
+
           {/* Brief variants */}
           <div className="space-y-4">
             {result.briefs.map((b, i) => (
@@ -203,6 +217,12 @@ export default function AIBriefPage() {
                 <div className="flex items-baseline justify-between mb-2">
                   <h3 className="text-base font-semibold text-gray-900">{b.title}</h3>
                   <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => { setLarkMsg(''); setSendLark(b) }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+                    >
+                      <ListChecks className="w-3 h-3" /> Send to Lark
+                    </button>
                     <button
                       onClick={() => { setQueuedMsg(''); setSendBrief(b) }}
                       className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
@@ -264,10 +284,26 @@ export default function AIBriefPage() {
         <SendToFigmaModal
           brief={sendBrief}
           branchId={branchId}
+          sourceComboId={sourceComboId || undefined}
           onClose={() => setSendBrief(null)}
           onQueued={(jobId) => {
             setSendBrief(null)
             setQueuedMsg(`Render job queued (${jobId.slice(0, 8)}).`)
+          }}
+        />
+      )}
+
+      {sendLark && (
+        <SendToLarkModal
+          brief={sendLark}
+          branchId={branchId}
+          branchName={result?.branch_name || ''}
+          country={country}
+          ta={ta}
+          onClose={() => setSendLark(null)}
+          onCreated={(_recordId, taskName) => {
+            setSendLark(null)
+            setLarkMsg(`Lark task created: ${taskName}`)
           }}
         />
       )}
