@@ -68,11 +68,12 @@ def _angle(branch_id, angle_id, angle_type):
 
 
 def _combo(branch_id, sfx, *, roas=None, spend=0, revenue=0, conversions=0,
-           verdict="WIN", ta="Solo", keypoint_ids=None, angle_id=None):
+           verdict="WIN", ta="Solo", keypoint_ids=None, angle_id=None,
+           material_type="image", hook_rate=None, thruplay_rate=None):
     db = TestSession()
     db.add(AdMaterial(
         branch_id=branch_id, material_id=f"MAT-{sfx}",
-        material_type="image", file_url=f"https://drive/{sfx}.jpg", url_source="auto",
+        material_type=material_type, file_url=f"https://drive/{sfx}.jpg", url_source="auto",
     ))
     db.add(AdCombo(
         id=str(uuid.uuid4()), combo_id=f"CMB-{sfx}", branch_id=branch_id,
@@ -80,6 +81,7 @@ def _combo(branch_id, sfx, *, roas=None, spend=0, revenue=0, conversions=0,
         copy_id=f"CPY-{sfx}", material_id=f"MAT-{sfx}",
         verdict=verdict, roas=roas, spend=spend, revenue=revenue, conversions=conversions,
         keypoint_ids=keypoint_ids, angle_id=angle_id,
+        hook_rate=hook_rate, thruplay_rate=thruplay_rate,
     ))
     db.commit()
     db.close()
@@ -149,13 +151,43 @@ def test_angle_performance_roas():
     assert perf["Use an authority"]["combos"] == 2
 
 
+def _empty_pattern():
+    return {
+        "sample_size": 1, "angle_distribution": {}, "keypoint_distribution": {},
+        "visual_distribution": {}, "headline_examples": [], "samples": [],
+    }
+
+
 def test_build_user_prompt_includes_language():
     prompt = _build_user_prompt(
         branch_name="Meander Saigon", target_audience="Solo", country="VN",
-        vibe=None, n_variants=2, language="vi",
-        pattern={
-            "sample_size": 1, "angle_distribution": {}, "keypoint_distribution": {},
-            "visual_distribution": {}, "headline_examples": [],
-        },
+        vibe=None, n_variants=2, language="vi", ad_format="image",
+        pattern=_empty_pattern(),
     )
     assert "Vietnamese" in prompt
+
+
+def test_build_user_prompt_video_instruction():
+    prompt = _build_user_prompt(
+        branch_name="Meander Saigon", target_audience="Solo", country="VN",
+        vibe=None, n_variants=1, language="en", ad_format="video",
+        pattern=_empty_pattern(),
+    )
+    assert "VIDEO" in prompt and "0-3s hook" in prompt
+
+
+def test_gather_patterns_format_filter_video():
+    acc = _account()
+    _combo(acc.id, "IMG", roas=4.0, spend=100, revenue=400, material_type="image")
+    _combo(acc.id, "VID", roas=2.0, spend=100, revenue=200, material_type="video", hook_rate=0.35)
+
+    db = TestSession()
+    pattern = _gather_patterns(
+        db, branch_id=acc.id, target_audience=None, country=None,
+        vibe=None, performance_goal="roas", ad_format="video",
+    )
+    db.close()
+
+    ids = [s["combo_id"] for s in pattern["samples"]]
+    assert ids == ["CMB-VID"]  # only the video winner seeds a video brief
+    assert pattern["samples"][0]["hook_rate"] == 0.35

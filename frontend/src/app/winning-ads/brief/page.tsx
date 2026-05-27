@@ -9,21 +9,41 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
 interface Account { id: string; account_name: string; platform: string }
 
+interface ScriptBeat {
+  time: string
+  visual: string
+  on_screen_text: string
+  voiceover: string
+}
+interface VideoProduction {
+  voiceover?: string
+  music?: string
+  captions?: string
+  cta?: string
+}
+
 interface Brief {
   title: string
-  hook: string
-  subhead: string
-  cta: string
-  angle: string
-  keypoints: string[]
-  visual_direction: {
+  // image fields
+  hook?: string
+  subhead?: string
+  cta?: string
+  visual_direction?: {
     scene: string
     human_presence: string
     color_palette: string
     emotional_angle: string
   }
   visual_description?: string
-  rationale: string
+  // video fields
+  concept?: string
+  duration_sec?: number
+  script?: ScriptBeat[]
+  production?: VideoProduction
+  // shared
+  angle?: string
+  keypoints: string[]
+  rationale?: string
 }
 
 interface KeypointPerf { roas: number | null; combos: number; conversions: number; spend: number }
@@ -60,6 +80,10 @@ interface BriefResult {
 
 const TA_LIST = ['Solo', 'Couple', 'Friend', 'Group', 'Business']
 const COUNTRY_LIST = ['VN', 'TW', 'JP', 'SG', 'HK', 'PH', 'AU', 'US', 'GB', 'DE', 'CA', 'KR', 'MY', 'TH', 'ID']
+const FORMAT_LIST: { code: string; label: string }[] = [
+  { code: 'image', label: 'Image' },
+  { code: 'video', label: 'Video' },
+]
 const LANGUAGE_LIST: { code: string; label: string }[] = [
   { code: 'en', label: 'English' },
   { code: 'vi', label: 'Vietnamese' },
@@ -73,6 +97,7 @@ export default function AIBriefPage() {
   const [ta, setTa] = useState('')
   const [country, setCountry] = useState('')
   const [language, setLanguage] = useState('en')
+  const [adFormat, setAdFormat] = useState('image')
   const [vibe, setVibe] = useState('')
   const [selectedCreatives, setSelectedCreatives] = useState<TopCreative[]>([])
   const [selectedKeypoints, setSelectedKeypoints] = useState<string[]>([])
@@ -119,6 +144,7 @@ export default function AIBriefPage() {
           target_audience: ta || null,
           country: country || null,
           language: language || null,
+          ad_format: adFormat,
           vibe: vibe.trim() || null,
           n_variants: nVariants,
           performance_goal: goal,
@@ -190,6 +216,12 @@ export default function AIBriefPage() {
             <label className="text-xs text-gray-600 block mb-1">Language</label>
             <select className="w-full border border-gray-300 rounded px-3 py-2 text-sm" value={language} onChange={e => setLanguage(e.target.value)}>
               {LANGUAGE_LIST.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600 block mb-1">Format</label>
+            <select className="w-full border border-gray-300 rounded px-3 py-2 text-sm" value={adFormat} onChange={e => setAdFormat(e.target.value)}>
+              {FORMAT_LIST.map(f => <option key={f.code} value={f.code}>{f.label}</option>)}
             </select>
           </div>
           <div className="sm:col-span-2 lg:col-span-3">
@@ -313,43 +345,77 @@ export default function AIBriefPage() {
                     <span className="text-xs text-gray-400">Variant {i + 1}</span>
                   </div>
                 </div>
-                <div className="space-y-1.5 text-sm">
-                  <div><span className="text-gray-500 w-20 inline-block">Hook</span><span className="font-medium">{b.hook}</span></div>
-                  {b.subhead && <div><span className="text-gray-500 w-20 inline-block">Subhead</span>{b.subhead}</div>}
-                  <div><span className="text-gray-500 w-20 inline-block">CTA</span><span className="font-medium text-purple-700">{b.cta}</span></div>
-                  <div><span className="text-gray-500 w-20 inline-block">Angle</span>{b.angle}</div>
-                  {b.keypoints?.length > 0 && (
-                    <div className="flex">
-                      <span className="text-gray-500 w-20 inline-block align-top shrink-0">Keypoints</span>
-                      <div className="flex flex-wrap gap-1.5">
-                        {b.keypoints.map((kp, ki) => {
-                          const perf = result.patterns.keypoint_performance?.[kp]
-                          return (
-                            <span key={ki} className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-700">
-                              {kp}
-                              {perf?.roas != null && (
-                                <span className="ml-1 font-mono text-green-700">ROAS {perf.roas.toFixed(2)}</span>
-                              )}
-                            </span>
-                          )
-                        })}
+                {b.script && b.script.length > 0 ? (
+                  /* Video brief — beat-by-beat script + production notes */
+                  <div className="space-y-2 text-sm">
+                    {b.concept && (
+                      <div className="text-gray-700">
+                        <span className="text-gray-500">Concept </span>{b.concept}
+                        {b.duration_sec ? <span className="text-gray-400"> · ~{b.duration_sec}s</span> : null}
                       </div>
+                    )}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs border border-gray-100">
+                        <thead className="bg-gray-50 text-gray-500">
+                          <tr>
+                            <th className="text-left px-2 py-1 w-16">Time</th>
+                            <th className="text-left px-2 py-1">Visual</th>
+                            <th className="text-left px-2 py-1">On-screen</th>
+                            <th className="text-left px-2 py-1">Voiceover</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 align-top">
+                          {b.script.map((s, si) => (
+                            <tr key={si}>
+                              <td className="px-2 py-1 font-mono text-gray-500 whitespace-nowrap">{s.time}</td>
+                              <td className="px-2 py-1 text-gray-700">{s.visual}</td>
+                              <td className="px-2 py-1 text-gray-700">{s.on_screen_text}</td>
+                              <td className="px-2 py-1 text-gray-700">{s.voiceover}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
-                  )}
-                  {b.visual_description && (
-                    <div className="flex">
-                      <span className="text-gray-500 w-20 inline-block align-top shrink-0">Visual</span>
-                      <span className="text-gray-700">{b.visual_description}</span>
+                    {b.production && (
+                      <div className="text-xs text-gray-600 space-y-0.5 bg-gray-50 rounded p-2">
+                        {b.production.voiceover && <div><span className="text-gray-400">VO: </span>{b.production.voiceover}</div>}
+                        {b.production.music && <div><span className="text-gray-400">Music: </span>{b.production.music}</div>}
+                        {b.production.captions && <div><span className="text-gray-400">Captions: </span>{b.production.captions}</div>}
+                        {b.production.cta && <div><span className="text-gray-400">CTA: </span>{b.production.cta}</div>}
+                      </div>
+                    )}
+                    <KeypointChips keypoints={b.keypoints} perf={result.patterns.keypoint_performance} />
+                  </div>
+                ) : (
+                  /* Image brief */
+                  <>
+                    <div className="space-y-1.5 text-sm">
+                      {b.hook && <div><span className="text-gray-500 w-20 inline-block">Hook</span><span className="font-medium">{b.hook}</span></div>}
+                      {b.subhead && <div><span className="text-gray-500 w-20 inline-block">Subhead</span>{b.subhead}</div>}
+                      {b.cta && <div><span className="text-gray-500 w-20 inline-block">CTA</span><span className="font-medium text-purple-700">{b.cta}</span></div>}
+                      {b.angle && <div><span className="text-gray-500 w-20 inline-block">Angle</span>{b.angle}</div>}
+                      {b.keypoints?.length > 0 && (
+                        <div className="flex">
+                          <span className="text-gray-500 w-20 inline-block align-top shrink-0">Keypoints</span>
+                          <KeypointChips keypoints={b.keypoints} perf={result.patterns.keypoint_performance} />
+                        </div>
+                      )}
+                      {b.visual_description && (
+                        <div className="flex">
+                          <span className="text-gray-500 w-20 inline-block align-top shrink-0">Visual</span>
+                          <span className="text-gray-700">{b.visual_description}</span>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-                <div className="flex flex-wrap gap-1.5 mt-3">
-                  {b.visual_direction && Object.entries(b.visual_direction).map(([k, v]) => v && (
-                    <span key={k} className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">
-                      {k.replace('_', ' ')}: {v}
-                    </span>
-                  ))}
-                </div>
+                    <div className="flex flex-wrap gap-1.5 mt-3">
+                      {b.visual_direction && Object.entries(b.visual_direction).map(([k, v]) => v && (
+                        <span key={k} className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">
+                          {k.replace('_', ' ')}: {v}
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                )}
                 {b.rationale && <p className="text-xs text-gray-500 mt-2 italic">{b.rationale}</p>}
               </div>
             ))}
@@ -367,6 +433,7 @@ export default function AIBriefPage() {
           branchName={result?.branch_name || ''}
           country={country}
           ta={ta}
+          adFormat={adFormat}
           referenceLinks={selectedCreatives
             .filter(s => s.file_url)
             .map(s => ({ name: s.ad_name || s.combo_id, url: s.file_url as string, roas: s.roas }))}
@@ -378,6 +445,22 @@ export default function AIBriefPage() {
           }}
         />
       )}
+    </div>
+  )
+}
+
+function KeypointChips({ keypoints, perf }: { keypoints: string[]; perf?: Record<string, KeypointPerf> }) {
+  if (!keypoints?.length) return null
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {keypoints.map((kp, ki) => {
+        const r = perf?.[kp]?.roas
+        return (
+          <span key={ki} className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-700">
+            {kp}{r != null && <span className="ml-1 font-mono text-green-700">ROAS {r.toFixed(2)}</span>}
+          </span>
+        )
+      })}
     </div>
   )
 }

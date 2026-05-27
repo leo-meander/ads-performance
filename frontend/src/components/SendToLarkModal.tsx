@@ -12,15 +12,33 @@ interface VisualDirection {
   emotional_angle?: string
 }
 
+interface ScriptBeat {
+  time: string
+  visual: string
+  on_screen_text: string
+  voiceover: string
+}
+interface VideoProduction {
+  voiceover?: string
+  music?: string
+  captions?: string
+  cta?: string
+}
+
 interface Brief {
   title: string
-  hook: string
-  subhead: string
-  cta: string
+  hook?: string
+  subhead?: string
+  cta?: string
   angle?: string
   keypoints: string[]
   visual_direction?: VisualDirection
   visual_description?: string
+  // video
+  concept?: string
+  duration_sec?: number
+  script?: ScriptBeat[]
+  production?: VideoProduction
 }
 
 interface Template {
@@ -41,6 +59,7 @@ interface Props {
   ta?: string
   referenceLinks?: RefLink[]
   overrideKeypoints?: string[]
+  adFormat?: string
   onClose: () => void
   onCreated: (recordId: string, taskName: string) => void
 }
@@ -62,10 +81,11 @@ function branchTag(branchName: string): string {
 //   [Branch] <Format>_<Country> - <TA> - <Theme>
 // Format defaults to "Image" (the common case) — the field stays editable so
 // the designer can switch to Video / Carousel / aspect ratios etc.
-function suggestTaskName(brief: Brief, branchName: string, country?: string, ta?: string): string {
+function suggestTaskName(brief: Brief, branchName: string, country?: string, ta?: string, adFormat?: string): string {
   const tag = branchTag(branchName)
   const loc = (country || '').toUpperCase()
-  const head = loc ? `Image_${loc}` : 'Image'
+  const fmt = adFormat === 'video' ? 'Video' : adFormat === 'carousel' ? 'Carousel' : 'Image'
+  const head = loc ? `${fmt}_${loc}` : fmt
   const segs = [head]
   if (ta) segs.push(ta)
   if (brief.title) segs.push(brief.title)
@@ -100,19 +120,48 @@ function buildDescription(
   overrideKeypoints?: string[],
 ): string {
   const lines: string[] = []
-  lines.push(`Headline: ${brief.hook || ''}`)
-  lines.push(`Sub-headline: ${brief.subhead || ''}`)
   // Hand-picked keypoints from the patterns panel take precedence over the
   // brief's AI-suggested ones when the marketer ticked any.
   const keypoints = overrideKeypoints && overrideKeypoints.length ? overrideKeypoints : (brief.keypoints || [])
-  keypoints.forEach((k, i) => lines.push(`Keypoint ${i + 1}: ${k}`))
-  lines.push('Price: from ')
-  lines.push(`CTA: ${brief.cta || ''}`)
 
-  const visual = brief.visual_description || formatVisualDirection(brief.visual_direction)
-  if (visual) {
+  if (brief.script && brief.script.length > 0) {
+    // ── Video brief: script + production notes ──
+    if (brief.concept) lines.push(`Concept: ${brief.concept}`)
+    if (brief.duration_sec) lines.push(`Duration: ~${brief.duration_sec}s`)
     lines.push('')
-    lines.push(`Visual: ${visual}`)
+    lines.push('SCRIPT')
+    brief.script.forEach(s => {
+      lines.push(`[${s.time}]`)
+      if (s.visual) lines.push(`  Visual: ${s.visual}`)
+      if (s.on_screen_text) lines.push(`  On-screen: ${s.on_screen_text}`)
+      if (s.voiceover) lines.push(`  VO: ${s.voiceover}`)
+    })
+    const p = brief.production
+    if (p) {
+      lines.push('')
+      lines.push('PRODUCTION')
+      if (p.voiceover) lines.push(`  Voiceover: ${p.voiceover}`)
+      if (p.music) lines.push(`  Music: ${p.music}`)
+      if (p.captions) lines.push(`  Captions: ${p.captions}`)
+      if (p.cta) lines.push(`  CTA: ${p.cta}`)
+    }
+    if (keypoints.length) {
+      lines.push('')
+      lines.push('Keypoints:')
+      keypoints.forEach((k, i) => lines.push(`  ${i + 1}. ${k}`))
+    }
+  } else {
+    // ── Image brief: Headline / Sub-headline / Keypoints / Price / CTA / Visual ──
+    lines.push(`Headline: ${brief.hook || ''}`)
+    lines.push(`Sub-headline: ${brief.subhead || ''}`)
+    keypoints.forEach((k, i) => lines.push(`Keypoint ${i + 1}: ${k}`))
+    lines.push('Price: from ')
+    lines.push(`CTA: ${brief.cta || ''}`)
+    const visual = brief.visual_description || formatVisualDirection(brief.visual_direction)
+    if (visual) {
+      lines.push('')
+      lines.push(`Visual: ${visual}`)
+    }
   }
 
   if (referenceLinks && referenceLinks.length) {
@@ -138,11 +187,11 @@ function buildDescription(
  * Composes a Task name (CSV rule) + a Description (brief details + the chosen
  * Figma template), both editable, then POSTs to /api/lark/tasks.
  */
-export default function SendToLarkModal({ brief, branchId, branchName, country, ta, referenceLinks, overrideKeypoints, onClose, onCreated }: Props) {
+export default function SendToLarkModal({ brief, branchId, branchName, country, ta, referenceLinks, overrideKeypoints, adFormat, onClose, onCreated }: Props) {
   const [templates, setTemplates] = useState<Template[]>([])
   const [loadingTpl, setLoadingTpl] = useState(true)
   const [templateId, setTemplateId] = useState('')
-  const [taskName, setTaskName] = useState(() => suggestTaskName(brief, branchName, country, ta))
+  const [taskName, setTaskName] = useState(() => suggestTaskName(brief, branchName, country, ta, adFormat))
   const [deadline, setDeadline] = useState(defaultDeadline())
   const [description, setDescription] = useState('')
   const [submitting, setSubmitting] = useState(false)
