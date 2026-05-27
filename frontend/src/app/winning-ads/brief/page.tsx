@@ -23,7 +23,22 @@ interface Brief {
     color_palette: string
     emotional_angle: string
   }
+  visual_description?: string
   rationale: string
+}
+
+interface KeypointPerf { roas: number | null; combos: number; conversions: number; spend: number }
+
+interface TopCreative {
+  combo_id: string
+  ad_name: string | null
+  target_audience: string | null
+  country: string | null
+  verdict: string
+  roas: number | null
+  headline: string | null
+  material_type: string | null
+  file_url: string | null
 }
 
 interface BriefResult {
@@ -32,9 +47,11 @@ interface BriefResult {
     sample_size: number
     angle_distribution: Record<string, number>
     keypoint_distribution: Record<string, number>
+    keypoint_performance?: Record<string, KeypointPerf>
     visual_distribution: Record<string, number>
     headline_examples: string[]
   }
+  top_creatives?: TopCreative[]
   briefs: Brief[]
   templates: { id: string; name: string; size: string; placeholder_keys: string[] }[]
   warning?: string
@@ -42,13 +59,22 @@ interface BriefResult {
 }
 
 const TA_LIST = ['Solo', 'Couple', 'Friend', 'Group', 'Business']
+const COUNTRY_LIST = ['VN', 'TW', 'JP', 'SG', 'HK', 'PH', 'AU', 'US', 'GB', 'DE', 'CA', 'KR', 'MY', 'TH', 'ID']
+const LANGUAGE_LIST: { code: string; label: string }[] = [
+  { code: 'en', label: 'English' },
+  { code: 'vi', label: 'Vietnamese' },
+  { code: 'zh', label: 'Chinese (Traditional)' },
+  { code: 'ja', label: 'Japanese' },
+]
 
 export default function AIBriefPage() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [branchId, setBranchId] = useState('')
   const [ta, setTa] = useState('')
   const [country, setCountry] = useState('')
+  const [language, setLanguage] = useState('en')
   const [vibe, setVibe] = useState('')
+  const [selectedCreatives, setSelectedCreatives] = useState<TopCreative[]>([])
   const [nVariants, setNVariants] = useState(3)
   const [goal, setGoal] = useState('roas')
   const [loading, setLoading] = useState(false)
@@ -86,6 +112,7 @@ export default function AIBriefPage() {
     setErr('')
     setLoading(true)
     setResult(null)
+    setSelectedCreatives([])
     try {
       const r = await fetch(`${API_BASE}/api/creative/brief`, {
         method: 'POST',
@@ -95,6 +122,7 @@ export default function AIBriefPage() {
           branch_id: branchId,
           target_audience: ta || null,
           country: country || null,
+          language: language || null,
           vibe: vibe.trim() || null,
           n_variants: nVariants,
           performance_goal: goal,
@@ -109,6 +137,14 @@ export default function AIBriefPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const toggleCreative = (tc: TopCreative) => {
+    setSelectedCreatives(prev =>
+      prev.some(s => s.combo_id === tc.combo_id)
+        ? prev.filter(s => s.combo_id !== tc.combo_id)
+        : [...prev, tc]
+    )
   }
 
   return (
@@ -143,8 +179,16 @@ export default function AIBriefPage() {
           </div>
           <div>
             <label className="text-xs text-gray-600 block mb-1">Country</label>
-            <input className="w-full border border-gray-300 rounded px-3 py-2 text-sm" placeholder="VN, JP, TW…" maxLength={2}
-              value={country} onChange={e => setCountry(e.target.value.toUpperCase())} />
+            <select className="w-full border border-gray-300 rounded px-3 py-2 text-sm" value={country} onChange={e => setCountry(e.target.value)}>
+              <option value="">Any</option>
+              {COUNTRY_LIST.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600 block mb-1">Language</label>
+            <select className="w-full border border-gray-300 rounded px-3 py-2 text-sm" value={language} onChange={e => setLanguage(e.target.value)}>
+              {LANGUAGE_LIST.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+            </select>
           </div>
           <div className="sm:col-span-2 lg:col-span-3">
             <label className="text-xs text-gray-600 block mb-1">Vibe (optional free text)</label>
@@ -197,6 +241,42 @@ export default function AIBriefPage() {
             </div>
           </div>
 
+          {/* Top winning creatives — tick to attach as references */}
+          {result.top_creatives && result.top_creatives.length > 0 && (
+            <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+              <h2 className="text-sm font-semibold text-gray-800 mb-1">
+                Top winning creatives{ta ? ` · ${ta}` : ''}
+              </h2>
+              <p className="text-xs text-gray-400 mb-3">
+                Tick to attach the creative link as a reference in the brief you send to Lark.
+              </p>
+              <div className="divide-y divide-gray-100">
+                {result.top_creatives.map(tc => {
+                  const checked = selectedCreatives.some(s => s.combo_id === tc.combo_id)
+                  return (
+                    <label key={tc.combo_id} className="flex items-center gap-3 py-2 cursor-pointer text-sm">
+                      <input type="checkbox" checked={checked} onChange={() => toggleCreative(tc)} className="rounded border-gray-300" />
+                      <span className="flex-1 truncate">
+                        <span className="font-medium text-gray-800">{tc.ad_name || tc.combo_id}</span>
+                        {tc.country && <span className="text-gray-400 ml-2">{tc.country}</span>}
+                      </span>
+                      <span className={`text-xs px-2 py-0.5 rounded font-medium ${tc.verdict === 'WIN' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{tc.verdict}</span>
+                      <span className="font-mono text-green-700 w-16 text-right">{tc.roas != null ? tc.roas.toFixed(2) : '—'}</span>
+                      {tc.file_url
+                        ? <a href={tc.file_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-blue-600 hover:underline text-xs w-12 text-right">link ↗</a>
+                        : <span className="text-gray-300 text-xs w-12 text-right">—</span>}
+                    </label>
+                  )
+                })}
+              </div>
+              {selectedCreatives.length > 0 && (
+                <p className="text-xs text-blue-600 mt-2">
+                  {selectedCreatives.length} selected — attached to the brief you send to Lark.
+                </p>
+              )}
+            </div>
+          )}
+
           {queuedMsg && (
             <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4 text-sm text-green-800">
               {queuedMsg}{' '}
@@ -238,8 +318,27 @@ export default function AIBriefPage() {
                   <div><span className="text-gray-500 w-20 inline-block">CTA</span><span className="font-medium text-purple-700">{b.cta}</span></div>
                   <div><span className="text-gray-500 w-20 inline-block">Angle</span>{b.angle}</div>
                   {b.keypoints?.length > 0 && (
-                    <div><span className="text-gray-500 w-20 inline-block align-top">Keypoints</span>
-                      <span>{b.keypoints.join(' · ')}</span>
+                    <div className="flex">
+                      <span className="text-gray-500 w-20 inline-block align-top shrink-0">Keypoints</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {b.keypoints.map((kp, ki) => {
+                          const perf = result.patterns.keypoint_performance?.[kp]
+                          return (
+                            <span key={ki} className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-700">
+                              {kp}
+                              {perf?.roas != null && (
+                                <span className="ml-1 font-mono text-green-700">ROAS {perf.roas.toFixed(2)}</span>
+                              )}
+                            </span>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {b.visual_description && (
+                    <div className="flex">
+                      <span className="text-gray-500 w-20 inline-block align-top shrink-0">Visual</span>
+                      <span className="text-gray-700">{b.visual_description}</span>
                     </div>
                   )}
                 </div>
@@ -300,6 +399,9 @@ export default function AIBriefPage() {
           branchName={result?.branch_name || ''}
           country={country}
           ta={ta}
+          referenceLinks={selectedCreatives
+            .filter(s => s.file_url)
+            .map(s => ({ name: s.ad_name || s.combo_id, url: s.file_url as string, roas: s.roas }))}
           onClose={() => setSendLark(null)}
           onCreated={(_recordId, taskName) => {
             setSendLark(null)

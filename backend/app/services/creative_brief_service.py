@@ -66,12 +66,15 @@ Output STRICT JSON only — no markdown, no commentary:
         "color_palette": "warm | cool | neutral | high_contrast | pastel | dark",
         "emotional_angle":"aspirational | calm | urgency | informational | playful | luxe"
       },
+      "visual_description": "One concrete sentence describing the literal scene to shoot/design — who is in it, where, doing what. e.g. 'Solo female traveler from Singapore relaxing on a dorm bunk by the window with a city view'",
       "rationale":    "1-2 sentences citing which inputs justify the choice"
     }
   ]
 }
 
-Generate exactly the number of briefs the user asks for. Each brief must have a meaningfully different hook + visual direction — don't paraphrase the same idea three times."""
+Generate exactly the number of briefs the user asks for. Each brief must have a meaningfully different hook + visual direction — don't paraphrase the same idea three times.
+
+Write hook, subhead, cta, keypoints, and visual_description in the language the user requests (default English). Keep all JSON keys and the visual_direction enum values in English."""
 
 
 # ── Entry point ──────────────────────────────────────────────
@@ -86,6 +89,7 @@ def generate_brief(
     vibe: Optional[str] = None,
     n_variants: int = 3,
     performance_goal: str = "roas",
+    language: Optional[str] = None,
     client: Optional[Anthropic] = None,
 ) -> dict[str, Any]:
     """Build an AI brief grounded in the branch's winning patterns.
@@ -138,6 +142,7 @@ def generate_brief(
         country=country,
         vibe=vibe,
         n_variants=n_variants,
+        language=language,
         pattern=pattern,
     )
 
@@ -182,9 +187,11 @@ def generate_brief(
             "target_audience": target_audience,
             "country": country,
             "vibe": vibe,
+            "language": language,
             "performance_goal": performance_goal,
         },
         "patterns": pattern,
+        "top_creatives": pattern.get("top_creatives", []),
         "briefs": briefs,
         "templates": templates,
     }
@@ -262,8 +269,10 @@ def _gather_patterns(
         return {
             "sample_size": 0,
             "samples": [],
+            "top_creatives": [],
             "angle_distribution": {},
             "keypoint_distribution": {},
+            "keypoint_performance": {},
             "visual_distribution": {},
             "headline_examples": [],
         }
@@ -280,6 +289,7 @@ def _gather_patterns(
     copies = {c.copy_id: c for c in db.query(AdCopy).filter(AdCopy.copy_id.in_(copy_ids)).all()} if copy_ids else {}
     angles = {a.angle_id: a for a in db.query(AdAngle).filter(AdAngle.angle_id.in_(angle_ids)).all()} if angle_ids else {}
     keypoints = {k.id: k for k in db.query(BranchKeypoint).filter(BranchKeypoint.id.in_(kp_ids)).all()} if kp_ids else {}
+    materials = {m.material_id: m for m in db.query(AdMaterial).filter(AdMaterial.material_id.in_(material_ids)).all()} if material_ids else {}
     visual_tags: dict[str, list[CreativeVisualTag]] = {}
     if material_ids:
         for t in db.query(CreativeVisualTag).filter(CreativeVisualTag.material_id.in_(material_ids)).all():
@@ -310,22 +320,99 @@ def _gather_patterns(
         if copy:
             headlines.append(copy.headline)
 
+        material = materials.get(c.material_id) if c.material_id else None
         samples.append({
             "combo_id": c.combo_id,
             "ad_name": c.ad_name,
             "verdict": c.verdict,
+            "target_audience": c.target_audience,
+            "country": c.country,
             "roas": float(c.roas) if c.roas is not None else None,
             "headline": copy.headline if copy else None,
+            "material_type": material.material_type if material else None,
+            "file_url": material.file_url if material else None,
         })
+
+    # Top winning creatives the user can reference (highest ROAS first). These
+    # are the same combos that seeded the brief — surfaced so the marketer can
+    # tick one and drop its creative link into the brief.
+    top_creatives = sorted(
+        [s for s in samples if s["roas"] is not None],
+        key=lambda s: s["roas"],
+        reverse=True,
+    )[:8]
 
     return {
         "sample_size": len(combos),
         "samples": samples,
+        "top_creatives": top_creatives,
         "angle_distribution": dict(angle_counter.most_common(5)),
         "keypoint_distribution": dict(keypoint_counter.most_common(8)),
+        "keypoint_performance": _keypoint_performance(db, branch_id, target_audience),
         "visual_distribution": dict(visual_counter.most_common(12)),
         "headline_examples": headlines[:8],
     }
+
+
+def _keypoint_performance(
+    db: Session, branch_id: str, target_audience: Optional[str]
+) -> dict[str, dict[str, Any]]:
+    """Per-keypoint ROAS for the branch (scoped to TA when given).
+
+    Lets the marketer sanity-check the keypoints the brief leans on — keyed by
+    keypoint title so the frontend can show ROAS next to each one. Aggregates
+    spend/revenue across every combo that carries the keypoint, not just the
+    sampled winners, so the figure reflects the keypoint's true track record.
+    """
+    q = db.query(AdCombo).filter(
+        AdCombo.branch_id == branch_id,
+        AdCombo.keypoint_ids.isnot(None),
+    )
+    if target_audience:
+        q = q.filter(AdCombo.target_audience == target_audience)
+    combos = q.all()
+    if not combos:
+        return {}
+
+    ids: set[str] = set()
+    for c in combos:
+        if isinstance(c.keypoint_ids, list):
+            ids.update(c.keypoint_ids)
+    if not ids:
+        return {}
+    kps = {k.id: k for k in db.query(BranchKeypoint).filter(BranchKeypoint.id.in_(ids)).all()}
+
+    agg: dict[str, dict[str, float]] = {}
+    for c in combos:
+        kl = c.keypoint_ids if isinstance(c.keypoint_ids, list) else []
+        for kid in kl:
+            kp = kps.get(kid)
+            if not kp or not kp.title:
+                continue
+            a = agg.setdefault(kp.title, {"spend": 0.0, "revenue": 0.0, "conversions": 0, "combos": 0})
+            a["spend"] += float(c.spend or 0)
+            a["revenue"] += float(c.revenue or 0)
+            a["conversions"] += int(c.conversions or 0)
+            a["combos"] += 1
+
+    out: dict[str, dict[str, Any]] = {}
+    for title, a in agg.items():
+        roas = a["revenue"] / a["spend"] if a["spend"] > 0 else None
+        out[title] = {
+            "roas": round(roas, 2) if roas is not None else None,
+            "conversions": int(a["conversions"]),
+            "combos": int(a["combos"]),
+            "spend": round(a["spend"], 2),
+        }
+    return out
+
+
+_LANGUAGE_NAMES = {
+    "en": "English",
+    "vi": "Vietnamese",
+    "zh": "Traditional Chinese",
+    "ja": "Japanese",
+}
 
 
 def _build_user_prompt(
@@ -335,6 +422,7 @@ def _build_user_prompt(
     country: Optional[str],
     vibe: Optional[str],
     n_variants: int,
+    language: Optional[str],
     pattern: dict[str, Any],
 ) -> str:
     """Stitch the pattern summary into a model-facing prompt."""
@@ -346,6 +434,9 @@ def _build_user_prompt(
         lines.append(f"Target audience: {target_audience}")
     if country:
         lines.append(f"Country / market: {country}")
+    if language:
+        lang_name = _LANGUAGE_NAMES.get(language.lower(), language)
+        lines.append(f"Write all copy (hook, subhead, cta, keypoints, visual_description) in: {lang_name}")
     if vibe:
         lines.append(f"Desired vibe: {vibe}")
     lines.append("")

@@ -20,6 +20,7 @@ interface Brief {
   angle?: string
   keypoints: string[]
   visual_direction?: VisualDirection
+  visual_description?: string
 }
 
 interface Template {
@@ -30,12 +31,15 @@ interface Template {
   deep_link?: string
 }
 
+interface RefLink { name: string; url: string; roas: number | null }
+
 interface Props {
   brief: Brief
   branchId: string
   branchName: string
   country?: string
   ta?: string
+  referenceLinks?: RefLink[]
   onClose: () => void
   onCreated: (recordId: string, taskName: string) => void
 }
@@ -67,6 +71,13 @@ function suggestTaskName(brief: Brief, branchName: string, country?: string, ta?
   return `[${tag}] ${segs.join(' - ')}`
 }
 
+// Default Deadline = a week out, as YYYY-MM-DD for the date input.
+function defaultDeadline(): string {
+  const d = new Date()
+  d.setDate(d.getDate() + 7)
+  return d.toISOString().slice(0, 10)
+}
+
 function formatVisualDirection(vd?: VisualDirection): string {
   if (!vd) return ''
   const parts: string[] = []
@@ -77,24 +88,40 @@ function formatVisualDirection(vd?: VisualDirection): string {
   return parts.join(' · ')
 }
 
-// Full brief details → the "Description" column. Includes the chosen Figma
-// template (name + size + deep link) so the designer has the file to start from.
-function buildDescription(brief: Brief, template?: Template): string {
-  const blocks: string[] = []
-  if (brief.hook) blocks.push(`Hook: ${brief.hook}`)
-  if (brief.subhead) blocks.push(`Subhead: ${brief.subhead}`)
-  if (brief.cta) blocks.push(`CTA: ${brief.cta}`)
-  if (brief.angle) blocks.push(`Angle: ${brief.angle}`)
-  if (brief.keypoints?.length) {
-    blocks.push(`Keypoints:\n${brief.keypoints.map(k => `- ${k}`).join('\n')}`)
+// Full brief details → the "Description" column, in the team's preferred
+// shape (no Angle): Headline / Sub-headline / Keypoint N / Price / CTA / Visual,
+// plus any ticked reference creatives and the chosen Figma template.
+// "Price: from " is left blank for the marketer to fill in the textarea.
+function buildDescription(brief: Brief, template?: Template, referenceLinks?: RefLink[]): string {
+  const lines: string[] = []
+  lines.push(`Headline: ${brief.hook || ''}`)
+  lines.push(`Sub-headline: ${brief.subhead || ''}`)
+  ;(brief.keypoints || []).forEach((k, i) => lines.push(`Keypoint ${i + 1}: ${k}`))
+  lines.push('Price: from ')
+  lines.push(`CTA: ${brief.cta || ''}`)
+
+  const visual = brief.visual_description || formatVisualDirection(brief.visual_direction)
+  if (visual) {
+    lines.push('')
+    lines.push(`Visual: ${visual}`)
   }
-  const vd = formatVisualDirection(brief.visual_direction)
-  if (vd) blocks.push(`Visual direction: ${vd}`)
+
+  if (referenceLinks && referenceLinks.length) {
+    lines.push('')
+    lines.push('Reference creatives:')
+    referenceLinks.forEach(r => {
+      const roas = r.roas != null ? ` (ROAS ${r.roas.toFixed(2)})` : ''
+      lines.push(`- ${r.name}${roas}: ${r.url}`)
+    })
+  }
+
   if (template) {
+    lines.push('')
     const link = template.deep_link ? `\n${template.deep_link}` : ''
-    blocks.push(`Figma template: ${template.name} (${template.width}×${template.height})${link}`)
+    lines.push(`Figma template: ${template.name} (${template.width}×${template.height})${link}`)
   }
-  return blocks.join('\n\n')
+
+  return lines.join('\n')
 }
 
 /**
@@ -102,11 +129,12 @@ function buildDescription(brief: Brief, template?: Template): string {
  * Composes a Task name (CSV rule) + a Description (brief details + the chosen
  * Figma template), both editable, then POSTs to /api/lark/tasks.
  */
-export default function SendToLarkModal({ brief, branchId, branchName, country, ta, onClose, onCreated }: Props) {
+export default function SendToLarkModal({ brief, branchId, branchName, country, ta, referenceLinks, onClose, onCreated }: Props) {
   const [templates, setTemplates] = useState<Template[]>([])
   const [loadingTpl, setLoadingTpl] = useState(true)
   const [templateId, setTemplateId] = useState('')
   const [taskName, setTaskName] = useState(() => suggestTaskName(brief, branchName, country, ta))
+  const [deadline, setDeadline] = useState(defaultDeadline())
   const [description, setDescription] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState('')
@@ -125,7 +153,7 @@ export default function SendToLarkModal({ brief, branchId, branchName, country, 
   // (Re)seed the description whenever the chosen template changes. Mirrors the
   // Figma modal's reseed-on-template-change behaviour.
   useEffect(() => {
-    setDescription(buildDescription(brief, tpl))
+    setDescription(buildDescription(brief, tpl, referenceLinks))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateId, templates.length])
 
@@ -142,6 +170,7 @@ export default function SendToLarkModal({ brief, branchId, branchName, country, 
           branch_id: branchId,
           task_name: taskName.trim(),
           description,
+          deadline: deadline || undefined,
         }),
       })
       const d = await r.json()
@@ -180,6 +209,16 @@ export default function SendToLarkModal({ brief, branchId, branchName, country, 
           </div>
 
           <div>
+            <label className="text-xs text-gray-600 block mb-1">Deadline</label>
+            <input
+              type="date"
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+              value={deadline}
+              onChange={e => setDeadline(e.target.value)}
+            />
+          </div>
+
+          <div>
             <label className="text-xs text-gray-600 block mb-1">
               Figma template {loadingTpl ? '(loading…)' : `(${templates.length})`}
             </label>
@@ -206,6 +245,10 @@ export default function SendToLarkModal({ brief, branchId, branchName, country, 
               onChange={e => setDescription(e.target.value)}
             />
           </div>
+
+          <p className="text-[11px] text-gray-400">
+            Auto-set on create: PIC nora@staymeander.com · Status “Not started” · Project “[branch] Ads”.
+          </p>
 
           {err && <p className="text-sm text-red-600">{err}</p>}
 
