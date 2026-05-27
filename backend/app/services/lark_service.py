@@ -1,16 +1,16 @@
 """Build + push design-brief tasks into the Lark Base "Tasks" table.
 
-The Task name is composed on the client following the team's CSV naming rule
-(`[Branch] Format_Country (Lang) - TA - Theme`) and arrives here already
-finalised + editable. This layer maps the final values plus the always-on
-fields (PIC, Status, Project) onto the Base's column names. Column names live
-here so a rename in Lark is a one-line change.
+Field types confirmed by introspecting the live board
+(LarkClient.list_table_fields):
+  Task / Description  → text            (string)
+  Status              → single-select   (option name string; "Not started" ok)
+  Deadline            → date            (epoch milliseconds)
+  Project / PIC       → two-way LINK    → an array of linked record_ids
+                        (a plain string write rejects the WHOLE record)
 
-Field-type caveat: PIC exports as a plain email in the CSV, so it's treated as
-a text field. "Project" groups the board as "[<tag>] Ads" — if that turns out
-to be a LINK field (to the Projects table) rather than a single-select, a
-plain string write will fail and we must switch to a record-id link. Confirm
-with LarkClient.list_table_fields() once app_token/table_id are set.
+Project links to a row in the "Projects" table and PIC to a row in "Members".
+Those record_ids are stable, so they're mapped directly below — re-run the
+introspection (list_table_fields + record dumps) if the board is rebuilt.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from typing import Any, Optional
 from app.config import settings
 from app.services.lark_client import LarkClient, LarkClientError
 
-# Column names as they appear on the live "Tasks" board.
+# Column names on the live "Tasks" board.
 FIELD_TASK = "Task"
 FIELD_DESCRIPTION = "Description"
 FIELD_STATUS = "Status"
@@ -28,14 +28,40 @@ FIELD_PIC = "PIC"
 FIELD_PROJECT = "Project"
 FIELD_DEADLINE = "Deadline"
 
+DEFAULT_STATUS = "Not started"
+# nora@staymeander.com in the Members table — the standing design PIC.
+DEFAULT_PIC_RECORD_ID = "recv6JxUlC2N9p"
+
+# Branch → record_id of its "[<branch>] Ads" row in the Projects table.
+# Linked by id (not name) because the board's labels are inconsistently spaced
+# (e.g. "[Sai Gon]  Ads" with two spaces). Bread maps to the "[BE] Ads" row.
+PROJECT_RECORD_IDS: dict[str, str] = {
+    "1948": "recv8gCr8yrhVb",
+    "oani": "recvfwkeNSVTRp",
+    "osaka": "recv6sswLo9olH",
+    "saigon": "recv6sW5Nl2wBI",
+    "taipei": "recv8gCt0GGu9B",
+    "bread": "recv6WJTeN5WHx",
+}
+
+
+def project_record_for_branch(branch_name: Optional[str]) -> Optional[str]:
+    """Map a branch/account name to its Projects-table record_id."""
+    if not branch_name:
+        return None
+    n = branch_name.lower()
+    for needle, rid in PROJECT_RECORD_IDS.items():
+        if needle in n:
+            return rid
+    return None
+
 
 def _deadline_ms(deadline: Optional[str]) -> Optional[int]:
     """Parse a YYYY-MM-DD (or ISO) string into a Bitable date value.
 
     Bitable date fields take a millisecond epoch timestamp. We anchor a
-    date-only value to 12:00 UTC so it can't slip to the previous/next day in
-    the tenant's timezone. Returns None on empty/invalid input so a bad date
-    never blocks the create.
+    date-only value to 12:00 UTC so it can't slip a day in the tenant timezone.
+    Returns None on empty/invalid input so a bad date never blocks the create.
     """
     if not deadline or not deadline.strip():
         return None
@@ -51,37 +77,6 @@ def _deadline_ms(deadline: Optional[str]) -> Optional[int]:
         return None
     return int(dt.timestamp() * 1000)
 
-# Always-on defaults (overridable via settings).
-DEFAULT_STATUS = "Not started"
-
-# PIC + Project are DuplexLink fields, so they're written as arrays of linked
-# record ids — NOT plain text. These ids were introspected from the live Base
-# (table "🚩 Projects" / "🧑🏻‍💻 Members"); re-introspect (LarkClient.list_table_fields
-# + list records) if the board is rebuilt.
-DEFAULT_PIC_RECORD_ID = "recv6JxUlC2N9p"  # nora@staymeander.com (Members table)
-
-# branch-name substring → "[…] Ads" Project record id (order matters: "oani"
-# before "taipei" so Oani's "(Taipei)" suffix can't mis-match).
-_PROJECT_RECORD_IDS: list[tuple[str, str]] = [
-    ("1948", "recv8gCr8yrhVb"),   # [1948] Ads
-    ("oani", "recvfwkeNSVTRp"),   # [Oani] Ads
-    ("osaka", "recv6sswLo9olH"),  # [Osaka] Ads
-    ("saigon", "recv6sW5Nl2wBI"), # [Sai Gon]  Ads
-    ("taipei", "recv8gCt0GGu9B"), # [Taipei] Ads
-    ("bread", "recv6WJTeN5WHx"),  # [BE] Ads
-]
-
-
-def project_record_for_branch(branch_name: Optional[str]) -> Optional[str]:
-    """Map a branch/account name to its "[<tag>] Ads" Project record id."""
-    if not branch_name:
-        return None
-    n = branch_name.lower()
-    for needle, rid in _PROJECT_RECORD_IDS:
-        if needle in n:
-            return rid
-    return None
-
 
 def build_task_fields(
     *,
@@ -94,9 +89,7 @@ def build_task_fields(
 ) -> dict[str, Any]:
     """Map final values + always-on fields onto the Base columns.
 
-    PIC and Project are DuplexLink fields → written as arrays of record ids.
-    Status is a single-select (string), Deadline a datetime (ms), Task and
-    Description are text.
+    Link fields (Project, PIC) are written as arrays of record_ids.
     """
     name = (task_name or "").strip()
     if not name:
@@ -111,13 +104,13 @@ def build_task_fields(
     if eff_status:
         fields[FIELD_STATUS] = eff_status
 
-    pic_rid = (pic_record_id or settings.LARK_DEFAULT_PIC_RECORD_ID or DEFAULT_PIC_RECORD_ID).strip()
-    if pic_rid:
-        fields[FIELD_PIC] = [pic_rid]
+    pic_id = (pic_record_id or settings.LARK_DEFAULT_PIC_RECORD_ID or DEFAULT_PIC_RECORD_ID).strip()
+    if pic_id:
+        fields[FIELD_PIC] = [pic_id]  # link field → array of record_ids
 
-    project_rid = project_record_for_branch(branch_name)
-    if project_rid:
-        fields[FIELD_PROJECT] = [project_rid]
+    project_id = project_record_for_branch(branch_name)
+    if project_id:
+        fields[FIELD_PROJECT] = [project_id]  # link field → array of record_ids
 
     ms = _deadline_ms(deadline)
     if ms is not None:
