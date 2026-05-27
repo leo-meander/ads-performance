@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Sparkles, Send, ListChecks } from 'lucide-react'
-import SendToFigmaModal from '@/components/SendToFigmaModal'
+import { ArrowLeft, Sparkles, ListChecks } from 'lucide-react'
 import SendToLarkModal from '@/components/SendToLarkModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -82,9 +81,6 @@ export default function AIBriefPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<BriefResult | null>(null)
   const [err, setErr] = useState('')
-  const [sendBrief, setSendBrief] = useState<Brief | null>(null)
-  const [queuedMsg, setQueuedMsg] = useState('')
-  const [sourceComboId, setSourceComboId] = useState('')
   const [sendLark, setSendLark] = useState<Brief | null>(null)
   const [larkMsg, setLarkMsg] = useState('')
 
@@ -94,19 +90,16 @@ export default function AIBriefPage() {
       .then(d => { if (d.success) setAccounts(d.data.filter((a: Account) => a.platform === 'meta')) })
   }, [])
 
-  // Pre-fill from query params when arriving via "Brief" on the Figma list
-  // (e.g. /winning-ads/brief?branch_id=...&ta=Couple&combo_id=AbC123). Reads
+  // Pre-fill from query params when arriving via "Brief" on the Winning Ads
+  // list (e.g. /winning-ads/brief?branch_id=...&ta=Couple). Reads
   // window.location directly so we don't need a Suspense boundary for
-  // useSearchParams. combo_id is the winning ad being reused — it rides through
-  // to the render job as source_combo_id so it shows under "Figma only".
+  // useSearchParams.
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search)
     const b = sp.get('branch_id')
     const t = sp.get('ta')
-    const c = sp.get('combo_id')
     if (b) setBranchId(b)
     if (t) setTa(t)
-    if (c) setSourceComboId(c)
   }, [])
 
   const generate = async () => {
@@ -159,7 +152,7 @@ export default function AIBriefPage() {
   return (
     <div className="p-6 max-w-5xl">
       <Link href="/winning-ads" className="inline-flex items-center gap-1 text-sm text-blue-600 hover:underline mb-4">
-        <ArrowLeft className="w-4 h-4" /> Back to Figma
+        <ArrowLeft className="w-4 h-4" /> Back to Winning Ads
       </Link>
 
       <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
@@ -298,13 +291,6 @@ export default function AIBriefPage() {
             </div>
           )}
 
-          {queuedMsg && (
-            <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4 text-sm text-green-800">
-              {queuedMsg}{' '}
-              <Link href="/winning-ads/jobs" className="underline">View render jobs →</Link>
-            </div>
-          )}
-
           {larkMsg && (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-sm text-blue-800">
               {larkMsg} — check the Lark “Tasks” board.
@@ -323,12 +309,6 @@ export default function AIBriefPage() {
                       className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
                     >
                       <ListChecks className="w-3 h-3" /> Send to Lark
-                    </button>
-                    <button
-                      onClick={() => { setQueuedMsg(''); setSendBrief(b) }}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
-                    >
-                      <Send className="w-3 h-3" /> Send to Figma
                     </button>
                     <span className="text-xs text-gray-400">Variant {i + 1}</span>
                   </div>
@@ -377,40 +357,7 @@ export default function AIBriefPage() {
               <p className="text-sm text-gray-500">No briefs returned — the model may have failed to produce valid output. Try again.</p>
             )}
           </div>
-
-          {/* Recommended templates */}
-          {result.templates.length > 0 && (
-            <div className="bg-white border border-gray-200 rounded-lg p-4 mt-4">
-              <h2 className="text-sm font-semibold text-gray-800 mb-2">Recommended Figma templates</h2>
-              <div className="flex flex-wrap gap-2">
-                {result.templates.map(t => (
-                  <Link
-                    key={t.id}
-                    href="/winning-ads/templates"
-                    className="text-xs border border-gray-200 rounded px-3 py-2 hover:bg-gray-50"
-                  >
-                    <span className="font-medium text-gray-800">{t.name}</span>
-                    <span className="text-gray-400 ml-2">{t.size}</span>
-                    <div className="text-gray-400 mt-0.5">{t.placeholder_keys.join(', ') || 'no slots'}</div>
-                  </Link>
-                ))}
-              </div>
-            </div>
-          )}
         </>
-      )}
-
-      {sendBrief && (
-        <SendToFigmaModal
-          brief={sendBrief}
-          branchId={branchId}
-          sourceComboId={sourceComboId || undefined}
-          onClose={() => setSendBrief(null)}
-          onQueued={(jobId) => {
-            setSendBrief(null)
-            setQueuedMsg(`Render job queued (${jobId.slice(0, 8)}).`)
-          }}
-        />
       )}
 
       {sendLark && (
