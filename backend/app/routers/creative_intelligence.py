@@ -408,6 +408,7 @@ class BriefRequest(BaseModel):
     country: str | None = None
     vibe: str | None = None
     language: str | None = None
+    ad_format: str = "image"
     n_variants: int = 3
     performance_goal: str = "roas"
 
@@ -439,6 +440,7 @@ def generate_brief_endpoint(
             country=body.country,
             vibe=body.vibe,
             language=body.language,
+            ad_format=body.ad_format,
             n_variants=body.n_variants,
             performance_goal=body.performance_goal,
         )

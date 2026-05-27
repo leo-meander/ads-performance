@@ -45,7 +45,7 @@ MAX_TOKENS = 1500
 MAX_PATTERNS = 12  # how many top performers feed the model
 
 
-SYSTEM_PROMPT = """You are a senior performance-marketing strategist for MEANDER Group hotels.
+IMAGE_SYSTEM_PROMPT = """You are a senior performance-marketing strategist for MEANDER Group hotels.
 
 Given a structured summary of the branch's winning ads, generate distinct creative brief variants the designer can execute. Each brief must be grounded in the patterns provided — do NOT invent new claims, prices, or amenities. If a pattern isn't supported by the input, do not assert it.
 
@@ -77,6 +77,57 @@ Generate exactly the number of briefs the user asks for. Each brief must have a 
 Write hook, subhead, cta, keypoints, and visual_description in the language the user requests (default English). Keep all JSON keys and the visual_direction enum values in English."""
 
 
+VIDEO_SYSTEM_PROMPT = """You are a senior performance-marketing strategist + video scriptwriter for MEANDER Group hotels.
+
+Given a structured summary of the branch's winning VIDEO ads, generate distinct video-ad brief variants the editor can shoot/cut. Ground every brief in the patterns provided — do NOT invent claims, prices, or amenities not supported by the input.
+
+Output STRICT JSON only — no markdown, no commentary:
+
+{
+  "briefs": [
+    {
+      "title":   "Short label, max 8 words",
+      "concept": "One sentence: the core scroll-stopping idea",
+      "duration_sec": 30,
+      "script": [
+        {
+          "time":           "0:00-0:05",
+          "visual":         "What's on screen this beat — who, where, action; add a pacing note like (speed x2) or (slow-mo) when relevant",
+          "on_screen_text": "Caption shown on screen this beat",
+          "voiceover":      "VO line for this beat"
+        }
+      ],
+      "production": {
+        "voiceover": "Tone + 2-3 suggested ElevenLabs voice names",
+        "music":     "Background-music direction + a sound cue (e.g. Whoosh / camera shutter) on the first transition",
+        "captions":  "Caption style + font note",
+        "cta":       "End-card on-screen button text + placement"
+      },
+      "keypoints":  ["keypoint title 1", "keypoint title 2"],
+      "rationale":  "1-2 sentences citing which inputs justify the choices"
+    }
+  ]
+}
+
+House style (follow unless the patterns clearly suggest otherwise):
+- Land the hook in the first 0-3 seconds. Total length ~25-45s, 5-7 beats.
+- Voiceover: Energetic + Friendly tone; suggest natural ElevenLabs voices (e.g. Bella, Antoni, Rachel).
+- Music: upbeat; open with a Whoosh or camera-shutter sound on the first transition.
+- Captions: primary-language text centered, plus a small localized subtitle when a market needs it; modern sans-serif (Montserrat / The Bold Font).
+- End on a fake on-screen button ("Book Now" / "Check Availability").
+
+Each variant must be a meaningfully different concept. Write concept, visual, on_screen_text, voiceover, and keypoints in the language the user requests (default English). Keep all JSON keys in English."""
+
+
+def _system_prompt(ad_format: str) -> str:
+    return VIDEO_SYSTEM_PROMPT if ad_format == "video" else IMAGE_SYSTEM_PROMPT
+
+
+def _max_tokens(ad_format: str) -> int:
+    # Video scripts are longer (beat-by-beat) — give the model more room.
+    return 3000 if ad_format == "video" else MAX_TOKENS
+
+
 # ── Entry point ──────────────────────────────────────────────
 
 
@@ -90,6 +141,7 @@ def generate_brief(
     n_variants: int = 3,
     performance_goal: str = "roas",
     language: Optional[str] = None,
+    ad_format: str = "image",
     client: Optional[Anthropic] = None,
 ) -> dict[str, Any]:
     """Build an AI brief grounded in the branch's winning patterns.
@@ -111,6 +163,7 @@ def generate_brief(
         country=country,
         vibe=vibe,
         performance_goal=performance_goal,
+        ad_format=ad_format,
     )
 
     if pattern["sample_size"] == 0:
@@ -143,14 +196,15 @@ def generate_brief(
         vibe=vibe,
         n_variants=n_variants,
         language=language,
+        ad_format=ad_format,
         pattern=pattern,
     )
 
     try:
         resp = client.messages.create(
             model=BRIEF_MODEL,
-            max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            max_tokens=_max_tokens(ad_format),
+            system=_system_prompt(ad_format),
             messages=[{"role": "user", "content": user_message}],
         )
     except Exception as e:
@@ -188,6 +242,7 @@ def generate_brief(
             "country": country,
             "vibe": vibe,
             "language": language,
+            "ad_format": ad_format,
             "performance_goal": performance_goal,
         },
         "patterns": pattern,
@@ -208,19 +263,30 @@ def _gather_patterns(
     country: Optional[str],
     vibe: Optional[str],
     performance_goal: str,
+    ad_format: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Pull top performers + extract the patterns that feed the brief generator."""
+    """Pull top performers + extract the patterns that feed the brief generator.
+
+    When ad_format is given (image|video|carousel), only winners of that
+    material_type seed the brief — so a video brief learns from video winners.
+    """
     sort_col = {
         "roas": AdCombo.roas,
         "spend": AdCombo.spend,
         "conversions": AdCombo.conversions,
     }.get(performance_goal, AdCombo.roas)
 
+    fmt = ad_format if ad_format in ("image", "video", "carousel") else None
+
     q = db.query(AdCombo).filter(AdCombo.branch_id == branch_id)
     if target_audience:
         q = q.filter(AdCombo.target_audience == target_audience)
     if country:
         q = q.filter(AdCombo.country == country.upper())
+    if fmt:
+        q = q.join(AdMaterial, AdMaterial.material_id == AdCombo.material_id).filter(
+            AdMaterial.material_type == fmt
+        )
 
     # Prefer WIN; fall back to TEST sorted by perf if WINs are thin
     win_q = q.filter(AdCombo.verdict == "WIN").order_by(desc(sort_col)).limit(MAX_PATTERNS)
@@ -259,6 +325,10 @@ def _gather_patterns(
             .order_by(desc(sort_col))
             .limit(MAX_PATTERNS)
         )
+        if fmt:
+            vibe_q = vibe_q.join(
+                AdMaterial, AdMaterial.material_id == AdCombo.material_id
+            ).filter(AdMaterial.material_type == fmt)
         for c in vibe_q.all():
             if c.combo_id not in seen_ids:
                 combos.append(c)
@@ -329,6 +399,8 @@ def _gather_patterns(
             "target_audience": c.target_audience,
             "country": c.country,
             "roas": float(c.roas) if c.roas is not None else None,
+            "hook_rate": float(c.hook_rate) if c.hook_rate is not None else None,
+            "thruplay_rate": float(c.thruplay_rate) if c.thruplay_rate is not None else None,
             "headline": copy.headline if copy else None,
             "material_type": material.material_type if material else None,
             "file_url": material.file_url if material else None,
@@ -470,13 +542,20 @@ def _build_user_prompt(
     vibe: Optional[str],
     n_variants: int,
     language: Optional[str],
+    ad_format: str,
     pattern: dict[str, Any],
 ) -> str:
     """Stitch the pattern summary into a model-facing prompt."""
     lines = [
         f"Branch: {branch_name}",
+        f"Ad format: {ad_format}",
         f"Number of brief variants requested: {n_variants}",
     ]
+    if ad_format == "video":
+        lines.append(
+            "These are the branch's winning VIDEO ads. Prioritize a strong "
+            "0-3s hook and produce a beat-by-beat script + production notes."
+        )
     if target_audience:
         lines.append(f"Target audience: {target_audience}")
     if country:
@@ -502,9 +581,19 @@ def _build_user_prompt(
         for name, count in pattern["visual_distribution"].items():
             lines.append(f"  - {name}: {count}")
     if pattern["headline_examples"]:
-        lines.append("Headline examples from winners:")
+        lines.append("Headline / opening examples from winners:")
         for h in pattern["headline_examples"]:
             lines.append(f"  - {h}")
+
+    if ad_format == "video":
+        vids = [s for s in pattern.get("samples", []) if s.get("hook_rate") is not None][:6]
+        if vids:
+            lines.append("Winning video hook/thruplay rates (mirror what opens strong):")
+            for s in vids:
+                name = s.get("ad_name") or s.get("combo_id")
+                lines.append(
+                    f"  - {name}: hook_rate={s.get('hook_rate')}, thruplay={s.get('thruplay_rate')}"
+                )
 
     lines.append("")
     lines.append("Generate the briefs as STRICT JSON per the system prompt schema.")
