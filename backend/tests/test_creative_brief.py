@@ -9,11 +9,13 @@ from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table before create_all
 from app.models.account import AdAccount
+from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
 from app.models.ad_material import AdMaterial
 from app.models.base import Base
 from app.models.keypoint import BranchKeypoint
 from app.services.creative_brief_service import (
+    _angle_performance,
     _build_user_prompt,
     _gather_patterns,
     _keypoint_performance,
@@ -55,8 +57,18 @@ def _keypoint(branch_id, title):
     return kid
 
 
+def _angle(branch_id, angle_id, angle_type):
+    db = TestSession()
+    db.add(AdAngle(
+        id=str(uuid.uuid4()), branch_id=branch_id, angle_id=angle_id,
+        angle_type=angle_type, angle_text="", status="WIN",
+    ))
+    db.commit()
+    db.close()
+
+
 def _combo(branch_id, sfx, *, roas=None, spend=0, revenue=0, conversions=0,
-           verdict="WIN", ta="Solo", keypoint_ids=None):
+           verdict="WIN", ta="Solo", keypoint_ids=None, angle_id=None):
     db = TestSession()
     db.add(AdMaterial(
         branch_id=branch_id, material_id=f"MAT-{sfx}",
@@ -67,7 +79,7 @@ def _combo(branch_id, sfx, *, roas=None, spend=0, revenue=0, conversions=0,
         ad_name=f"Ad {sfx}", target_audience=ta, country="VN",
         copy_id=f"CPY-{sfx}", material_id=f"MAT-{sfx}",
         verdict=verdict, roas=roas, spend=spend, revenue=revenue, conversions=conversions,
-        keypoint_ids=keypoint_ids,
+        keypoint_ids=keypoint_ids, angle_id=angle_id,
     ))
     db.commit()
     db.close()
@@ -120,6 +132,21 @@ def test_gather_patterns_top_creatives_sorted_with_links():
     assert [t["combo_id"] for t in tops] == ["CMB-B", "CMB-C", "CMB-A"]  # roas desc
     assert tops[0]["roas"] == 5.0
     assert all(t["file_url"] for t in tops)  # creative link attached
+
+
+def test_angle_performance_roas():
+    acc = _account()
+    _angle(acc.id, "ANG-1", "Use an authority")
+    _combo(acc.id, "X", roas=3.0, spend=100, revenue=600, conversions=4, angle_id="ANG-1")
+    _combo(acc.id, "Y", roas=1.0, spend=100, revenue=200, conversions=2, angle_id="ANG-1")
+
+    db = TestSession()
+    perf = _angle_performance(db, acc.id, None)
+    db.close()
+
+    assert "Use an authority" in perf
+    assert perf["Use an authority"]["roas"] == 4.0  # (600+200) / (100+100)
+    assert perf["Use an authority"]["combos"] == 2
 
 
 def test_build_user_prompt_includes_language():

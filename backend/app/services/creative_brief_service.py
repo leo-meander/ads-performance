@@ -271,6 +271,7 @@ def _gather_patterns(
             "samples": [],
             "top_creatives": [],
             "angle_distribution": {},
+            "angle_performance": {},
             "keypoint_distribution": {},
             "keypoint_performance": {},
             "visual_distribution": {},
@@ -347,6 +348,7 @@ def _gather_patterns(
         "samples": samples,
         "top_creatives": top_creatives,
         "angle_distribution": dict(angle_counter.most_common(5)),
+        "angle_performance": _angle_performance(db, branch_id, target_audience),
         "keypoint_distribution": dict(keypoint_counter.most_common(8)),
         "keypoint_performance": _keypoint_performance(db, branch_id, target_audience),
         "visual_distribution": dict(visual_counter.most_common(12)),
@@ -403,6 +405,51 @@ def _keypoint_performance(
             "conversions": int(a["conversions"]),
             "combos": int(a["combos"]),
             "spend": round(a["spend"], 2),
+        }
+    return out
+
+
+def _angle_performance(
+    db: Session, branch_id: str, target_audience: Optional[str]
+) -> dict[str, dict[str, Any]]:
+    """Per-angle ROAS for the branch (scoped to TA when given).
+
+    Keyed by the same angle label used in angle_distribution (angle_type or
+    hook), so the frontend can show ROAS next to each angle.
+    """
+    q = db.query(AdCombo).filter(
+        AdCombo.branch_id == branch_id,
+        AdCombo.angle_id.isnot(None),
+    )
+    if target_audience:
+        q = q.filter(AdCombo.target_audience == target_audience)
+    combos = q.all()
+    if not combos:
+        return {}
+
+    angle_ids = {c.angle_id for c in combos if c.angle_id}
+    angles = {a.angle_id: a for a in db.query(AdAngle).filter(AdAngle.angle_id.in_(angle_ids)).all()}
+
+    agg: dict[str, dict[str, float]] = {}
+    for c in combos:
+        a = angles.get(c.angle_id)
+        if not a:
+            continue
+        label = a.angle_type or a.hook or c.angle_id
+        d = agg.setdefault(label, {"spend": 0.0, "revenue": 0.0, "conversions": 0, "combos": 0})
+        d["spend"] += float(c.spend or 0)
+        d["revenue"] += float(c.revenue or 0)
+        d["conversions"] += int(c.conversions or 0)
+        d["combos"] += 1
+
+    out: dict[str, dict[str, Any]] = {}
+    for label, d in agg.items():
+        roas = d["revenue"] / d["spend"] if d["spend"] > 0 else None
+        out[label] = {
+            "roas": round(roas, 2) if roas is not None else None,
+            "conversions": int(d["conversions"]),
+            "combos": int(d["combos"]),
+            "spend": round(d["spend"], 2),
         }
     return out
 

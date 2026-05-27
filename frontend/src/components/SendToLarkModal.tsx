@@ -40,6 +40,7 @@ interface Props {
   country?: string
   ta?: string
   referenceLinks?: RefLink[]
+  overrideKeypoints?: string[]
   onClose: () => void
   onCreated: (recordId: string, taskName: string) => void
 }
@@ -92,11 +93,19 @@ function formatVisualDirection(vd?: VisualDirection): string {
 // shape (no Angle): Headline / Sub-headline / Keypoint N / Price / CTA / Visual,
 // plus any ticked reference creatives and the chosen Figma template.
 // "Price: from " is left blank for the marketer to fill in the textarea.
-function buildDescription(brief: Brief, template?: Template, referenceLinks?: RefLink[]): string {
+function buildDescription(
+  brief: Brief,
+  template?: Template,
+  referenceLinks?: RefLink[],
+  overrideKeypoints?: string[],
+): string {
   const lines: string[] = []
   lines.push(`Headline: ${brief.hook || ''}`)
   lines.push(`Sub-headline: ${brief.subhead || ''}`)
-  ;(brief.keypoints || []).forEach((k, i) => lines.push(`Keypoint ${i + 1}: ${k}`))
+  // Hand-picked keypoints from the patterns panel take precedence over the
+  // brief's AI-suggested ones when the marketer ticked any.
+  const keypoints = overrideKeypoints && overrideKeypoints.length ? overrideKeypoints : (brief.keypoints || [])
+  keypoints.forEach((k, i) => lines.push(`Keypoint ${i + 1}: ${k}`))
   lines.push('Price: from ')
   lines.push(`CTA: ${brief.cta || ''}`)
 
@@ -129,7 +138,7 @@ function buildDescription(brief: Brief, template?: Template, referenceLinks?: Re
  * Composes a Task name (CSV rule) + a Description (brief details + the chosen
  * Figma template), both editable, then POSTs to /api/lark/tasks.
  */
-export default function SendToLarkModal({ brief, branchId, branchName, country, ta, referenceLinks, onClose, onCreated }: Props) {
+export default function SendToLarkModal({ brief, branchId, branchName, country, ta, referenceLinks, overrideKeypoints, onClose, onCreated }: Props) {
   const [templates, setTemplates] = useState<Template[]>([])
   const [loadingTpl, setLoadingTpl] = useState(true)
   const [templateId, setTemplateId] = useState('')
@@ -153,7 +162,7 @@ export default function SendToLarkModal({ brief, branchId, branchName, country, 
   // (Re)seed the description whenever the chosen template changes. Mirrors the
   // Figma modal's reseed-on-template-change behaviour.
   useEffect(() => {
-    setDescription(buildDescription(brief, tpl, referenceLinks))
+    setDescription(buildDescription(brief, tpl, referenceLinks, overrideKeypoints))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templateId, templates.length])
 
