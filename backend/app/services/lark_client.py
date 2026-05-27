@@ -119,6 +119,30 @@ class LarkClient:
             )
         return (data.get("data") or {}).get("record") or {}
 
+    def list_table_fields(self, *, app_token: str, table_id: str) -> list[dict[str, Any]]:
+        """List a table's fields (name + type) — used to confirm how to write
+        each column (text vs single_select vs user vs link)."""
+        if not app_token or not table_id:
+            raise LarkClientError(
+                "Lark Base target is not configured — set LARK_BASE_APP_TOKEN "
+                "and LARK_TASKS_TABLE_ID."
+            )
+        url = f"{self.base_url}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+        try:
+            resp = httpx.get(
+                url,
+                headers={"Authorization": f"Bearer {self._tenant_token()}"},
+                timeout=self.timeout,
+            )
+        except httpx.HTTPError as e:
+            raise LarkClientError(f"Lark list-fields request failed: {e}") from e
+        data = self._json(resp)
+        if data.get("code") != 0:
+            raise LarkClientError(
+                f"list fields error {data.get('code')}: {data.get('msg')}"
+            )
+        return (data.get("data") or {}).get("items") or []
+
     # ── Helpers ──────────────────────────────────────────────
 
     @staticmethod
