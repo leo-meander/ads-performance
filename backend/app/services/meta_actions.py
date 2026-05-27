@@ -152,9 +152,12 @@ def update_campaign_budget(
 ) -> bool:
     """Update a Meta campaign's daily or lifetime budget with Golden Rule #4 guard.
 
-    Budgets are sent to Meta in currency minor units (e.g. VND cents) as ints.
-    Callers pass either new_daily_budget or new_lifetime_budget in the account
-    currency's major units and this helper converts.
+    Budgets round-trip in Meta's native account-currency units: sync stores the
+    exact value Meta returns (sync_engine), the guard and detectors compare in
+    those same units, and this helper writes the value back verbatim. Do NOT
+    rescale here — an earlier `* 100` here treated the already-native value as
+    "major units" and silently sent 100x the intended budget, blowing past the
+    25% guard (which runs before the write).
     """
     if new_daily_budget is None and new_lifetime_budget is None:
         raise ValueError("Either new_daily_budget or new_lifetime_budget must be provided")
@@ -165,9 +168,9 @@ def update_campaign_budget(
     try:
         campaign = Campaign(platform_campaign_id)
         if new_daily_budget is not None:
-            campaign[Campaign.Field.daily_budget] = int(round(float(new_daily_budget) * 100))
+            campaign[Campaign.Field.daily_budget] = int(round(float(new_daily_budget)))
         if new_lifetime_budget is not None:
-            campaign[Campaign.Field.lifetime_budget] = int(round(float(new_lifetime_budget) * 100))
+            campaign[Campaign.Field.lifetime_budget] = int(round(float(new_lifetime_budget)))
         campaign.remote_update()
         logger.info(
             "Updated budget for Meta campaign %s: daily=%s lifetime=%s force=%s",
@@ -188,7 +191,12 @@ def update_ad_set_budget(
     new_lifetime_budget: float | None = None,
     force: bool = False,
 ) -> bool:
-    """Update a Meta ad set's daily or lifetime budget with Golden Rule #4 guard."""
+    """Update a Meta ad set's daily or lifetime budget with Golden Rule #4 guard.
+
+    Budgets round-trip in Meta's native account-currency units (see
+    update_campaign_budget). Do NOT rescale here — writing the value verbatim
+    keeps the read/guard/write path consistent.
+    """
     if new_daily_budget is None and new_lifetime_budget is None:
         raise ValueError("Either new_daily_budget or new_lifetime_budget must be provided")
     if new_daily_budget is not None:
@@ -198,9 +206,9 @@ def update_ad_set_budget(
     try:
         adset = AdSet(platform_adset_id)
         if new_daily_budget is not None:
-            adset[AdSet.Field.daily_budget] = int(round(float(new_daily_budget) * 100))
+            adset[AdSet.Field.daily_budget] = int(round(float(new_daily_budget)))
         if new_lifetime_budget is not None:
-            adset[AdSet.Field.lifetime_budget] = int(round(float(new_lifetime_budget) * 100))
+            adset[AdSet.Field.lifetime_budget] = int(round(float(new_lifetime_budget)))
         adset.remote_update()
         logger.info(
             "Updated budget for Meta ad set %s: daily=%s lifetime=%s force=%s",
