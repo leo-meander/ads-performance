@@ -202,9 +202,9 @@ def _do_sync_reservations_and_match(db, days_back: int = 30):
     run_matching(db, date_from, date_to)
 
 
-def _do_sync_material_urls(db):
+def _do_sync_material_urls(db, since_days=None):
     from app.services.material_url_sync import sync_material_urls
-    sync_material_urls(db)
+    sync_material_urls(db, since_days=since_days)
 
 
 def _do_assign_from_copy(db):
@@ -376,10 +376,14 @@ def trigger_assign_from_copy(
 @router.post("/internal/tasks/sync-material-urls", status_code=202)
 def trigger_sync_material_urls(
     x_internal_secret: str | None = Header(default=None),
+    since_days: int | None = None,
 ):
-    """Weekly: refresh Meta AdCreative preview URLs before CDN expiry."""
+    """Weekly: refresh Meta AdCreative preview URLs before CDN expiry.
+
+    Pass ?since_days=60 to scope a backfill to ads created in the last N days.
+    """
     _require_secret(x_internal_secret)
-    _run_in_thread(_do_sync_material_urls, "sync-material-urls")
+    _run_in_thread(_do_sync_material_urls, "sync-material-urls", since_days=since_days)
     return _api_response(data={"status": "started"})
 
 
