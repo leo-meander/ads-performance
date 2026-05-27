@@ -46,6 +46,7 @@ interface BriefResult {
   patterns: {
     sample_size: number
     angle_distribution: Record<string, number>
+    angle_performance?: Record<string, KeypointPerf>
     keypoint_distribution: Record<string, number>
     keypoint_performance?: Record<string, KeypointPerf>
     visual_distribution: Record<string, number>
@@ -75,6 +76,7 @@ export default function AIBriefPage() {
   const [language, setLanguage] = useState('en')
   const [vibe, setVibe] = useState('')
   const [selectedCreatives, setSelectedCreatives] = useState<TopCreative[]>([])
+  const [selectedKeypoints, setSelectedKeypoints] = useState<string[]>([])
   const [nVariants, setNVariants] = useState(3)
   const [goal, setGoal] = useState('roas')
   const [loading, setLoading] = useState(false)
@@ -113,6 +115,7 @@ export default function AIBriefPage() {
     setLoading(true)
     setResult(null)
     setSelectedCreatives([])
+    setSelectedKeypoints([])
     try {
       const r = await fetch(`${API_BASE}/api/creative/brief`, {
         method: 'POST',
@@ -144,6 +147,12 @@ export default function AIBriefPage() {
       prev.some(s => s.combo_id === tc.combo_id)
         ? prev.filter(s => s.combo_id !== tc.combo_id)
         : [...prev, tc]
+    )
+  }
+
+  const toggleKeypoint = (kp: string) => {
+    setSelectedKeypoints(prev =>
+      prev.includes(kp) ? prev.filter(k => k !== kp) : [...prev, kp]
     )
   }
 
@@ -235,10 +244,22 @@ export default function AIBriefPage() {
               Grounded in {result.patterns.sample_size} winning ad{result.patterns.sample_size === 1 ? '' : 's'} — {result.branch_name}
             </h2>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-              <PatternBlock title="Top angles" dist={result.patterns.angle_distribution} />
-              <PatternBlock title="Top keypoints" dist={result.patterns.keypoint_distribution} />
+              <PerfBlock title="Top angles" dist={result.patterns.angle_distribution} perf={result.patterns.angle_performance} />
+              <PerfBlock
+                title="Top keypoints — tick to use"
+                dist={result.patterns.keypoint_distribution}
+                perf={result.patterns.keypoint_performance}
+                selectable
+                selected={selectedKeypoints}
+                onToggle={toggleKeypoint}
+              />
               <PatternBlock title="Top visual tags" dist={result.patterns.visual_distribution} />
             </div>
+            {selectedKeypoints.length > 0 && (
+              <p className="text-xs text-blue-600 mt-2">
+                {selectedKeypoints.length} keypoint{selectedKeypoints.length === 1 ? '' : 's'} selected — these replace the brief&apos;s keypoints when you Send to Lark.
+              </p>
+            )}
           </div>
 
           {/* Top winning creatives — tick to attach as references */}
@@ -402,12 +423,63 @@ export default function AIBriefPage() {
           referenceLinks={selectedCreatives
             .filter(s => s.file_url)
             .map(s => ({ name: s.ad_name || s.combo_id, url: s.file_url as string, roas: s.roas }))}
+          overrideKeypoints={selectedKeypoints}
           onClose={() => setSendLark(null)}
           onCreated={(_recordId, taskName) => {
             setSendLark(null)
             setLarkMsg(`Lark task created: ${taskName}`)
           }}
         />
+      )}
+    </div>
+  )
+}
+
+function PerfBlock({
+  title, dist, perf, selectable, selected, onToggle,
+}: {
+  title: string
+  dist: Record<string, number>
+  perf?: Record<string, KeypointPerf>
+  selectable?: boolean
+  selected?: string[]
+  onToggle?: (label: string) => void
+}) {
+  const entries = Object.entries(dist || {})
+  return (
+    <div>
+      <div className="font-medium text-gray-600 mb-1">{title}</div>
+      {entries.length === 0 ? (
+        <div className="text-gray-400">—</div>
+      ) : (
+        <ul className="space-y-0.5">
+          {entries.map(([k, count]) => {
+            const roas = perf?.[k]?.roas
+            const row = (
+              <>
+                <span className="text-gray-700 truncate pr-1 flex-1" title={k}>{k}</span>
+                {roas != null
+                  ? <span className="text-green-700 font-mono shrink-0" title="ROAS">{roas.toFixed(2)}</span>
+                  : <span className="text-gray-400 font-mono shrink-0" title="winners using it">×{count}</span>}
+              </>
+            )
+            return selectable ? (
+              <li key={k}>
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selected?.includes(k) || false}
+                    onChange={() => onToggle?.(k)}
+                    className="rounded border-gray-300 shrink-0"
+                  />
+                  {row}
+                </label>
+              </li>
+            ) : (
+              <li key={k} className="flex items-center gap-1.5">{row}</li>
+            )
+          })}
+        </ul>
       )}
     </div>
   )
