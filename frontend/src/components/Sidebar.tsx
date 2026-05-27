@@ -35,7 +35,7 @@ const navSections: NavSection[] = [
     items: [
       { href: '/angles', label: 'Ad Angles', section: 'meta_ads', page: 'angles' },
       { href: '/creative', label: 'Creative Library', section: 'meta_ads', page: 'creative' },
-      { href: '/winning-ads', label: 'Figma', section: 'meta_ads', page: 'figma' },
+      { href: '/winning-ads', label: 'Winning Ads', section: 'meta_ads', page: 'figma' },
       { href: '/approvals', label: 'Approvals', section: 'meta_ads', page: 'approvals', badge: true },
       { href: '/keypoints', label: 'Keypoints', section: 'meta_ads', page: 'keypoints' },
       { href: '/ad-research', label: 'Spy Ads', section: 'meta_ads', page: 'ad_research' },
