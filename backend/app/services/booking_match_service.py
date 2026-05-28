@@ -13,22 +13,27 @@ Matching methodology (as used in the team's manual Sheet):
   - A match occurs when the sum of grand_totals equals the ads revenue within
     the amount tolerance (±2%, see amount_tolerance()).
 
-Country is a preference, NOT a filter. The ads-side country is the campaign's
-targeting geo (Meta's adset ISO-2 prefix / Google's campaign ISO-2 suffix) —
-i.e. *who the ad was aimed at*, which is NOT the same as the guest's PMS
-nationality. An "HK"-targeted campaign legitimately drives bookings from TW,
-KR, US, ... guests. So we never exclude a same-date/branch/kind reservation
-just because its nationality differs from the campaign geo. Country only ranks
-the candidate pools we try, best-confidence first:
+Country ranks (and gates) candidate pools, best-confidence first:
   1. same-country (campaign geo reconciled to guest ISO via
      normalize_country_to_iso, so Google "UK" lines up with reservation "GB"),
   2. + country-unknown reservations (country_iso = NULL: junk PMS value
      "Unknown"/"00"/missing — common for OTA bookings),
-  3. the full same-date/branch/kind pool, any nationality.
-Tier 3 restores the pre-039 fallback that an over-strict ISO rewrite removed;
-that rewrite collapsed matches to ~0 because guest nationality rarely equals
-campaign targeting geo. The campaign geo is still recorded on the match
-(ads_country) so the dashboard can break results down by campaign country.
+  3. the full same-date/branch/kind pool, any nationality —
+     ONLY when tiers 1 & 2 are empty (no same-country and no null-country
+     candidates in the window at all). If a same-country candidate exists but
+     its amount doesn't fit, we'd rather miss than fabricate a cross-country
+     match (almost always a coincidence amount hit on common room rates).
+This is stricter than the pre-2026-05 behaviour where tier-3 fired whenever
+tiers 1 & 2 failed to *match*. Cross-country matches still happen — only when
+the campaign's geo has zero candidate guests on that date.
+
+Reservations are also claimed globally per matching run (see run_matching):
+once a reservation is attributed to one ad row, it can't be reused by another.
+This stops the same booking from being double-counted across adjacent ads
+days when Meta reports the same conversion on multiple attribution dates.
+
+The campaign geo is still recorded on the match (ads_country) so the dashboard
+can break results down by campaign country.
 
 Data source:
   - Meta: ad_country_metrics rows at ad_id × date × country level (pulled via
@@ -226,16 +231,19 @@ def _match_country_tiers(
     bookings: int,
     revenue: float,
 ) -> tuple[list[Reservation], str] | None:
-    """Match within a candidate pool, ranking by country confidence.
+    """Match within a candidate pool, gated by country confidence.
 
-    Country never excludes a candidate — it only orders the pools we try:
+    Pools, tried in order:
       1. same-country (campaign geo reconciled to guest ISO, e.g. ad "UK"->"GB"),
       2. + country-unknown reservations (country_iso = NULL),
-      3. the full pool, any nationality (tier-3 fallback).
-    The real key is revenue; country only decides *which* booking when several
-    amounts match. Tier-3 restores the pre-039 behaviour the strict-ISO rewrite
-    dropped — without it, matches collapse whenever guest nationality differs
-    from the campaign targeting geo.
+      3. the full pool, any nationality — ONLY when tiers 1 & 2 are empty.
+
+    Tier-3 is gated on *candidate presence*, not on tier-1/2 match failure.
+    If any same-country or null-country candidate exists in the window — even
+    one whose amount doesn't fit — we refuse to fall through to a cross-country
+    match. That stops the algorithm from picking a coincidentally-amount-equal
+    booking from an unrelated nationality (the dominant failure mode at common
+    rates like Taipei 1.44M VND, where many guests share the same total).
     """
     if not candidates:
         return None
@@ -243,12 +251,20 @@ def _match_country_tiers(
         r for r in candidates if country_iso_matches_reservation(ads_country, r)
     ]
     null_pool = [r for r in candidates if not r.country_iso]
-    match = _try_match(exact_pool, bookings, revenue) if exact_pool else None
-    if not match and null_pool:
+
+    if exact_pool:
+        match = _try_match(exact_pool, bookings, revenue)
+        if match:
+            return match
+
+    if exact_pool or null_pool:
         match = _try_match(exact_pool + null_pool, bookings, revenue)
-    if not match:
-        match = _try_match(candidates, bookings, revenue)
-    return match
+        if match:
+            return match
+        # Same-country/null signal exists but doesn't fit — refuse tier-3.
+        return None
+
+    return _try_match(candidates, bookings, revenue)
 
 
 def _build_booking_match(
@@ -303,13 +319,22 @@ def run_matching(
       2. Load ad×country rows with revenue_website > 0 OR revenue_offline > 0
          joined with campaign/ad/account so we know the ad name + branch.
       3. Pre-bucket reservations by (date, branch, is_website).
-      4. For each ads row, run two passes:
-           - website revenue → website-source reservations
-           - offline revenue → non-website-source reservations
-         Country filter (strict ISO-2) applied per pass. Reservations with
-         country_iso = NULL count as "unknown country" and can match any ad
-         ISO with a `null_country` confidence tag.
-      5. Persist one BookingMatch per successful pass.
+      4. Two-pass matching with global reservation claim tracking:
+           Pass A — same-day only (reservation_date == ad date) for every ad
+                    row. This is the highest-confidence pairing.
+           Pass B — ±1 day fallback for ad rows that didn't match in pass A,
+                    excluding reservations already claimed in pass A.
+         Inside each pass, country tiers gate cross-country fallback
+         (_match_country_tiers). Within a pass, ad rows are processed by
+         descending revenue so larger (rarer) bookings claim their match
+         before smaller, more ambiguous amounts.
+      5. Once a reservation is matched, it's removed from the candidate pool
+         for every later ad row. This stops the same booking from being
+         attributed to multiple ads when Meta reports the same conversion on
+         several attribution dates (a 7-day window means the same $X often
+         appears on ad rows for D, D+1, D+2 — without de-dupe each gets the
+         same reservation).
+      6. Persist one BookingMatch per successful pass.
     """
     db.query(BookingMatch).filter(
         BookingMatch.match_date >= date_from,
@@ -362,12 +387,14 @@ def run_matching(
             "ad_name": r.ad_name,
         })
 
-    # Pre-load reservations grouped by (date, branch, is_website).
+    # Pre-load reservations grouped by (date, branch, is_website). Widen the
+    # reservation date range by ±1 day so pass B's fallback window has data
+    # at the edges of the requested period.
     reservations = (
         db.query(Reservation)
         .filter(
-            Reservation.reservation_date >= date_from,
-            Reservation.reservation_date <= date_to,
+            Reservation.reservation_date >= date_from - timedelta(days=1),
+            Reservation.reservation_date <= date_to + timedelta(days=1),
             Reservation.grand_total.isnot(None),
         )
         .all()
@@ -380,54 +407,66 @@ def run_matching(
         bucket = "website" if _is_website_source(r.source) else "offline"
         res_by_key.setdefault((r.reservation_date, branch_key, bucket), []).append(r)
 
-    matches_created = 0
+    # Flatten ads_rows into one (row, branch_key, kind, revenue, bookings)
+    # entry per purchase kind, dropping rows with no resolvable branch. Sort
+    # by descending revenue so larger bookings (rarer amounts) claim first.
     ads_skipped_no_branch = 0
-    ads_no_candidates = 0
-    now = datetime.now(timezone.utc)
-
+    passes: list[tuple] = []
     for row in ads_rows:
         branch_key = normalize_branch(row["account_name"])
         if not branch_key:
             ads_skipped_no_branch += 1
             continue
-
         for kind, revenue, bookings_hint in (
             ("website", row["revenue_website"], row["conversions_website"]),
             ("offline", row["revenue_offline"], row["conversions_offline"]),
         ):
             if revenue <= 0:
                 continue
+            passes.append((row, branch_key, kind, revenue, bookings_hint or 1))
+    passes.sort(key=lambda p: -p[3])
 
-            bookings = bookings_hint or 1
+    claimed_reservation_ids: set = set()
+    matches_created = 0
+    ads_no_candidates = 0
+    now = datetime.now(timezone.utc)
 
-            # Date: same-day first (reservation_date == ad date). If nothing
-            # matches, expand the candidate pool to ±1 day — a guest commonly
-            # books a day either side of the ad-attributed date. We do NOT widen
-            # further: a bigger window mostly pulls in unrelated bookings that
-            # happen to share an amount. Country only ranks within each pool
-            # (never filters) — see _match_country_tiers.
-            sameday = res_by_key.get((row["date"], branch_key, kind), [])
-            match = _match_country_tiers(sameday, row.get("country"), bookings, revenue)
+    def _persist_match(row, branch_key, kind, revenue, bookings, match):
+        nonlocal matches_created
+        matched, result_label = match
+        for r in matched:
+            claimed_reservation_ids.add(r.id)
+        db.add(_build_booking_match(
+            row, revenue, bookings, kind, result_label, matched, branch_key, now,
+        ))
+        matches_created += 1
 
-            window = sameday
-            if not match:
-                window = list(sameday)
-                for delta in (-1, 1):
-                    window += res_by_key.get(
-                        (row["date"] + timedelta(days=delta), branch_key, kind), []
-                    )
-                match = _match_country_tiers(window, row.get("country"), bookings, revenue)
+    def _available(reservations: list[Reservation]) -> list[Reservation]:
+        return [r for r in reservations if r.id not in claimed_reservation_ids]
 
-            if not match:
-                if not window:
-                    ads_no_candidates += 1
-                continue
+    # Pass A — same-day only. Highest-confidence pairings first.
+    leftover: list[tuple] = []
+    for row, branch_key, kind, revenue, bookings in passes:
+        sameday = _available(res_by_key.get((row["date"], branch_key, kind), []))
+        match = _match_country_tiers(sameday, row.get("country"), bookings, revenue)
+        if match:
+            _persist_match(row, branch_key, kind, revenue, bookings, match)
+        else:
+            leftover.append((row, branch_key, kind, revenue, bookings))
 
-            matched, result_label = match
-            db.add(_build_booking_match(
-                row, revenue, bookings, kind, result_label, matched, branch_key, now,
-            ))
-            matches_created += 1
+    # Pass B — ±1 day fallback for unmatched rows. Same-day reservations that
+    # weren't claimed in pass A remain eligible here too.
+    for row, branch_key, kind, revenue, bookings in leftover:
+        window: list[Reservation] = []
+        for delta in (-1, 0, 1):
+            window += _available(
+                res_by_key.get((row["date"] + timedelta(days=delta), branch_key, kind), [])
+            )
+        match = _match_country_tiers(window, row.get("country"), bookings, revenue)
+        if match:
+            _persist_match(row, branch_key, kind, revenue, bookings, match)
+        elif not window:
+            ads_no_candidates += 1
 
     db.commit()
 
@@ -437,6 +476,7 @@ def run_matching(
         "ads_rows_processed": len(ads_rows),
         "reservations_loaded": len(reservations),
         "matches_created": matches_created,
+        "reservations_claimed": len(claimed_reservation_ids),
         "ads_rows_no_branch": ads_skipped_no_branch,
         "ads_rows_no_candidates": ads_no_candidates,
     }

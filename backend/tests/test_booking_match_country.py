@@ -43,9 +43,32 @@ class TestMatchCountryTiers:
         assert [r.reservation_number for r in matched] == ["SAME"]
 
     def test_cross_country_fallback_when_no_same_country(self):
+        # Tier-3: window has zero same-country and zero null candidates →
+        # cross-country fallback fires (the only signal we have).
         cross = _booking(1000.0, "CROSS", country_iso="US")
         res = _match_country_tiers([cross], "VN", 1, 1000.0)
         assert res is not None and res[0][0].reservation_number == "CROSS"
+
+    def test_no_tier3_when_same_country_candidate_exists_but_amount_off(self):
+        # Same-country candidate exists in the window (wrong amount). A
+        # cross-country candidate matches the amount exactly. Refuse the
+        # cross match — better to miss than mis-attribute on coincidence.
+        same_wrong_amount = _booking(500.0, "SAME", country_iso="VN")
+        cross_right_amount = _booking(1000.0, "CROSS", country_iso="US")
+        res = _match_country_tiers(
+            [same_wrong_amount, cross_right_amount], "VN", 1, 1000.0
+        )
+        assert res is None
+
+    def test_no_tier3_when_null_country_candidate_exists_but_amount_off(self):
+        # Same logic for null-country: presence of a null-iso candidate gates
+        # tier-3 even if its amount doesn't fit.
+        null_wrong_amount = _booking(500.0, "NULL", country_iso=None)
+        cross_right_amount = _booking(1000.0, "CROSS", country_iso="US")
+        res = _match_country_tiers(
+            [null_wrong_amount, cross_right_amount], "VN", 1, 1000.0
+        )
+        assert res is None
 
     def test_tolerance_applies_within_2pct(self):
         # 988 is 1.2% off 1000 → within ±2%.
