@@ -1,10 +1,15 @@
-# Hourly :30 — refresh landing_page_ad_links by matching Clarity-observed
-# utm_campaign values to Campaign.name. Idempotent (safe to re-run).
-name: Cron — Landing page import (hourly)
+# Every 4h at :30 — refresh landing_page_ad_links by matching
+# Clarity-observed utm_campaign values to Campaign.name. Idempotent
+# (safe to re-run).
+#
+# Hourly was overkill: upstream Clarity sync only runs once daily at
+# 02:00 UTC and ads sync 2x daily. 4-hour cadence still catches new
+# utm_campaign hits within the same business day.
+name: Cron — Landing page import
 
 on:
   schedule:
-    - cron: "30 * * * *"
+    - cron: "30 */4 * * *"
   workflow_dispatch:
 
 env:

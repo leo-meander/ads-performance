@@ -1,9 +1,13 @@
-# Monthly 1st 00:00 UTC — Meta Ads recommendation engine (monthly cadence).
+# Manual only — Meta Ads recommendation engine (monthly cadence).
+#
+# Schedule disabled May 2026: Meta CATALOG has zero _MONTHLY detectors
+# (every RecTypeSpec in meta_recommendations/catalog.py uses _DAILY |
+# _WEEKLY | _SEASON). Engine would just log "no detectors for
+# cadence=monthly" and return. Re-enable the schedule below if a Meta
+# monthly detector is added to the catalog.
 name: Cron — Meta recs (monthly)
 
 on:
-  schedule:
-    - cron: "0 0 1 * *"
   workflow_dispatch:
 
 env:
