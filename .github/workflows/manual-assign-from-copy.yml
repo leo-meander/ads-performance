@@ -3,8 +3,8 @@
 # new angle). Reuses branch keypoints when possible; creates new ones for
 # points the copy raises that aren't covered yet.
 #
-# Schedule disabled — bấm Run workflow để chạy thủ công khi cần.
-name: Cron — Assign angles & keypoints (from copy)
+# No schedule — bấm Run workflow để chạy thủ công khi cần.
+name: Manual — Assign angles & keypoints (from copy)
 
 on:
   workflow_dispatch:

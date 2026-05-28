@@ -1,9 +1,11 @@
-# Hourly :15 — flip stale pending Google recommendations to expired.
-name: Cron — Google recs expire (hourly)
+# Every 6h at :15 — flip stale pending Google recommendations to expired.
+# Hourly was overkill: this only updates row status, UI doesn't need sub-hour
+# precision. 4 runs/day instead of 24.
+name: Cron — Google recs expire
 
 on:
   schedule:
-    - cron: "15 * * * *"
+    - cron: "15 */6 * * *"
   workflow_dispatch:
 
 env:

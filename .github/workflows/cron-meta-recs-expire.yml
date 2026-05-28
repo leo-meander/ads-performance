@@ -1,9 +1,11 @@
-# Hourly :45 — flip stale pending Meta recommendations to expired.
-name: Cron — Meta recs expire (hourly)
+# Every 6h at :45 — flip stale pending Meta recommendations to expired.
+# Hourly was overkill: this only updates row status, UI doesn't need sub-hour
+# precision. 4 runs/day instead of 24.
+name: Cron — Meta recs expire
 
 on:
   schedule:
-    - cron: "45 * * * *"
+    - cron: "45 */6 * * *"
   workflow_dispatch:
 
 env:
