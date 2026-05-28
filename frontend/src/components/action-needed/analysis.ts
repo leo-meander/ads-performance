@@ -270,11 +270,14 @@ export function correlateActivity(row: CampaignRow, log: ChangeLogItem[]): Chang
 function applyOptionsFor(row: CampaignRow, verdict: Verdict): ApplyOption[] {
   const isMeta = (row.platform || '').toLowerCase() === 'meta'
   const opts: ApplyOption[] = []
+  // SURF labels — per-branch raise_pct + max_raise_per_click_abs is configured
+  // inside the modal that opens on click; we no longer hardcode the percentage
+  // in the label because the actual delta depends on per-branch settings.
   if (verdict === 'winner') {
-    if (isMeta) opts.push({ kind: 'auto', action: 'raise_budget', label: 'Raise budget 25%' })
+    if (isMeta) opts.push({ kind: 'auto', action: 'raise_budget', label: 'Apply SURF' })
   } else if (isMeta) {
     opts.push({ kind: 'auto', action: 'pause_campaign', label: 'Pause campaign' })
-    opts.push({ kind: 'auto', action: 'cut_budget', label: 'Cut budget 50%' })
+    opts.push({ kind: 'auto', action: 'cut_budget', label: 'Apply SURF (cut)' })
   }
   opts.push({ kind: 'manual', label: 'Mark as done' })
   return opts

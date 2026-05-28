@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.branches import (
@@ -16,6 +16,7 @@ from app.dependencies.auth import get_current_user
 from app.models.account import AdAccount
 from app.models.user import User
 from app.models.user_permission import UserPermission
+from app.services.changelog import log_change
 
 router = APIRouter()
 
@@ -181,6 +182,148 @@ def create_account(
             "account_name": account.account_name,
             "currency": account.currency,
         })
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+class BudgetLimitsUpdate(BaseModel):
+    """Per-branch limits for the Raise/Cut budget buttons on /action-needed.
+
+    All fields optional — only sent fields are written. To CLEAR an absolute
+    cap (back to "no limit"), POST with the field set to null explicitly.
+    The pydantic exclude_unset on body.model_dump() distinguishes "omitted"
+    from "explicitly null".
+
+    Validation:
+      - raise_pct: (0, 1] — 1.0 means double the budget (extreme, but legal)
+      - cut_pct:   (0, 1) — must be strictly < 1 or you'd cut to zero
+      - max_*_per_click_abs: > 0 if set, else NULL
+    """
+    raise_pct: float | None = Field(None, gt=0, le=1)
+    cut_pct: float | None = Field(None, gt=0, lt=1)
+    max_raise_per_click_abs: float | None = Field(None, ge=0)
+    max_cut_per_click_abs: float | None = Field(None, ge=0)
+
+
+@router.get("/accounts/{account_id}/budget-limits")
+def get_budget_limits(
+    account_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the 4 budget-limit fields for one account, plus currency for
+    UI label formatting ("Raise budget (max NT$50)")."""
+    try:
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        if not account:
+            return _api_response(error="Account not found")
+        return _api_response(data={
+            "account_id": str(account.id),
+            "account_name": account.account_name,
+            "currency": account.currency,
+            "raise_pct": float(account.raise_pct) if account.raise_pct is not None else None,
+            "cut_pct": float(account.cut_pct) if account.cut_pct is not None else None,
+            "max_raise_per_click_abs": (
+                float(account.max_raise_per_click_abs)
+                if account.max_raise_per_click_abs is not None else None
+            ),
+            "max_cut_per_click_abs": (
+                float(account.max_cut_per_click_abs)
+                if account.max_cut_per_click_abs is not None else None
+            ),
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.patch("/accounts/{account_id}/budget-limits")
+def update_budget_limits(
+    account_id: str,
+    body: BudgetLimitsUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update per-branch raise/cut budget limits. Admins + creators only —
+    this directly affects money flow on /action-needed.
+
+    Audits to change_log_entries with before/after so the Activity Timeline
+    surfaces who changed the cap and from what value (critical for tracing
+    a budget overshoot back to a setting change).
+    """
+    if not (is_admin(current_user) or "creator" in (current_user.roles or [])):
+        return _api_response(error="Only admins or creators can edit budget limits")
+
+    try:
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        if not account:
+            return _api_response(error="Account not found")
+
+        # Snapshot before — for the audit diff.
+        before = {
+            "raise_pct": float(account.raise_pct) if account.raise_pct is not None else None,
+            "cut_pct": float(account.cut_pct) if account.cut_pct is not None else None,
+            "max_raise_per_click_abs": (
+                float(account.max_raise_per_click_abs)
+                if account.max_raise_per_click_abs is not None else None
+            ),
+            "max_cut_per_click_abs": (
+                float(account.max_cut_per_click_abs)
+                if account.max_cut_per_click_abs is not None else None
+            ),
+        }
+
+        fields = body.model_dump(exclude_unset=True)
+        if "raise_pct" in fields:
+            account.raise_pct = fields["raise_pct"]
+        if "cut_pct" in fields:
+            account.cut_pct = fields["cut_pct"]
+        if "max_raise_per_click_abs" in fields:
+            # 0 sent explicitly is rejected by pydantic ge=0? actually ge=0
+            # allows 0 — but 0 cap = "never raise", probably a typo. Treat
+            # 0 as "clear cap" (NULL) to be safe.
+            v = fields["max_raise_per_click_abs"]
+            account.max_raise_per_click_abs = v if v else None
+        if "max_cut_per_click_abs" in fields:
+            v = fields["max_cut_per_click_abs"]
+            account.max_cut_per_click_abs = v if v else None
+
+        db.flush()
+
+        after = {
+            "raise_pct": float(account.raise_pct) if account.raise_pct is not None else None,
+            "cut_pct": float(account.cut_pct) if account.cut_pct is not None else None,
+            "max_raise_per_click_abs": (
+                float(account.max_raise_per_click_abs)
+                if account.max_raise_per_click_abs is not None else None
+            ),
+            "max_cut_per_click_abs": (
+                float(account.max_cut_per_click_abs)
+                if account.max_cut_per_click_abs is not None else None
+            ),
+        }
+
+        # Only audit if something actually changed.
+        if before != after:
+            log_change(
+                db,
+                category="other",
+                source="manual",
+                triggered_by="manual",
+                title=f"Budget limits updated · {account.account_name}"[:200],
+                description=(
+                    f"Per-branch Raise/Cut budget limits for {account.account_name} "
+                    f"({account.currency}) changed by {current_user.email}."
+                ),
+                platform=account.platform,
+                account_id=str(account.id),
+                before_value=before,
+                after_value=after,
+                author_user_id=str(current_user.id),
+            )
+
+        db.commit()
+        return _api_response(data={"account_id": str(account.id), **after})
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))

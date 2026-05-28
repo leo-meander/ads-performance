@@ -33,13 +33,51 @@ from app.services.changelog import log_change
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# "Cut" halves the budget (a decrease — always allowed by the guard). "Raise"
-# bumps +25%, the max single-step increase the Golden-Rule guard permits
-# without force.
-CUT_FACTOR = 0.5
-RAISE_FACTOR = 1.25
+# Legacy default factors. Used only when the branch (AdAccount) does not
+# override raise_pct/cut_pct. Match the historical hardcodes so any account
+# created before migration 042 — or never updated via /budget-limits — keeps
+# the exact same behavior: +25% on raise, halve on cut.
+LEGACY_RAISE_PCT = 0.25
+LEGACY_CUT_PCT = 0.50
 
 AUTO_ACTIONS = {"pause_campaign", "cut_budget", "raise_budget"}
+
+
+def _resolve_budget_change(
+    *,
+    current: float,
+    action: str,
+    raise_pct: float,
+    cut_pct: float,
+    max_raise_abs: float | None,
+    max_cut_abs: float | None,
+) -> tuple[float, str | None]:
+    """Return (new_budget, applied_cap_reason).
+
+    Applies the per-branch pct, then clamps by the per-branch absolute cap.
+    `applied_cap_reason` is None if no cap binding, else a short string for
+    audit ('per_click_abs') so the UI can surface "we wanted +NT$80 but cap
+    limited it to +NT$50".
+
+    Pre-conditions: `current` > 0 (caller checks). Negative results are
+    impossible because cut_pct is bounded (0, 1).
+    """
+    if action == "raise_budget":
+        desired_delta = current * raise_pct
+        applied_cap = None
+        if max_raise_abs is not None and desired_delta > max_raise_abs:
+            desired_delta = max_raise_abs
+            applied_cap = "per_click_abs"
+        return round(current + desired_delta, 2), applied_cap
+
+    # cut_budget
+    desired_delta = current * cut_pct
+    applied_cap = None
+    if max_cut_abs is not None and desired_delta > max_cut_abs:
+        desired_delta = max_cut_abs
+        applied_cap = "per_click_abs"
+    # Floor at 1 unit native currency — Meta rejects 0 daily_budget.
+    return max(round(current - desired_delta, 2), 1.0), applied_cap
 
 
 def _api_response(data=None, error=None):
@@ -103,9 +141,54 @@ def apply_action(
                 return _api_response(
                     error="No campaign-level daily budget to change (it may be set at ad-set level).",
                 )
-            factor = CUT_FACTOR if body.action == "cut_budget" else RAISE_FACTOR
-            new_budget = round(current * factor, 2)
-            action_params = {"from_daily_budget": current, "new_daily_budget": new_budget}
+            # Per-branch overrides on AdAccount (added in migration 042). Falls
+            # back to legacy hardcodes so accounts created before then keep
+            # identical behavior.
+            raise_pct = (
+                float(account.raise_pct)
+                if account.raise_pct is not None
+                else LEGACY_RAISE_PCT
+            )
+            cut_pct = (
+                float(account.cut_pct)
+                if account.cut_pct is not None
+                else LEGACY_CUT_PCT
+            )
+            max_raise_abs = (
+                float(account.max_raise_per_click_abs)
+                if account.max_raise_per_click_abs is not None
+                else None
+            )
+            max_cut_abs = (
+                float(account.max_cut_per_click_abs)
+                if account.max_cut_per_click_abs is not None
+                else None
+            )
+            new_budget, applied_cap = _resolve_budget_change(
+                current=current, action=body.action,
+                raise_pct=raise_pct, cut_pct=cut_pct,
+                max_raise_abs=max_raise_abs, max_cut_abs=max_cut_abs,
+            )
+            # No-op guard: cap is so tight the delta rounded to current.
+            # Caller should hear about it instead of paying for a Meta call.
+            if new_budget == current:
+                return _api_response(
+                    error=(
+                        f"Cap binding too tight: {body.action} would move {current:.0f} "
+                        f"by 0 in {account.currency}. Loosen max_*_per_click_abs."
+                    ),
+                )
+            action_params = {
+                "from_daily_budget": current,
+                "new_daily_budget": new_budget,
+                "delta": round(new_budget - current, 2),
+                "raise_pct": raise_pct,
+                "cut_pct": cut_pct,
+                "max_raise_per_click_abs": max_raise_abs,
+                "max_cut_per_click_abs": max_cut_abs,
+                "applied_cap": applied_cap,
+                "currency": account.currency,
+            }
             fn_name = "update_campaign_budget"
 
             def _call() -> None:
