@@ -12,6 +12,11 @@ export type CampaignRow = {
   funnel_stage: string | null
   ta: string | null
   platform: string
+  // account_id + daily_budget added for the SURF Apply modal on /action-needed.
+  // account_id may be null on historical rows whose Campaign.account_id is
+  // unresolved; daily_budget is null when the budget lives at ad-set level.
+  account_id: string | null
+  daily_budget: number | null
   account_name: string
   spend: number
   revenue: number

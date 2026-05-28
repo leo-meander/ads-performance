@@ -777,6 +777,13 @@ def country_campaign_breakdown(
                     Campaign.funnel_stage.label("funnel_stage"),
                     Campaign.ta.label("ta"),
                     Campaign.platform.label("platform"),
+                    # account_id + daily_budget surfaced for the SURF Apply
+                    # modal on /action-needed: it needs the parent branch to
+                    # load budget-limits, and the current daily budget for
+                    # the cap-preview text. Read-only — neither is mutated
+                    # by this query path.
+                    Campaign.account_id.label("account_id"),
+                    Campaign.daily_budget.label("daily_budget"),
                     AdAccount.account_name.label("account_name"),
                     AdAccount.currency.label("currency"),
                     func.sum(MetricsCache.spend).label("spend"),
@@ -810,6 +817,7 @@ def country_campaign_breakdown(
             return q.group_by(
                 Campaign.id, Campaign.name, Campaign.status, Campaign.funnel_stage,
                 Campaign.ta, Campaign.platform,
+                Campaign.account_id, Campaign.daily_budget,
                 AdAccount.account_name, AdAccount.currency,
             ).all()
 
@@ -824,7 +832,11 @@ def country_campaign_breakdown(
                     "funnel_stage": r.funnel_stage,
                     "ta": r.ta,
                     "platform": r.platform,
+                    "account_id": str(r.account_id) if r.account_id else None,
                     "account_name": r.account_name,
+                    # daily_budget surfaced for the SURF Apply modal preview.
+                    # NULL when the budget lives at ad-set level (CBO=False).
+                    "daily_budget": float(r.daily_budget) if r.daily_budget is not None else None,
                     "spend": 0.0,
                     "revenue": 0.0,
                     "impressions": 0,

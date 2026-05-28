@@ -32,6 +32,7 @@ import {
   type CampaignInsight,
   type ApplyOption,
 } from '@/components/action-needed/analysis'
+import SurfApplyModal from '@/components/action-needed/SurfApplyModal'
 
 type Branch = { name: string; currency: string }
 
@@ -242,14 +243,28 @@ export default function ActionNeededPage() {
 
   const funnelMax = funnel.length > 0 ? Math.max(...funnel.map((s) => s.value), 1) : 1
 
+  // SURF modal state — open per (campaign, action). raise_budget / cut_budget
+  // routes through the modal so the user can fine-tune per-branch caps before
+  // Apply. pause_campaign keeps the direct window.confirm() path because there's
+  // nothing for the user to tune.
+  const [surfModal, setSurfModal] = useState<{
+    insight: CampaignInsight
+    action: 'raise_budget' | 'cut_budget'
+  } | null>(null)
+
   // Apply (real Meta mutation) or mark-done (log only). Both write the Activity Log.
   const handleApply = useCallback(async (insight: CampaignInsight, opt: ApplyOption) => {
     const cid = insight.row.campaign_id
     if (opt.kind === 'auto') {
-      const verb =
-        opt.action === 'pause_campaign' ? 'PAUSE' :
-        opt.action === 'cut_budget' ? 'CUT BUDGET 50% on' : 'RAISE BUDGET 25% on'
-      if (!window.confirm(`This will ${verb} "${insight.row.campaign_name}" on Meta (live ads). Continue?`)) return
+      // SURF actions open the modal — user can adjust caps + confirm there.
+      if (opt.action === 'raise_budget' || opt.action === 'cut_budget') {
+        setSurfModal({ insight, action: opt.action })
+        return
+      }
+      // Pause stays simple: confirm + go.
+      if (!window.confirm(
+        `This will PAUSE "${insight.row.campaign_name}" on Meta (live ads). Continue?`,
+      )) return
       setActionState((s) => ({ ...s, [cid]: { status: 'loading' } }))
       const res = await apiFetch<{ campaign_id: string }>('/api/action-needed/apply', {
         method: 'POST',
@@ -271,6 +286,13 @@ export default function ActionNeededPage() {
         [cid]: res.success ? { status: 'done', msg: 'Marked done' } : { status: 'error', msg: res.error || 'Failed' },
       }))
     }
+  }, [])
+
+  // Called from SurfApplyModal after a successful Meta mutation. The modal
+  // already POSTed /action-needed/apply; we just flip the card's badge to
+  // "done" with the message the backend produced (carries the actual delta).
+  const handleSurfApplied = useCallback((cid: string, msg: string) => {
+    setActionState((s) => ({ ...s, [cid]: { status: 'done', msg } }))
   }, [])
 
   const renderActions = (insight: CampaignInsight) => {
@@ -635,6 +657,25 @@ export default function ActionNeededPage() {
             <CampaignBreakdownTable rows={rows} currency={currency} highlightId="" title="All campaigns" />
           </div>
         </>
+      )}
+
+      {/* SURF Apply modal — mounted at root so it overlays the whole page.
+          Stays null when surfModal is null (modal returns null on !open). */}
+      {surfModal && (
+        <SurfApplyModal
+          open={true}
+          onClose={() => setSurfModal(null)}
+          onApplied={(msg) => handleSurfApplied(surfModal.insight.row.campaign_id, msg)}
+          campaign={{
+            id: surfModal.insight.row.campaign_id,
+            name: surfModal.insight.row.campaign_name,
+            account_id: surfModal.insight.row.account_id,
+            account_name: surfModal.insight.row.account_name,
+            daily_budget: surfModal.insight.row.daily_budget,
+            currency,
+          }}
+          action={surfModal.action}
+        />
       )}
     </div>
   )

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, String, Text
+from sqlalchemy import Boolean, Column, Numeric, String, Text
 
 from app.models.base import Base, TimestampMixin
 
@@ -24,3 +24,16 @@ class AdAccount(TimestampMixin, Base):
     # has no explicit destination. Typically the branch homepage or default
     # booking page.
     default_destination_url = Column(Text, nullable=True)
+
+    # ------------------- Per-branch budget mutation limits ------------------
+    # Drive the Raise/Cut budget buttons on /action-needed. Defaults preserve
+    # the legacy hardcoded behavior: +25% raise, -50% cut, no absolute cap.
+    # Set max_*_per_click_abs to clamp the absolute change in account currency
+    # (NT$, VND, JPY). NULL = no cap.
+    #
+    # Read by app/routers/action_needed.py:apply_action. Mutated only via
+    # PATCH /accounts/{id}/budget-limits — both writes audit to change_log.
+    raise_pct = Column(Numeric(5, 4), nullable=False, default=0.25)
+    cut_pct = Column(Numeric(5, 4), nullable=False, default=0.50)
+    max_raise_per_click_abs = Column(Numeric(15, 2), nullable=True)
+    max_cut_per_click_abs = Column(Numeric(15, 2), nullable=True)
