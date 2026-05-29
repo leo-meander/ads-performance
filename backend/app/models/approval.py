@@ -3,9 +3,38 @@ from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from app.models.base import Base, TimestampMixin, UUIDType
 
 
+class ApprovalBatch(Base, TimestampMixin):
+    """Groups multiple combo_approvals submitted together as versions of one
+    review. Reviewers decide the whole batch at once (all-or-nothing): the
+    decision is applied to every child combo_approval. Holds only the shared
+    submission metadata; each version keeps its own combo_approval row (and
+    its own launch lifecycle)."""
+
+    __tablename__ = "approval_batches"
+
+    submitted_by = Column(
+        UUIDType,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    round = Column(Integer, nullable=False, default=1)
+    submitted_at = Column(DateTime(timezone=True), nullable=False)
+    deadline = Column(DateTime(timezone=True), nullable=True)
+    note = Column(Text, nullable=True)
+
+
 class ComboApproval(Base, TimestampMixin):
     __tablename__ = "combo_approvals"
 
+    # Set when this approval is one version inside a multi-version batch.
+    # NULL = standalone single-version approval (legacy + 1-version submits).
+    batch_id = Column(
+        UUIDType,
+        ForeignKey("approval_batches.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     combo_id = Column(
         UUIDType,
         ForeignKey("ad_combos.id", ondelete="CASCADE"),

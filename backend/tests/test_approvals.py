@@ -96,6 +96,37 @@ def _create_combo():
     return combo
 
 
+def _create_combos(n):
+    """Create n combos under one shared account; returns list of combos."""
+    db = TestSession()
+    account = AdAccount(
+        id=str(uuid.uuid4()),
+        platform="meta",
+        account_id=f"act_{uuid.uuid4().hex[:8]}",
+        account_name="Test Account",
+        currency="VND",
+    )
+    db.add(account)
+    db.flush()
+    combos = []
+    for i in range(n):
+        combo = AdCombo(
+            id=str(uuid.uuid4()),
+            combo_id=f"CMB-{uuid.uuid4().hex[:6]}",
+            branch_id=account.id,
+            ad_name=f"Test Ad Combo {i}",
+            copy_id=f"CPY-{i:03d}",
+            material_id=f"MAT-{i:03d}",
+        )
+        db.add(combo)
+        combos.append(combo)
+    db.commit()
+    for c in combos:
+        db.refresh(c)
+    db.close()
+    return combos
+
+
 def _auth_headers(user):
     token = create_access_token(user.id, user.roles or [])
     return {"Authorization": f"Bearer {token}"}
@@ -460,6 +491,156 @@ def test_pending_reviews_endpoint():
     data = resp.json()
     assert data["success"] is True
     assert len(data["data"]["items"]) == 1
+
+
+# ── Approval batch (multi-version) tests ─────────────────────
+
+
+def _submit_batch(creator, reviewers, combos):
+    return client.post(
+        "/api/approval-batches",
+        json={
+            "versions": [{"combo_id": c.id} for c in combos],
+            "reviewer_ids": [r.id for r in reviewers],
+        },
+        headers=_auth_headers(creator),
+    )
+
+
+def test_submit_batch_creates_versions():
+    creator = _create_user(["creator"])
+    r1 = _create_user(["reviewer"], email="br1@meander.com")
+    r2 = _create_user(["reviewer"], email="br2@meander.com")
+    combos = _create_combos(3)
+
+    resp = _submit_batch(creator, [r1, r2], combos)
+    data = resp.json()
+    assert data["success"] is True
+    assert data["data"]["status"] == "PENDING_APPROVAL"
+    assert len(data["data"]["versions"]) == 3
+    assert len(data["data"]["reviewers"]) == 2
+
+
+def test_batch_reviewer_gets_one_notification():
+    """A 3-version batch must produce ONE review request per reviewer, not 3."""
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"], email="bnotif@meander.com")
+    combos = _create_combos(3)
+
+    _submit_batch(creator, [reviewer], combos)
+
+    resp = client.get("/api/notifications", headers=_auth_headers(reviewer))
+    items = resp.json()["data"]["items"]
+    review_reqs = [n for n in items if n["type"] == "REVIEW_REQUESTED"]
+    assert len(review_reqs) == 1
+
+
+def test_batch_all_approve():
+    creator = _create_user(["creator"])
+    r1 = _create_user(["reviewer"])
+    r2 = _create_user(["reviewer"])
+    combos = _create_combos(2)
+
+    batch_id = _submit_batch(creator, [r1, r2], combos).json()["data"]["id"]
+
+    # First reviewer approves → still pending
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(r1),
+    )
+    assert resp.json()["data"]["status"] == "PENDING_APPROVAL"
+
+    # Second reviewer approves → batch + all versions APPROVED
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(r2),
+    )
+    data = resp.json()["data"]
+    assert data["status"] == "APPROVED"
+    assert all(v["status"] == "APPROVED" for v in data["versions"])
+
+
+def test_batch_any_reject():
+    creator = _create_user(["creator"])
+    r1 = _create_user(["reviewer"])
+    r2 = _create_user(["reviewer"])
+    combos = _create_combos(2)
+
+    batch_id = _submit_batch(creator, [r1, r2], combos).json()["data"]["id"]
+
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "REJECTED"},
+        headers=_auth_headers(r1),
+    )
+    data = resp.json()["data"]
+    assert data["status"] == "REJECTED"
+    assert all(v["status"] == "REJECTED" for v in data["versions"])
+
+
+def test_batch_cannot_decide_twice():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combos = _create_combos(2)
+
+    batch_id = _submit_batch(creator, [reviewer], combos).json()["data"]["id"]
+
+    client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(reviewer),
+    )
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "REJECTED"},
+        headers=_auth_headers(reviewer),
+    )
+    assert resp.json()["success"] is False
+    assert "already" in resp.json()["error"].lower()
+
+
+def test_batch_creator_notified_on_approval():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combos = _create_combos(2)
+
+    batch_id = _submit_batch(creator, [reviewer], combos).json()["data"]["id"]
+    client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(reviewer),
+    )
+
+    resp = client.get("/api/notifications", headers=_auth_headers(creator))
+    items = resp.json()["data"]["items"]
+    approved = [n for n in items if n["type"] == "COMBO_APPROVED"]
+    assert len(approved) == 1  # one consolidated, not one per version
+
+
+def test_batch_list_includes_batch_id():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combos = _create_combos(2)
+
+    batch_id = _submit_batch(creator, [reviewer], combos).json()["data"]["id"]
+
+    resp = client.get("/api/approvals", headers=_auth_headers(creator))
+    items = resp.json()["data"]["items"]
+    assert all(item["batch_id"] == batch_id for item in items)
+
+
+def test_batch_access_denied_for_outsider():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combos = _create_combos(2)
+    batch_id = _submit_batch(creator, [reviewer], combos).json()["data"]["id"]
+
+    other = _create_user(["creator"])
+    resp = client.get(f"/api/approval-batches/{batch_id}", headers=_auth_headers(other))
+    assert resp.json()["success"] is False
+    assert "denied" in resp.json()["error"].lower()
 
 
 # ── Auto-queue Figma render on full approval ─────────────────

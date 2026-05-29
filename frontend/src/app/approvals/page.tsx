@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Plus, Send } from 'lucide-react'
+import { Plus, Send, Layers } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
 import ApprovalStatusBadge from '@/components/ApprovalStatusBadge'
 
@@ -10,6 +10,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
 interface Approval {
   id: string
+  batch_id: string | null
   combo_id: string
   combo_name: string | null
   combo_id_display: string | null
@@ -21,6 +22,45 @@ interface Approval {
   deadline: string | null
   resolved_at: string | null
   reviewers: { reviewer_name: string; status: string }[]
+}
+
+// A row in the rendered table: either a single standalone approval, or a
+// batch aggregating N child approvals into one all-or-nothing review.
+interface Row {
+  kind: 'single' | 'batch'
+  key: string
+  members: Approval[]
+}
+
+// any REJECTED → REJECTED; any NEEDS_REVISION → NEEDS_REVISION;
+// all APPROVED → APPROVED; all LAUNCHED → LAUNCHED; else PENDING_APPROVAL
+function rollupStatus(statuses: string[]): string {
+  if (statuses.some(s => s === 'REJECTED')) return 'REJECTED'
+  if (statuses.some(s => s === 'NEEDS_REVISION')) return 'NEEDS_REVISION'
+  if (statuses.length > 0 && statuses.every(s => s === 'LAUNCHED')) return 'LAUNCHED'
+  if (statuses.length > 0 && statuses.every(s => s === 'APPROVED' || s === 'LAUNCHED')) return 'APPROVED'
+  return 'PENDING_APPROVAL'
+}
+
+function groupRows(approvals: Approval[]): Row[] {
+  const batches = new Map<string, Approval[]>()
+  const rows: Row[] = []
+  for (const a of approvals) {
+    if (a.batch_id) {
+      const existing = batches.get(a.batch_id)
+      if (existing) {
+        existing.push(a)
+      } else {
+        const members: Approval[] = [a]
+        batches.set(a.batch_id, members)
+        // Reserve the row position at first sighting to keep submit order.
+        rows.push({ kind: 'batch', key: a.batch_id, members })
+      }
+    } else {
+      rows.push({ kind: 'single', key: a.id, members: [a] })
+    }
+  }
+  return rows
 }
 
 export default function ApprovalsPage() {
@@ -138,47 +178,63 @@ export default function ApprovalsPage() {
               </tr>
             </thead>
             <tbody>
-              {approvals.map(a => (
-                <tr key={a.id} className="border-b border-gray-50 hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    <Link href={`/approvals/${a.id}`} className="text-sm font-medium text-blue-600 hover:text-blue-700">
-                      {a.combo_name || a.combo_id_display || 'Unknown'}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3"><ApprovalStatusBadge status={a.status} /></td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{a.submitter_name || '-'}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{a.round}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">
-                    {a.reviewers.filter(r => r.status === 'APPROVED').length}/{a.reviewers.length} approved
-                  </td>
-                  <td className="px-4 py-3 text-xs">
-                    {a.deadline ? (
-                      <span className={new Date(a.deadline) < new Date() && a.status === 'PENDING_APPROVAL' ? 'text-red-500 font-medium' : 'text-gray-500'}>
-                        {new Date(a.deadline).toLocaleDateString()}
-                        {new Date(a.deadline) < new Date() && a.status === 'PENDING_APPROVAL' && ' (!!)'}
-                      </span>
-                    ) : <span className="text-gray-300">-</span>}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-gray-400">
-                    {a.submitted_at ? new Date(a.submitted_at).toLocaleDateString() : '-'}
-                  </td>
-                  <td className="px-4 py-3 text-xs">
-                    {a.status === 'PENDING_APPROVAL' && (user?.id === a.submitted_by || user?.roles?.includes('admin')) ? (
-                      <button
-                        onClick={() => handleResend(a.id)}
-                        disabled={resending === a.id}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Resend review request email to pending reviewers"
-                      >
-                        <Send className="w-3 h-3" />
-                        {resending === a.id ? 'Sending…' : 'Resend'}
-                      </button>
-                    ) : (
-                      <span className="text-gray-300">-</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {groupRows(approvals).map(row => {
+                const head = row.members[0]
+                const isBatch = row.kind === 'batch'
+                const status = isBatch ? rollupStatus(row.members.map(m => m.status)) : head.status
+                const href = isBatch ? `/approvals/batch/${row.key}` : `/approvals/${head.id}`
+                // Reviewers are identical across batch members, so the head row's are representative.
+                const approvedReviewers = head.reviewers.filter(r => r.status === 'APPROVED').length
+                const overdue = head.deadline ? new Date(head.deadline) < new Date() && status === 'PENDING_APPROVAL' : false
+                return (
+                  <tr key={row.key} className="border-b border-gray-50 hover:bg-gray-50">
+                    <td className="px-4 py-3">
+                      <Link href={href} className="text-sm font-medium text-blue-600 hover:text-blue-700">
+                        {isBatch
+                          ? `Batch — ${row.members.length} version${row.members.length !== 1 ? 's' : ''}`
+                          : head.combo_name || head.combo_id_display || 'Unknown'}
+                      </Link>
+                      {isBatch && (
+                        <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-medium text-gray-400 uppercase tracking-wide">
+                          <Layers className="w-3 h-3" /> batch
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3"><ApprovalStatusBadge status={status} /></td>
+                    <td className="px-4 py-3 text-sm text-gray-600">{head.submitter_name || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-gray-600">{head.round}</td>
+                    <td className="px-4 py-3 text-sm text-gray-600">
+                      {approvedReviewers}/{head.reviewers.length} approved
+                    </td>
+                    <td className="px-4 py-3 text-xs">
+                      {head.deadline ? (
+                        <span className={overdue ? 'text-red-500 font-medium' : 'text-gray-500'}>
+                          {new Date(head.deadline).toLocaleDateString()}
+                          {overdue && ' (!!)'}
+                        </span>
+                      ) : <span className="text-gray-300">-</span>}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-gray-400">
+                      {head.submitted_at ? new Date(head.submitted_at).toLocaleDateString() : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-xs">
+                      {!isBatch && head.status === 'PENDING_APPROVAL' && (user?.id === head.submitted_by || user?.roles?.includes('admin')) ? (
+                        <button
+                          onClick={() => handleResend(head.id)}
+                          disabled={resending === head.id}
+                          className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                          title="Resend review request email to pending reviewers"
+                        >
+                          <Send className="w-3 h-3" />
+                          {resending === head.id ? 'Sending…' : 'Resend'}
+                        </button>
+                      ) : (
+                        <span className="text-gray-300">-</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
