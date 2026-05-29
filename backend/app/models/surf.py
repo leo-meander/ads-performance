@@ -18,7 +18,7 @@ Per-branch absolute caps (max_raise_per_click_abs / max_cut_per_click_abs)
 live on AdAccount and are read by the engine — they're shared with the
 manual /action-needed Apply SURF button so 1 setting drives 2 surfaces.
 
-See migration 043_surf_intraday.py for full column commentary.
+See migration 044_surf_intraday.py for full column commentary.
 """
 
 from sqlalchemy import (

@@ -1,7 +1,7 @@
 """SURF Intraday: per-branch timezone + surf_runs + surf_checkpoints tables.
 
-Revision ID: 043_surf_intraday
-Revises: 042_budget_limits_per_branch
+Revision ID: 044_surf_intraday
+Revises: 043_approval_batches
 Create Date: 2026-05-28
 
 Builds on top of the per-branch budget caps shipped in migration 042
@@ -34,8 +34,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "043_surf_intraday"
-down_revision: Union[str, None] = "042_budget_limits_per_branch"
+revision: str = "044_surf_intraday"
+down_revision: Union[str, None] = "043_approval_batches"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
