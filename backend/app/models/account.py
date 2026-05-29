@@ -25,6 +25,13 @@ class AdAccount(TimestampMixin, Base):
     # booking page.
     default_destination_url = Column(Text, nullable=True)
 
+    # IANA timezone name for the branch's local day boundary. Drives the
+    # end-of-day revert for SURF Intraday tactic (and any future tactic that
+    # snapshots/restores on a local-midnight cycle). Backfilled per branch in
+    # migration 043; NOT NULL on Postgres, server_default Asia/Ho_Chi_Minh
+    # on SQLite tests.
+    timezone = Column(String(50), nullable=False, default="Asia/Ho_Chi_Minh")
+
     # ------------------- Per-branch budget mutation limits ------------------
     # Drive the Raise/Cut budget buttons on /action-needed. Defaults preserve
     # the legacy hardcoded behavior: +25% raise, -50% cut, no absolute cap.

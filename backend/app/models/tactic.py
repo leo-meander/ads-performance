@@ -16,6 +16,11 @@ PRESET_SUNSETTING = "sunsetting"
 PRESET_SCALE_WINNING_ADSET = "scale_winning_adset"
 PRESET_SCALE_WINNING_CAMPAIGN = "scale_winning_campaign"
 PRESET_CUSTOM_RULE = "custom_rule"
+# Madgicx-style intraday SURF: 15-min cron, spend-threshold triggers, tier
+# bands, Double Check, end-of-day timezone-aware revert. Lives in its own
+# service package (app/services/surf_intraday/) — does NOT route through
+# rule_engine.evaluate. See engine.poll_active_surfs for the entry point.
+PRESET_SURF_INTRADAY_CAMPAIGN = "surf_intraday_campaign"
 
 ALL_PRESETS = {
     PRESET_STOP_LOSS_AD,
@@ -30,6 +35,7 @@ ALL_PRESETS = {
     PRESET_SCALE_WINNING_ADSET,
     PRESET_SCALE_WINNING_CAMPAIGN,
     PRESET_CUSTOM_RULE,
+    PRESET_SURF_INTRADAY_CAMPAIGN,
 }
 
 

@@ -1,0 +1,35 @@
+# Every 15 min — poll active SURF Intraday tactics, raise budgets on
+# threshold crossings when ROAS hits a tier band. Bounded inline work
+# (≤ 50 campaigns × ~2s Meta Insights call). Returns 200 with summary.
+name: Cron — SURF intraday poll
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+env:
+  BACKEND_URL: https://ads-performance-fuls.zeabur.app
+  ENDPOINT: surf-intraday-poll
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/internal/tasks/surf-intraday-poll
+        env:
+          INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}
+        run: |
+          set -euo pipefail
+          echo "Triggering endpoint: $ENDPOINT"
+          HTTP_CODE=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+            -X POST \
+            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET" \
+            "$BACKEND_URL/api/internal/tasks/$ENDPOINT")
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/body.txt || true
+          echo
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::endpoint $ENDPOINT returned HTTP $HTTP_CODE"
+            exit 1
+          fi

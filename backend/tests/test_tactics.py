@@ -710,12 +710,21 @@ def test_dynamic_threshold_resolver_clamps_to_safety_bound_for_surf():
 
 
 def test_all_presets_have_required_fields():
+    # Engine-driven presets that intentionally have NO AutomationRule specs:
+    # they own their own scheduling loop (cron + service package) instead of
+    # going through the rule_engine evaluator.
+    _ENGINE_DRIVEN_PRESETS = {"surf_intraday_campaign"}
+
     for key, preset in PRESETS.items():
         assert preset.name
         assert preset.default_config
         assert preset.revert_policy in (REVERT_NEXT_DAY, REVERT_NONE, REVERT_ON_RECOVERY)
-        # rule_specs_fn must accept the default config and return at least one spec.
+        # rule_specs_fn must accept the default config; engine-driven presets
+        # may return [] (no AutomationRule materialization).
         specs = preset.rule_specs_fn({**preset.default_config, "_preset_type": key})
+        if key in _ENGINE_DRIVEN_PRESETS:
+            assert specs == [], f"engine-driven preset {key} unexpectedly produced rule specs"
+            continue
         assert specs, f"preset {key} produced no rule specs"
         for s in specs:
             assert s.entity_level in ("campaign", "ad_set", "ad")
