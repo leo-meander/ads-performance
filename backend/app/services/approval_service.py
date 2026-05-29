@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
-from app.models.approval import ApprovalReviewer, ComboApproval
+from app.models.approval import ApprovalBatch, ApprovalReviewer, ComboApproval
 from app.models.user import User
 from app.services.email_service import render_approval_result_email, render_review_request_email
 from app.services.figma_service import ensure_template_from_url
@@ -462,6 +462,441 @@ def resubmit(
         submitted_by=creator_id,
         deadline=deadline,
     )
+
+
+def get_approvals_list_summary(db: Session, approvals: list[ComboApproval]) -> list[dict]:
+    """Lightweight list rows for the Approvals table — batched, no per-row N+1.
+
+    Only resolves what the list UI renders (combo name, submitter, reviewer
+    name + status). Deliberately skips the heavy copy/material/branch/angle/
+    keypoint aggregation that get_approval_detail does for the detail page.
+    """
+    if not approvals:
+        return []
+
+    approval_ids = [a.id for a in approvals]
+    combo_ids = list({a.combo_id for a in approvals if a.combo_id})
+    submitter_ids = {a.submitted_by for a in approvals if a.submitted_by}
+
+    combos = (
+        db.query(AdCombo).filter(AdCombo.id.in_(combo_ids)).all() if combo_ids else []
+    )
+    combo_by_id = {c.id: c for c in combos}
+
+    reviewers = (
+        db.query(ApprovalReviewer)
+        .filter(ApprovalReviewer.approval_id.in_(approval_ids))
+        .all()
+    )
+    reviewer_ids = {r.reviewer_id for r in reviewers}
+
+    user_ids = submitter_ids | reviewer_ids
+    users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+    user_by_id = {u.id: u for u in users}
+
+    reviewers_by_approval: dict[str, list] = {}
+    for r in reviewers:
+        reviewers_by_approval.setdefault(r.approval_id, []).append(r)
+
+    items = []
+    for a in approvals:
+        combo = combo_by_id.get(a.combo_id)
+        submitter = user_by_id.get(a.submitted_by) if a.submitted_by else None
+        reviewer_list = [
+            {
+                "reviewer_id": r.reviewer_id,
+                "reviewer_name": (user_by_id.get(r.reviewer_id).full_name if user_by_id.get(r.reviewer_id) else "Unknown"),
+                "status": r.status,
+            }
+            for r in reviewers_by_approval.get(a.id, [])
+        ]
+        items.append({
+            "id": a.id,
+            "batch_id": a.batch_id,
+            "combo_id": a.combo_id,
+            "combo_name": combo.ad_name if combo else None,
+            "combo_id_display": combo.combo_id if combo else None,
+            "round": a.round,
+            "status": a.status,
+            "submitted_by": a.submitted_by,
+            "submitter_name": submitter.full_name if submitter else None,
+            "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None,
+            "deadline": a.deadline.isoformat() if a.deadline else None,
+            "resolved_at": a.resolved_at.isoformat() if a.resolved_at else None,
+            "reviewers": reviewer_list,
+        })
+    return items
+
+
+def _rollup_batch_status(child_statuses: list[str]) -> str:
+    """Whole-batch status from its versions. ANY reject → REJECTED;
+    ANY needs-revision → NEEDS_REVISION; ALL approved → APPROVED; else pending.
+    Mirrors the single-approval terminal rules, applied across versions."""
+    if any(s == "REJECTED" for s in child_statuses):
+        return "REJECTED"
+    if any(s == "NEEDS_REVISION" for s in child_statuses):
+        return "NEEDS_REVISION"
+    if child_statuses and all(s == "APPROVED" for s in child_statuses):
+        return "APPROVED"
+    return "PENDING_APPROVAL"
+
+
+def submit_batch(
+    db: Session,
+    versions: list[dict],
+    reviewer_ids: list[str],
+    submitted_by: str,
+    deadline: str | None = None,
+    note: str | None = None,
+) -> ApprovalBatch:
+    """Submit N combo versions of one target as a single review batch.
+
+    `versions` is a list of {combo_id, working_file_url?, working_file_label?}.
+    Each becomes its own combo_approval (own launch lifecycle) sharing one
+    batch_id + the same reviewer set. Reviewers get ONE consolidated
+    request (notification + email) covering all versions, not one per version.
+    """
+    if not versions:
+        raise ValueError("At least one version is required")
+    if not reviewer_ids:
+        raise ValueError("At least one reviewer is required")
+
+    combo_ids = [v["combo_id"] for v in versions]
+    combos = db.query(AdCombo).filter(AdCombo.id.in_(combo_ids)).all()
+    combo_by_id = {c.id: c for c in combos}
+    missing = [cid for cid in combo_ids if cid not in combo_by_id]
+    if missing:
+        raise ValueError(f"Combo(s) not found: {', '.join(missing)}")
+
+    now = datetime.now(timezone.utc)
+
+    parsed_deadline = None
+    if deadline:
+        from datetime import datetime as dt_cls
+        try:
+            parsed_deadline = dt_cls.fromisoformat(deadline)
+        except (ValueError, TypeError):
+            pass
+
+    batch = ApprovalBatch(
+        submitted_by=submitted_by,
+        round=1,
+        submitted_at=now,
+        deadline=parsed_deadline,
+        note=(note or "").strip() or None,
+    )
+    db.add(batch)
+    db.flush()  # batch.id
+
+    # Create one combo_approval per version, each carrying the same reviewer set.
+    child_approvals = []
+    for v in versions:
+        combo = combo_by_id[v["combo_id"]]
+        max_round = (
+            db.query(func.max(ComboApproval.round))
+            .filter(ComboApproval.combo_id == combo.id)
+            .scalar()
+        )
+        approval = ComboApproval(
+            batch_id=batch.id,
+            combo_id=combo.id,
+            round=(max_round or 0) + 1,
+            status="PENDING_APPROVAL",
+            submitted_by=submitted_by,
+            submitted_at=now,
+            deadline=parsed_deadline,
+            working_file_url=v.get("working_file_url"),
+            working_file_label=v.get("working_file_label"),
+            note=(note or "").strip() or None,
+        )
+        db.add(approval)
+        db.flush()
+        child_approvals.append((approval, combo))
+
+        for rid in reviewer_ids:
+            db.add(ApprovalReviewer(
+                approval_id=approval.id,
+                reviewer_id=rid,
+                status="PENDING",
+                notified_system_at=now,
+            ))
+
+    submitter = db.query(User).filter(User.id == submitted_by).first()
+    submitter_name = submitter.full_name if submitter else "Unknown"
+
+    version_count = len(child_approvals)
+    first_combo = child_approvals[0][1]
+    first_name = first_combo.ad_name or first_combo.combo_id
+    batch_label = (
+        first_name if version_count == 1
+        else f"{first_name} (+{version_count - 1} more)"
+    )
+    branch = (
+        db.query(AdAccount).filter(AdAccount.id == first_combo.branch_id).first()
+        if first_combo.branch_id else None
+    )
+    branch_name = branch.account_name if branch else None
+
+    # One consolidated notification + email per reviewer.
+    email_tasks = []
+    for rid in reviewer_ids:
+        create_notification(
+            db,
+            user_id=rid,
+            type="REVIEW_REQUESTED",
+            title=f"Review requested: {batch_label}",
+            body=(
+                f"{submitter_name} submitted {version_count} "
+                f"version{'s' if version_count != 1 else ''} for your review."
+            ),
+            reference_id=batch.id,
+            reference_type="approval_batch",
+        )
+        reviewer = db.query(User).filter(User.id == rid).first()
+        if reviewer and reviewer.notification_email:
+            subject, html = render_review_request_email(
+                combo_name=batch_label,
+                reviewer_name=reviewer.full_name,
+                submitter_name=submitter_name,
+                working_file_url=child_approvals[0][0].working_file_url,
+                approval_id=batch.id,
+                branch_name=branch_name,
+                deadline=parsed_deadline,
+                platform_url=settings.FRONTEND_URL,
+            )
+            email_tasks.append((reviewer.email, subject, html))
+
+    db.commit()
+
+    # Auto-register each version's Figma working file as a reusable template.
+    # Idempotent + best-effort: a Figma hiccup must never block submission.
+    for approval, combo in child_approvals:
+        if approval.working_file_url:
+            try:
+                ensure_template_from_url(
+                    db,
+                    figma_url=approval.working_file_url,
+                    branch_id=combo.branch_id,
+                    name=combo.ad_name or combo.combo_id,
+                    created_by=submitted_by,
+                )
+            except Exception:
+                logger.exception("Auto-template registration failed for combo %s", combo.id)
+
+    _queue_emails(email_tasks)
+    return batch
+
+
+def record_batch_decision(
+    db: Session,
+    batch_id: str,
+    reviewer_id: str,
+    decision: str,
+    feedback: str | None = None,
+) -> ApprovalBatch:
+    """Apply ONE reviewer decision to every version in a batch (all-or-nothing).
+
+    The reviewer decides the batch as a whole; we write that decision onto
+    their reviewer row for each version, then roll up each version's status
+    with the same rules as a single approval. The creator gets ONE
+    consolidated result notification.
+    """
+    if decision not in ("APPROVED", "REJECTED", "NEEDS_REVISION"):
+        raise ValueError("Decision must be APPROVED, REJECTED, or NEEDS_REVISION")
+
+    batch = db.query(ApprovalBatch).filter(ApprovalBatch.id == batch_id).first()
+    if not batch:
+        raise ValueError("Batch not found")
+
+    children = (
+        db.query(ComboApproval)
+        .filter(ComboApproval.batch_id == batch_id)
+        .all()
+    )
+    if not children:
+        raise ValueError("Batch has no versions")
+
+    current_status = _rollup_batch_status([c.status for c in children])
+    if current_status != "PENDING_APPROVAL":
+        raise ValueError(f"Batch is already {current_status}")
+
+    child_ids = [c.id for c in children]
+    my_rows = (
+        db.query(ApprovalReviewer)
+        .filter(
+            ApprovalReviewer.approval_id.in_(child_ids),
+            ApprovalReviewer.reviewer_id == reviewer_id,
+        )
+        .all()
+    )
+    if not my_rows:
+        raise ValueError("You are not assigned as a reviewer for this batch")
+    if any(r.status != "PENDING" for r in my_rows):
+        raise ValueError("You have already decided on this batch")
+
+    now = datetime.now(timezone.utc)
+    cleaned_feedback = (feedback or "").strip() or None
+
+    # Write this reviewer's decision on every version.
+    for r in my_rows:
+        r.status = decision
+        r.decided_at = now
+        if cleaned_feedback is not None:
+            r.feedback = cleaned_feedback
+
+    # Roll up each version's status.
+    all_reviewers = (
+        db.query(ApprovalReviewer)
+        .filter(ApprovalReviewer.approval_id.in_(child_ids))
+        .all()
+    )
+    reviewers_by_child: dict[str, list] = {}
+    for r in all_reviewers:
+        reviewers_by_child.setdefault(r.approval_id, []).append(r)
+
+    for child in children:
+        rows = reviewers_by_child.get(child.id, [])
+        if decision == "REJECTED":
+            child.status = "REJECTED"
+            child.resolved_at = now
+        elif decision == "NEEDS_REVISION":
+            child.status = "NEEDS_REVISION"
+            child.resolved_at = now
+        else:
+            if rows and all(x.status == "APPROVED" for x in rows):
+                child.status = "APPROVED"
+                child.resolved_at = now
+
+    batch_status = _rollup_batch_status([c.status for c in children])
+
+    email_tasks = []
+    if batch_status != "PENDING_APPROVAL":
+        _notify_creator_of_batch_result(
+            db, batch, children, batch_status, reviewer_id, email_tasks
+        )
+
+    db.commit()
+
+    # Per approved version, queue its Figma render (outcome already committed).
+    if batch_status == "APPROVED":
+        for child in children:
+            if child.status == "APPROVED":
+                try:
+                    _auto_queue_figma_render(db, child)
+                except Exception:
+                    logger.exception(
+                        "Auto-queue Figma render on batch approval failed for %s", child.id
+                    )
+
+    _queue_emails(email_tasks)
+    return batch
+
+
+def _notify_creator_of_batch_result(
+    db: Session,
+    batch: ApprovalBatch,
+    children: list[ComboApproval],
+    event: str,
+    actor_id: str | None,
+    email_tasks: list,
+):
+    """One consolidated creator notification when a batch resolves."""
+    creator = (
+        db.query(User).filter(User.id == batch.submitted_by).first()
+        if batch.submitted_by else None
+    )
+    if not creator:
+        return
+
+    count = len(children)
+    first_combo = (
+        db.query(AdCombo).filter(AdCombo.id == children[0].combo_id).first()
+        if children else None
+    )
+    first_name = (first_combo.ad_name if first_combo else None) or "your submission"
+    label = first_name if count == 1 else f"{first_name} (+{count - 1} more)"
+
+    actor_name = None
+    if actor_id:
+        actor = db.query(User).filter(User.id == actor_id).first()
+        actor_name = actor.full_name if actor else None
+
+    if event == "APPROVED":
+        title = f"Approved: {label}"
+        body = f"All {count} version{'s' if count != 1 else ''} of {label} were approved. You can now launch them."
+        notif_type = "COMBO_APPROVED"
+    elif event == "NEEDS_REVISION":
+        title = f"Needs revision: {label}"
+        body = f"{actor_name or 'A reviewer'} asked for changes on {label}. Revise and submit a new round."
+        notif_type = "COMBO_NEEDS_REVISION"
+    else:
+        title = f"Rejected: {label}"
+        body = f"{label} was rejected by {actor_name or 'a reviewer'}. Check the working files for feedback."
+        notif_type = "COMBO_REJECTED"
+
+    create_notification(
+        db,
+        user_id=creator.id,
+        type=notif_type,
+        title=title,
+        body=body,
+        reference_id=batch.id,
+        reference_type="approval_batch",
+    )
+    if creator.notification_email:
+        subject, html = render_approval_result_email(
+            combo_name=label,
+            creator_name=creator.full_name,
+            event=event,
+            reviewer_name=actor_name,
+            approval_id=batch.id,
+            branch_name=None,
+            platform_url=settings.FRONTEND_URL,
+        )
+        email_tasks.append((creator.email, subject, html))
+
+
+def get_batch_detail(db: Session, batch_id: str) -> dict | None:
+    """Full batch detail: shared metadata, batch-level reviewer states, and the
+    full per-version detail for each combo_approval in the batch."""
+    batch = db.query(ApprovalBatch).filter(ApprovalBatch.id == batch_id).first()
+    if not batch:
+        return None
+
+    children = (
+        db.query(ComboApproval)
+        .filter(ComboApproval.batch_id == batch_id)
+        .order_by(ComboApproval.created_at.asc())
+        .all()
+    )
+
+    versions = []
+    for child in children:
+        detail = get_approval_detail(db, child.id)
+        if detail:
+            versions.append(detail)
+
+    # Reviewer states are identical across versions (decision is applied to the
+    # whole batch), so derive the batch-level reviewer list from the first one.
+    reviewers = versions[0]["reviewers"] if versions else []
+
+    submitter = (
+        db.query(User).filter(User.id == batch.submitted_by).first()
+        if batch.submitted_by else None
+    )
+
+    return {
+        "id": batch.id,
+        "round": batch.round,
+        "status": _rollup_batch_status([c.status for c in children]),
+        "submitted_by": batch.submitted_by,
+        "submitter_name": submitter.full_name if submitter else None,
+        "submitted_at": batch.submitted_at.isoformat() if batch.submitted_at else None,
+        "deadline": batch.deadline.isoformat() if batch.deadline else None,
+        "note": batch.note,
+        "reviewers": reviewers,
+        "versions": versions,
+    }
 
 
 def get_approval_detail(db: Session, approval_id: str) -> dict | None:
