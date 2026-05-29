@@ -29,6 +29,7 @@ from app.models.ad import Ad
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.rule import AutomationRule
+from app.models.surf import SurfCheckpoint, SurfRun
 from app.models.tactic import Tactic
 from app.models.user import User
 from app.services import tactic_presets, tactic_service
@@ -561,6 +562,90 @@ def get_tactic_diagnostics(
             "last_run_at": tactic.last_run_at.isoformat() if tactic.last_run_at else None,
             "rules": rules_data,
         })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/tactics/{tactic_id}/surf-runs")
+def list_surf_runs(
+    tactic_id: str,
+    limit: int = 10,
+    current_user: User = Depends(require_section("automation", "view")),
+    db: Session = Depends(get_db),
+):
+    """Return recent SURF intraday runs for this tactic with each run's
+    checkpoints embedded. Powers the "Runs Today" panel on /tactics.
+
+    Most-recent run first. `limit` caps how many runs come back (each run
+    can have 20+ checkpoints if the cron has been firing all day, so we
+    default low and let the UI ask for more).
+    """
+    try:
+        tactic = tactic_service.get_tactic(db, tactic_id)
+        if not tactic:
+            return _api_response(error="Tactic not found")
+
+        runs = (
+            db.query(SurfRun)
+            .filter(SurfRun.tactic_id == tactic_id)
+            .order_by(SurfRun.run_date.desc(), SurfRun.created_at.desc())
+            .limit(max(1, min(limit, 30)))
+            .all()
+        )
+
+        out: list[dict] = []
+        for run in runs:
+            checkpoints = (
+                db.query(SurfCheckpoint)
+                .filter(SurfCheckpoint.run_id == run.id)
+                .order_by(SurfCheckpoint.checked_at.asc())  # chronological for UI timeline
+                .all()
+            )
+            campaign = db.query(Campaign).filter(Campaign.id == run.campaign_id).first()
+            out.append({
+                "id": run.id,
+                "tactic_id": run.tactic_id,
+                "campaign_id": run.campaign_id,
+                "campaign_name": campaign.name if campaign else "(deleted)",
+                "run_date": run.run_date.isoformat() if run.run_date else None,
+                "timezone": run.timezone,
+                "origin_budget": float(run.origin_budget) if run.origin_budget is not None else None,
+                "current_budget": float(run.current_budget) if run.current_budget is not None else None,
+                "total_increase_today": float(run.total_increase_today or 0),
+                "last_threshold_hit": (
+                    float(run.last_threshold_hit) if run.last_threshold_hit is not None else None
+                ),
+                "last_roas_at_check": (
+                    float(run.last_roas_at_check) if run.last_roas_at_check is not None else None
+                ),
+                "status": run.status,
+                "reverted_at": run.reverted_at.isoformat() if run.reverted_at else None,
+                "currency": run.currency,
+                "checkpoints": [
+                    {
+                        "id": cp.id,
+                        "checked_at": cp.checked_at.isoformat() if cp.checked_at else None,
+                        "spend_at_check": float(cp.spend_at_check) if cp.spend_at_check is not None else None,
+                        "roas_at_check": float(cp.roas_at_check) if cp.roas_at_check is not None else None,
+                        "threshold_crossed": (
+                            float(cp.threshold_crossed) if cp.threshold_crossed is not None else None
+                        ),
+                        "tier_label": cp.tier_label,
+                        "multiplier_applied": (
+                            float(cp.multiplier_applied) if cp.multiplier_applied is not None else None
+                        ),
+                        "budget_before": float(cp.budget_before) if cp.budget_before is not None else None,
+                        "budget_after": float(cp.budget_after) if cp.budget_after is not None else None,
+                        "capped_by": cp.capped_by,
+                        "meta_api_called": cp.meta_api_called,
+                        "meta_api_success": cp.meta_api_success,
+                        "meta_api_error": cp.meta_api_error,
+                    }
+                    for cp in checkpoints
+                ],
+            })
+
+        return _api_response(data={"runs": out})
     except Exception as e:
         return _api_response(error=str(e))
 

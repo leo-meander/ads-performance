@@ -10,6 +10,7 @@ import {
   LineChart, Line,
 } from 'recharts'
 import { useAuth } from '@/components/AuthContext'
+import SurfRunsPanel from '@/components/tactics/SurfRunsPanel'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -659,6 +660,13 @@ export default function TacticsPage() {
                               </ul>
                             </div>
                           </div>
+
+                          {/* SURF Intraday runs panel — only for engine-driven SURF intraday tactics. */}
+                          {t.preset_type === 'surf_intraday_campaign' && (
+                            <div className="mt-4">
+                              <SurfRunsPanel tacticId={t.id} />
+                            </div>
+                          )}
 
                           {expData.diagnostics && (
                             <div className="mt-4">

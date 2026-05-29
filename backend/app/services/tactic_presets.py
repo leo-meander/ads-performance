@@ -25,6 +25,7 @@ from app.models.tactic import (
     PRESET_SUNSETTING,
     PRESET_SURF_ADSET,
     PRESET_SURF_CAMPAIGN,
+    PRESET_SURF_INTRADAY_CAMPAIGN,
 )
 
 # Revert policies — drives the daily-cron revert phase.
@@ -413,6 +414,53 @@ PRESETS: dict[str, TacticPreset] = {
             "action_params": None,
         },
         rule_specs_fn=_custom_rule_specs,
+        revert_policy=REVERT_NONE,
+    ),
+    PRESET_SURF_INTRADAY_CAMPAIGN: TacticPreset(
+        name="SURF Intraday — Campaign",
+        description=(
+            "Madgicx-style intraday SURF. Polls campaigns every 15 min; "
+            "raises budget at spend thresholds when ROAS hits a tier band; "
+            "reverts to origin at the branch's local midnight."
+        ),
+        default_config={
+            # ---------- core: do we even run? ----------
+            "dry_run": True,           # ★ DEFAULT TRUE — must explicitly turn off
+            "kill_switch": False,      # operator panic switch — short-circuits the engine
+            "campaign_ids": [],        # per-campaign opt-in. Empty list = no-op tactic.
+
+            # ---------- spend thresholds (% of origin_budget) ----------
+            # 6 ticks per day at 30/40/50/60/70/85% of origin.
+            "spend_thresholds_pct": [0.30, 0.40, 0.50, 0.60, 0.70, 0.85],
+
+            # ---------- ROAS tier bands ----------
+            # First match wins. Top tier has roas_max=None (unbounded).
+            "tiers": [
+                {"roas_min": 1.74, "roas_max": 2.03, "multiplier": 1.30},
+                {"roas_min": 2.03, "roas_max": 2.61, "multiplier": 1.50},
+                {"roas_min": 2.61, "roas_max": None, "multiplier": 2.00},
+            ],
+
+            # ---------- Double Check ----------
+            "double_check_enabled": True,
+            "double_check_drop_pct": 0.20,    # ROAS fell ≥20% since last check
+            "double_check_cut_pct": 0.80,     # → multiply current budget by 0.80
+
+            # ---------- caps (engine reads ad_accounts.max_*_per_click_abs
+            # for the per_check cap; surf_limit_per_day lives on the tactic
+            # because it's a per-tactic policy, not a per-branch one) ----------
+            "surf_limit_per_day": None,       # NULL = no per-day cap
+            "max_budget_cap_multiplier": 3.0, # never exceed origin × 3.0
+
+            # ---------- engine accepts these as overrides but defaults work ----
+            # (no engine-side knobs that go here yet)
+        },
+        # No rule_specs_fn — SURF intraday does NOT materialize AutomationRule
+        # rows; it has its own service package and cron. Tactic preset row is
+        # just for UI dropdown + config storage.
+        rule_specs_fn=lambda cfg: [],
+        # Revert runs via /internal/tasks/surf-end-of-day-revert (timezone
+        # aware), NOT through the rule_engine daily revert phase.
         revert_policy=REVERT_NONE,
     ),
 }

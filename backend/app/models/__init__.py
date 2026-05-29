@@ -21,6 +21,7 @@ from app.models.notification import Notification
 from app.models.video_transcript import VideoTranscript
 from app.models.reservation import Reservation
 from app.models.rule import AutomationRule
+from app.models.surf import SurfCheckpoint, SurfRun
 from app.models.tactic import Tactic
 from app.models.action_log import ActionLog
 from app.models.change_log_entry import ChangeLogEntry
@@ -93,6 +94,8 @@ __all__ = [
     "SpyTrackedPage",
     "SpySavedAd",
     "SpyAnalysisReport",
+    "SurfCheckpoint",
+    "SurfRun",
     "User",
     "UserPermission",
     "UserPagePermission",

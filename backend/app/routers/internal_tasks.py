@@ -444,6 +444,71 @@ def trigger_figma_job_poll(
     return _api_response(data={"status": "ok", **counts})
 
 
+# ------------------------------------------------------------ SURF Intraday --
+
+
+def _do_surf_intraday_poll(db):
+    """Poll every active SURF intraday tactic for threshold crossings.
+
+    Inline (synchronous) — the summary is returned to the cron so GitHub
+    Actions logs surface "polled N campaigns, took N actions". Work is bounded
+    by (active tactics × campaigns per tactic × 1 Meta API call each).
+    Typical run: ≤ 5 tactics × 3 campaigns × ~2s = ~30s, well under 225s.
+    """
+    from app.services.surf_intraday import poll_active_surfs
+    return poll_active_surfs(db)
+
+
+def _do_surf_end_of_day_revert(db):
+    """Restore origin_budget on every SurfRun whose local-tz day has rolled.
+
+    Self-filters by branch timezone — Saigon reverts at 17:00 UTC, Osaka at
+    15:00 UTC. Cron fires hourly; this function is a no-op when no runs are
+    due, so it's cheap to over-fire.
+    """
+    from app.services.surf_intraday import revert_end_of_day_runs
+    return revert_end_of_day_runs(db)
+
+
+@router.post("/internal/tasks/surf-intraday-poll", status_code=200)
+def trigger_surf_intraday_poll(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Every 15 min: iterate active SURF intraday tactics, fetch Meta intraday
+    metrics, apply tier-band budget boost when spend crosses a threshold.
+
+    Inline so the response carries the summary {tactics, polled, actions,
+    errors}. If you scale this above ~50 active campaigns, switch to
+    _run_in_thread to stay under the 225s ingress budget.
+    """
+    _require_secret(x_internal_secret)
+    db = SessionLocal()
+    try:
+        summary = _do_surf_intraday_poll(db)
+    finally:
+        db.close()
+    return _api_response(data={"status": "ok", **summary})
+
+
+@router.post("/internal/tasks/surf-end-of-day-revert", status_code=200)
+def trigger_surf_end_of_day_revert(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Hourly: revert any SurfRun whose local-tz day has ended.
+
+    Inline. Each due run = 1 Meta budget write + DB updates. With 6 MEANDER
+    branches, expect ≤ 6 reverts per cron invocation (one per branch as its
+    local midnight passes), so well under the ingress budget.
+    """
+    _require_secret(x_internal_secret)
+    db = SessionLocal()
+    try:
+        summary = _do_surf_end_of_day_revert(db)
+    finally:
+        db.close()
+    return _api_response(data={"status": "ok", **summary})
+
+
 # --------------------------------------------------- recommendation engines --
 
 _VALID_CADENCES = {"daily", "weekly", "monthly", "seasonality"}
