@@ -5,7 +5,6 @@ import { useParams, useRouter } from 'next/navigation'
 import { useAuth } from '@/components/AuthContext'
 import ApprovalStatusBadge from '@/components/ApprovalStatusBadge'
 import ReviewerStatusList from '@/components/ReviewerStatusList'
-import WorkingFileLinkCard from '@/components/WorkingFileLinkCard'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -256,10 +255,48 @@ export default function BatchDetailPage() {
         {/* Sidebar */}
         <div className="space-y-4">
           <ReviewerStatusList reviewers={batch.reviewers} />
-          <WorkingFileLinkCard
-            url={batch.versions[0]?.working_file_url || null}
-            label={batch.versions[0]?.working_file_label || null}
-          />
+
+          {/* Working files — one entry per version */}
+          <div className="bg-white rounded-xl border border-gray-200 p-4">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">Working Files</h3>
+            {batch.versions.some(v => v.working_file_url) ? (
+              <div className="space-y-3">
+                {batch.versions.map((v, i) => (
+                  <div key={v.id} className={i > 0 ? 'pt-3 border-t border-gray-100' : ''}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">
+                        {i + 1}
+                      </span>
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {v.working_file_label || v.combo_name || v.combo_id_display || `Version ${i + 1}`}
+                      </p>
+                    </div>
+                    {v.working_file_url ? (
+                      <>
+                        <p className="text-xs text-gray-400 break-all mb-2">{v.working_file_url}</p>
+                        <a
+                          href={v.working_file_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-block bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+                          title={v.working_file_url}
+                        >
+                          Open Working File →
+                        </a>
+                      </>
+                    ) : (
+                      <p className="text-xs text-gray-400">No working file linked</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-400">No working file linked</p>
+            )}
+            <p className="text-[11px] text-gray-400 mt-3">
+              If you have feedback, please make changes directly on these files.
+            </p>
+          </div>
         </div>
       </div>
     </div>
