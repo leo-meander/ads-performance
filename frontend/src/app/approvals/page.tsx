@@ -251,7 +251,7 @@ export default function ApprovalsPage() {
       <div className="flex flex-wrap gap-2 mb-4">
         {chips.map(chip => {
           const active = statusFilter === chip.key
-          const dim = chip.key && chip.count === 0
+          const dim = chip.key !== '' && chip.count === 0
           return (
             <button
               key={chip.key || 'all'}
