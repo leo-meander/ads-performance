@@ -268,7 +268,7 @@ export default function BatchDetailPage() {
                         {i + 1}
                       </span>
                       <p className="text-sm font-medium text-gray-900 truncate">
-                        {v.working_file_label || v.combo_name || v.combo_id_display || `Version ${i + 1}`}
+                        {v.combo_name || v.combo_id_display || v.working_file_label || `Version ${i + 1}`}
                       </p>
                     </div>
                     {v.working_file_url ? (
