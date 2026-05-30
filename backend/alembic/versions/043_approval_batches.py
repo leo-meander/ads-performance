@@ -34,11 +34,14 @@ def upgrade() -> None:
     is_postgres = bind.dialect.name == "postgresql"
 
     if is_postgres:
+        # NOTE: all ids in this app are app-generated VARCHAR(36)
+        # (UUIDType = String(36)), NOT native Postgres UUID. submitted_by must
+        # match users.id's type (VARCHAR), otherwise the FK can't be created.
         op.execute(
             """
             CREATE TABLE IF NOT EXISTS approval_batches (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                submitted_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                id VARCHAR(36) PRIMARY KEY,
+                submitted_by VARCHAR(36) REFERENCES users(id) ON DELETE SET NULL,
                 round INTEGER NOT NULL DEFAULT 1,
                 submitted_at TIMESTAMPTZ NOT NULL,
                 deadline TIMESTAMPTZ,
@@ -55,7 +58,7 @@ def upgrade() -> None:
         op.execute(
             """
             ALTER TABLE combo_approvals
-            ADD COLUMN IF NOT EXISTS batch_id UUID
+            ADD COLUMN IF NOT EXISTS batch_id VARCHAR(36)
             REFERENCES approval_batches(id) ON DELETE CASCADE;
             """
         )
