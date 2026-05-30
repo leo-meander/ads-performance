@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { Plus, Send, Layers, Search, AlertTriangle } from 'lucide-react'
+import { Plus, Send, Layers, Search, AlertTriangle, ChevronRight, ChevronDown } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
 import ApprovalStatusBadge from '@/components/ApprovalStatusBadge'
 
@@ -24,8 +24,11 @@ interface Approval {
   reviewers: { reviewer_name: string; status: string }[]
 }
 
-// A row in the rendered table: either a single standalone approval, or a
-// batch aggregating N child approvals into one all-or-nothing review.
+// A row in the rendered table:
+//  - 'single': all standalone rounds of ONE combo, newest round as head, older
+//    rounds collapsed into history (a re-submit after needs-revision/reject adds
+//    a new round row — we fold them so the list shows one line per combo).
+//  - 'batch': N child approvals reviewed all-or-nothing in one batch.
 interface Row {
   kind: 'single' | 'batch'
   key: string
@@ -44,6 +47,7 @@ function rollupStatus(statuses: string[]): string {
 
 function groupRows(approvals: Approval[]): Row[] {
   const batches = new Map<string, Approval[]>()
+  const combos = new Map<string, Approval[]>()
   const rows: Row[] = []
   for (const a of approvals) {
     if (a.batch_id) {
@@ -57,7 +61,21 @@ function groupRows(approvals: Approval[]): Row[] {
         rows.push({ kind: 'batch', key: a.batch_id, members })
       }
     } else {
-      rows.push({ kind: 'single', key: a.id, members: [a] })
+      // Fold every standalone round of the same combo into one row.
+      const existing = combos.get(a.combo_id)
+      if (existing) {
+        existing.push(a)
+      } else {
+        const members: Approval[] = [a]
+        combos.set(a.combo_id, members)
+        rows.push({ kind: 'single', key: a.combo_id, members })
+      }
+    }
+  }
+  // Newest round first inside each combo group → head is the current round.
+  for (const row of rows) {
+    if (row.kind === 'single' && row.members.length > 1) {
+      row.members.sort((x, y) => (y.round || 0) - (x.round || 0))
     }
   }
   return rows
@@ -102,6 +120,15 @@ export default function ApprovalsPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [search, setSearch] = useState('')
   const [resending, setResending] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  const toggleExpand = (key: string) =>
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
 
   const handleResend = async (approvalId: string) => {
     if (resending) return
@@ -306,9 +333,13 @@ export default function ApprovalsPage() {
                 const href = isBatch ? `/approvals/batch/${row.key}` : `/approvals/${head.id}`
                 // Reviewers are identical across batch members, so the head row's are representative.
                 const approvedReviewers = head.reviewers.filter(r => r.status === 'APPROVED').length
+                // Older standalone rounds, folded under the latest one as history.
+                const olderRounds = isBatch ? [] : row.members.slice(1)
+                const hasHistory = olderRounds.length > 0
+                const isExpanded = expanded.has(row.key)
                 return (
+                  <Fragment key={row.key}>
                   <tr
-                    key={row.key}
                     className={`border-b border-gray-50 hover:bg-gray-50 ${dl.overdue ? 'bg-red-50/40' : ''}`}
                   >
                     <td className={`px-4 py-3 ${dl.overdue ? 'border-l-2 border-l-red-500' : ''}`}>
@@ -321,6 +352,16 @@ export default function ApprovalsPage() {
                         <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-medium text-gray-400 uppercase tracking-wide">
                           <Layers className="w-3 h-3" /> batch
                         </span>
+                      )}
+                      {hasHistory && (
+                        <button
+                          onClick={() => toggleExpand(row.key)}
+                          className="ml-2 inline-flex items-center gap-0.5 text-[11px] font-medium text-gray-500 hover:text-gray-800 align-middle"
+                          title={isExpanded ? 'Hide previous rounds' : 'Show previous rounds'}
+                        >
+                          {isExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                          {row.members.length} rounds
+                        </button>
                       )}
                       {isBatch && (
                         <ol className="mt-1 space-y-0.5">
@@ -389,6 +430,31 @@ export default function ApprovalsPage() {
                       )}
                     </td>
                   </tr>
+                  {/* History: older standalone rounds, shown when expanded. */}
+                  {isExpanded && olderRounds.map(m => {
+                    const mApproved = m.reviewers.filter(r => r.status === 'APPROVED').length
+                    return (
+                      <tr key={m.id} className="border-b border-gray-50 bg-gray-50/40">
+                        <td className="px-4 py-2 pl-10">
+                          <Link href={`/approvals/${m.id}`} className="text-xs text-gray-500 hover:text-blue-600">
+                            Round {m.round}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-2"><ApprovalStatusBadge status={m.status} /></td>
+                        <td className="px-4 py-2 text-xs text-gray-400">{m.submitter_name || '-'}</td>
+                        <td className="px-4 py-2 text-xs text-gray-400">{m.round}</td>
+                        <td className="px-4 py-2 text-xs text-gray-400 tabular-nums">{mApproved}/{m.reviewers.length}</td>
+                        <td className="px-4 py-2 text-xs text-gray-400">
+                          {m.deadline ? new Date(m.deadline).toLocaleDateString() : '-'}
+                        </td>
+                        <td className="px-4 py-2 text-xs text-gray-400">
+                          {m.submitted_at ? new Date(m.submitted_at).toLocaleDateString() : '-'}
+                        </td>
+                        <td className="px-4 py-2 text-xs text-gray-300">-</td>
+                      </tr>
+                    )
+                  })}
+                  </Fragment>
                 )
               })}
             </tbody>
