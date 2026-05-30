@@ -1204,6 +1204,116 @@ def resend_review_request_emails(
     }
 
 
+def resend_batch_review_request_emails(
+    db: Session,
+    batch_id: str,
+    requester_id: str,
+) -> dict:
+    """Resend ONE consolidated review-request email per still-PENDING reviewer
+    of a batch — mirrors submit_batch's one-email-per-reviewer behaviour rather
+    than firing one email per version.
+
+    Only the batch creator or an admin may call this.
+    """
+    batch = db.query(ApprovalBatch).filter(ApprovalBatch.id == batch_id).first()
+    if not batch:
+        raise ValueError("Batch not found")
+
+    children = (
+        db.query(ComboApproval).filter(ComboApproval.batch_id == batch_id).all()
+    )
+    if not children:
+        raise ValueError("Batch has no versions")
+
+    status = _rollup_batch_status([c.status for c in children])
+    if status != "PENDING_APPROVAL":
+        raise ValueError(f"Batch is {status}; only PENDING_APPROVAL can be resent")
+
+    requester = db.query(User).filter(User.id == requester_id).first()
+    requester_roles = (requester.roles if requester else None) or []
+    if "admin" not in requester_roles and batch.submitted_by != requester_id:
+        raise ValueError("Only the creator or an admin can resend review requests")
+
+    child_ids = [c.id for c in children]
+    version_count = len(children)
+    first_combo = (
+        db.query(AdCombo).filter(AdCombo.id == children[0].combo_id).first()
+    )
+    first_name = (
+        (first_combo.ad_name or first_combo.combo_id) if first_combo else "your submission"
+    )
+    batch_label = (
+        first_name if version_count == 1 else f"{first_name} (+{version_count - 1} more)"
+    )
+    branch = (
+        db.query(AdAccount).filter(AdAccount.id == first_combo.branch_id).first()
+        if first_combo and first_combo.branch_id else None
+    )
+    branch_name = branch.account_name if branch else None
+    submitter = (
+        db.query(User).filter(User.id == batch.submitted_by).first()
+        if batch.submitted_by else None
+    )
+    submitter_name = submitter.full_name if submitter else "Unknown"
+    working_file_url = children[0].working_file_url
+
+    # Decisions apply to the whole batch, so a reviewer's PENDING rows span all
+    # versions — group by reviewer and send a single email covering the batch.
+    pending_rows = (
+        db.query(ApprovalReviewer)
+        .filter(
+            ApprovalReviewer.approval_id.in_(child_ids),
+            ApprovalReviewer.status == "PENDING",
+        )
+        .all()
+    )
+    rows_by_reviewer: dict[str, list] = {}
+    for r in pending_rows:
+        rows_by_reviewer.setdefault(r.reviewer_id, []).append(r)
+
+    email_tasks = []
+    queued: list[dict] = []
+    skipped: list[dict] = []
+    now = datetime.now(timezone.utc)
+
+    for rid, rows in rows_by_reviewer.items():
+        reviewer = db.query(User).filter(User.id == rid).first()
+        if not reviewer:
+            skipped.append({"reviewer_id": rid, "reason": "user not found"})
+            continue
+        if not reviewer.notification_email:
+            skipped.append({"reviewer_id": rid, "reason": "notification_email opt-out"})
+            continue
+        if not reviewer.email:
+            skipped.append({"reviewer_id": rid, "reason": "no email on user record"})
+            continue
+
+        subject, html = render_review_request_email(
+            combo_name=batch_label,
+            reviewer_name=reviewer.full_name,
+            submitter_name=submitter_name,
+            working_file_url=working_file_url,
+            approval_id=batch.id,
+            branch_name=branch_name,
+            deadline=batch.deadline,
+            platform_url=settings.FRONTEND_URL,
+        )
+        email_tasks.append((reviewer.email, subject, html))
+        for row in rows:
+            row.notified_email_at = now
+        queued.append({"reviewer_id": rid, "email": reviewer.email})
+
+    db.commit()
+    _queue_emails(email_tasks)
+
+    return {
+        "batch_id": batch_id,
+        "queued_count": len(queued),
+        "queued": queued,
+        "skipped": skipped,
+    }
+
+
 def _notify_creator_of_result(
     db: Session,
     approval: ComboApproval,

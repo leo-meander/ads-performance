@@ -14,6 +14,7 @@ from app.services.approval_service import (
     get_batch_detail,
     record_batch_decision,
     record_decision,
+    resend_batch_review_request_emails,
     resend_review_request_emails,
     resubmit,
     revise_pending_approval,
@@ -273,6 +274,28 @@ def decide_approval_batch(
         )
         detail = get_batch_detail(db, batch.id)
         return _api_response(data=detail)
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.post("/approval-batches/{batch_id}/resend-request")
+def resend_batch_request(
+    batch_id: str,
+    current_user: User = Depends(require_role(["creator", "admin"])),
+    _section: User = Depends(require_page("approvals", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Resend one consolidated review-request email per still-PENDING reviewer of a batch."""
+    try:
+        result = resend_batch_review_request_emails(
+            db=db,
+            batch_id=batch_id,
+            requester_id=current_user.id,
+        )
+        return _api_response(data=result)
     except ValueError as e:
         return _api_response(error=str(e))
     except Exception as e:

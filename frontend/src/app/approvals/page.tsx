@@ -114,7 +114,6 @@ function urgencyRank(status: string, overdue: boolean): number {
 
 export default function ApprovalsPage() {
   const { user } = useAuth()
-  const [tab, setTab] = useState<'all' | 'pending'>('all')
   const [approvals, setApprovals] = useState<Approval[]>([])
   const [loading, setLoading] = useState(true)
   const [statusFilter, setStatusFilter] = useState('')
@@ -130,11 +129,14 @@ export default function ApprovalsPage() {
       return next
     })
 
-  const handleResend = async (approvalId: string) => {
+  const handleResend = async (id: string, isBatch: boolean) => {
     if (resending) return
-    setResending(approvalId)
+    setResending(id)
     try {
-      const r = await fetch(`${API_BASE}/api/approvals/${approvalId}/resend-request`, {
+      const path = isBatch
+        ? `/api/approval-batches/${id}/resend-request`
+        : `/api/approvals/${id}/resend-request`
+      const r = await fetch(`${API_BASE}${path}`, {
         method: 'POST',
         credentials: 'include',
       })
@@ -157,19 +159,18 @@ export default function ApprovalsPage() {
     }
   }
 
-  // Fetch the full set for the active tab; status/overdue/search filtering is
-  // done client-side so the summary counts stay stable and filtering is instant.
+  // Fetch everything the user can see; status/overdue/search filtering is done
+  // client-side so the summary counts stay stable and filtering is instant.
+  // The list endpoint already scopes rows by role (reviewers see only what
+  // they're assigned), so the "Pending" chip doubles as a reviewer's queue.
   useEffect(() => {
     setLoading(true)
-    const endpoint = tab === 'pending' ? '/api/approvals/pending' : '/api/approvals'
-    fetch(`${API_BASE}${endpoint}`, { credentials: 'include' })
+    fetch(`${API_BASE}/api/approvals`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (data.success) setApprovals(data.data.items || []) })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [tab])
-
-  const isReviewer = user?.roles?.includes('reviewer') || user?.roles?.includes('admin')
+  }, [])
 
   // Pre-compute per-row status + urgency once; reused for counts, filter, sort.
   const rows = useMemo(() => {
@@ -246,23 +247,6 @@ export default function ApprovalsPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
-          <button
-            onClick={() => setTab('all')}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium ${tab === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
-          >
-            All
-          </button>
-          {isReviewer && (
-            <button
-              onClick={() => setTab('pending')}
-              className={`px-3 py-1.5 rounded-md text-sm font-medium ${tab === 'pending' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
-            >
-              Pending Review
-            </button>
-          )}
-        </div>
-
         <div className="relative flex-1 min-w-[180px] max-w-xs">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
@@ -415,15 +399,15 @@ export default function ApprovalsPage() {
                       {head.submitted_at ? new Date(head.submitted_at).toLocaleDateString() : '-'}
                     </td>
                     <td className="px-4 py-3 text-xs">
-                      {!isBatch && head.status === 'PENDING_APPROVAL' && (user?.id === head.submitted_by || user?.roles?.includes('admin')) ? (
+                      {status === 'PENDING_APPROVAL' && (user?.id === head.submitted_by || user?.roles?.includes('admin')) ? (
                         <button
-                          onClick={() => handleResend(head.id)}
-                          disabled={resending === head.id}
+                          onClick={() => handleResend(isBatch ? row.key : head.id, isBatch)}
+                          disabled={resending === (isBatch ? row.key : head.id)}
                           className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded disabled:opacity-50 disabled:cursor-not-allowed"
                           title="Resend review request email to pending reviewers"
                         >
                           <Send className="w-3 h-3" />
-                          {resending === head.id ? 'Sending…' : 'Resend'}
+                          {resending === (isBatch ? row.key : head.id) ? 'Sending…' : 'Resend'}
                         </button>
                       ) : (
                         <span className="text-gray-300">-</span>
