@@ -729,3 +729,105 @@ def test_all_presets_have_required_fields():
         for s in specs:
             assert s.entity_level in ("campaign", "ad_set", "ad")
             assert s.action
+
+
+# ---------------------------------------------------------------------------
+# Change Log endpoint (per-tactic Madgicx-style action history)
+# ---------------------------------------------------------------------------
+
+def test_action_kind_buckets_actions_into_icon_families():
+    from app.routers.tactics import _action_kind
+    assert _action_kind("pause_ad", {}, {}) == "pause"
+    assert _action_kind("enable_ad", {}, {}) == "enable"
+    assert _action_kind("reenable_ad", {}, {}) == "enable"
+    assert _action_kind("adjust_budget", {"daily_budget": 100}, {"daily_budget": 150}) == "budget_up"
+    assert _action_kind("adjust_budget", {"daily_budget": 150}, {"daily_budget": 100}) == "budget_down"
+    assert _action_kind("send_alert", {}, {}) == "alert"
+    assert _action_kind("totally_unknown", {}, {}) == "other"
+
+
+def test_change_log_endpoint_returns_paginated_searchable_history():
+    from types import SimpleNamespace
+
+    from app.routers.tactics import get_tactic_change_log
+
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="stop_loss_ad", platform="meta", account_id=ids["acc"],
+    )
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+    ad = db.query(Ad).filter(Ad.id == ids["ad"]).first()
+    now = datetime.now(timezone.utc)
+
+    # success pause (older)
+    db.add(ActionLog(
+        rule_id=rule.id, campaign_id=ad.campaign_id, ad_set_id=ad.ad_set_id, ad_id=ad.id,
+        platform="meta", action="pause_ad",
+        action_params={"original_state": {"status": "ACTIVE"}, "new_state": {"status": "PAUSED"}},
+        triggered_by="rule", metrics_snapshot={"roas": 0.5, "ctr": 0.012, "spend": 75.0},
+        success=True, executed_at=now - timedelta(hours=2),
+    ))
+    # success budget increase
+    db.add(ActionLog(
+        rule_id=rule.id, campaign_id=ad.campaign_id, ad_set_id=ad.ad_set_id, ad_id=ad.id,
+        platform="meta", action="adjust_budget",
+        action_params={"original_state": {"daily_budget": 700.0}, "new_state": {"daily_budget": 900.0}},
+        triggered_by="rule", metrics_snapshot={"roas": 2.4}, success=True,
+        executed_at=now - timedelta(hours=1),
+    ))
+    # failed pause — most recent, must surface error + success=False
+    db.add(ActionLog(
+        rule_id=rule.id, campaign_id=ad.campaign_id, ad_set_id=ad.ad_set_id, ad_id=ad.id,
+        platform="meta", action="pause_ad",
+        action_params={"original_state": {"status": "ACTIVE"}, "new_state": {"status": "ACTIVE"}},
+        triggered_by="rule", metrics_snapshot=None, success=False,
+        error_message="User does not have permission for this action.",
+        executed_at=now,
+    ))
+    # evaluation_summary — MUST be excluded from the change log
+    db.add(ActionLog(
+        rule_id=rule.id, campaign_id=ad.campaign_id, ad_set_id=None, ad_id=None,
+        platform="meta", action="evaluation_summary",
+        triggered_by="rule", metrics_snapshot={"entities_checked": 5}, success=True,
+        executed_at=now - timedelta(hours=3),
+    ))
+    db.commit()
+
+    user = SimpleNamespace(roles=["admin"])
+    resp = get_tactic_change_log(t.id, limit=25, offset=0, q=None, current_user=user, db=db)
+    assert resp["success"] is True
+    data = resp["data"]
+    assert data["total"] == 3, "evaluation_summary must be excluded"
+    assert data["account_timezone"]
+    entries = data["entries"]
+
+    # newest first → failed pause leads
+    assert entries[0]["success"] is False
+    assert entries[0]["kind"] == "pause"
+    assert "permission" in (entries[0]["error_message"] or "")
+    # deep link carries the platform ad id
+    assert ad.platform_ad_id in (entries[0]["external_url"] or "")
+
+    # budget entry carries before/after + direction
+    budget_entry = next(e for e in entries if e["action"] == "adjust_budget")
+    assert budget_entry["kind"] == "budget_up"
+    assert budget_entry["before"]["daily_budget"] == 700.0
+    assert budget_entry["after"]["daily_budget"] == 900.0
+
+    # metrics surfaced on the successful pause
+    pause_ok = next(e for e in entries if e["action"] == "pause_ad" and e["success"])
+    assert pause_ok["metrics"]["roas"] == 0.5
+    assert pause_ok["label"] == "Ad paused"
+
+    # search filters by acted-on entity name
+    hit = get_tactic_change_log(t.id, limit=25, offset=0, q="Test Ad", current_user=user, db=db)
+    assert hit["data"]["total"] == 3
+    miss = get_tactic_change_log(t.id, limit=25, offset=0, q="zzz-nope", current_user=user, db=db)
+    assert miss["data"]["total"] == 0
+
+    # pagination caps page size
+    paged = get_tactic_change_log(t.id, limit=2, offset=0, q=None, current_user=user, db=db)
+    assert len(paged["data"]["entries"]) == 2
+    assert paged["data"]["total"] == 3
+    db.close()

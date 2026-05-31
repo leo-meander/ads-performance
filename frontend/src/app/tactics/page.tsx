@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import {
   Plus, Trash2, X, ChevronDown, ChevronRight, AlertCircle, CheckCircle2,
-  Power, PowerOff, TrendingUp, TrendingDown, Bell,
+  Power, PowerOff, TrendingUp, TrendingDown, Bell, ScrollText,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -619,11 +620,20 @@ export default function TacticsPage() {
                         </label>
                       </td>
                       <td className="px-3 py-2 text-right">
-                        {canEdit && (
-                          <button onClick={() => remove(t)} className="text-red-600 hover:text-red-800">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
+                        <div className="inline-flex items-center gap-2">
+                          <Link
+                            href={`/tactics/${t.id}/log`}
+                            className="text-gray-400 hover:text-indigo-600"
+                            title="View change log"
+                          >
+                            <ScrollText className="w-4 h-4" />
+                          </Link>
+                          {canEdit && (
+                            <button onClick={() => remove(t)} className="text-red-600 hover:text-red-800" title="Delete tactic">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                     {isLoading && (
