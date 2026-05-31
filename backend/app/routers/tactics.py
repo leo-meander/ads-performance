@@ -19,11 +19,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
 from app.dependencies.auth import require_section
+from app.models.account import AdAccount
 from app.models.action_log import ActionLog
 from app.models.ad import Ad
 from app.models.ad_set import AdSet
@@ -561,6 +563,223 @@ def get_tactic_diagnostics(
             "is_active": tactic.is_active,
             "last_run_at": tactic.last_run_at.isoformat() if tactic.last_run_at else None,
             "rules": rules_data,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+# Human labels for the change-log timeline. Budget actions get refined into
+# "increased / decreased" on the frontend using `kind`.
+_ACTION_LABELS: dict[str, str] = {
+    "pause_campaign": "Campaign paused",
+    "pause_adset": "Ad set paused",
+    "pause_ad": "Ad paused",
+    "enable_campaign": "Campaign reactivated",
+    "enable_adset": "Ad set reactivated",
+    "enable_ad": "Ad reactivated",
+    "reenable_ad": "Ad reactivated",
+    "adjust_budget": "Budget adjusted",
+    "send_alert": "Alert sent",
+}
+
+# Meta Ads Manager deep-link sections per entity level.
+_META_LINK = {
+    "ad": ("ads", "selected_ad_ids"),
+    "ad_set": ("adsets", "selected_adset_ids"),
+    "campaign": ("campaigns", "selected_campaign_ids"),
+}
+
+
+def _action_kind(action: str, before: dict, after: dict) -> str:
+    """Bucket an action into an icon family for the UI."""
+    a = (action or "").lower()
+    if "pause" in a or "disable" in a:
+        return "pause"
+    if "enable" in a or "reactiv" in a or "start" in a:
+        return "enable"
+    if "budget" in a or "adjust" in a:
+        ob, nb = before.get("daily_budget"), after.get("daily_budget")
+        if ob is not None and nb is not None:
+            return "budget_down" if float(nb) < float(ob) else "budget_up"
+        return "budget_up"
+    if "alert" in a:
+        return "alert"
+    return "other"
+
+
+@router.get("/tactics/{tactic_id}/change-log")
+def get_tactic_change_log(
+    tactic_id: str,
+    limit: int = 25,
+    offset: int = 0,
+    q: str | None = None,
+    current_user: User = Depends(require_section("automation", "view")),
+    db: Session = Depends(get_db),
+):
+    """Paginated, searchable history of every mutation this tactic's rules made.
+
+    Madgicx-style change log: one row per real action (pause, reactivate,
+    budget change, alert) pulled from the immutable action_logs table. Includes
+    BOTH successes and failures so the operator can see e.g. a permission-denied
+    pause. `evaluation_summary` rows are excluded — those feed the diagnostics
+    panel, not the change log.
+
+    Query params:
+        limit/offset  — pagination (limit clamped 1..200)
+        q             — case-insensitive ILIKE on the acted-on entity name
+    """
+    try:
+        tactic = tactic_service.get_tactic(db, tactic_id)
+        if not tactic:
+            return _api_response(error="Tactic not found")
+        if tactic.account_id:
+            ok, _ids, err = scoped_account_ids(
+                db, current_user, "automation", requested_account_id=tactic.account_id,
+            )
+            if not ok:
+                return _api_response(error=err)
+
+        account = (
+            db.query(AdAccount).filter(AdAccount.id == tactic.account_id).first()
+            if tactic.account_id else None
+        )
+        account_tz = account.timezone if account else "Asia/Ho_Chi_Minh"
+
+        rule_ids = [
+            r[0] for r in db.query(AutomationRule.id)
+            .filter(AutomationRule.tactic_id == tactic_id).all()
+        ]
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+
+        if not rule_ids:
+            return _api_response(data={
+                "tactic_id": tactic.id,
+                "tactic_name": tactic.name,
+                "account_timezone": account_tz,
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "entries": [],
+            })
+
+        # Polymorphic entity name lives across three tables. Outer-join all
+        # three and coalesce so search + ordering work in one query.
+        name_expr = func.coalesce(Ad.name, AdSet.name, Campaign.name)
+        base = (
+            db.query(ActionLog)
+            .outerjoin(Ad, ActionLog.ad_id == Ad.id)
+            .outerjoin(AdSet, ActionLog.ad_set_id == AdSet.id)
+            .outerjoin(Campaign, ActionLog.campaign_id == Campaign.id)
+            .filter(
+                ActionLog.rule_id.in_(rule_ids),
+                ActionLog.action != "evaluation_summary",
+            )
+        )
+        if q:
+            base = base.filter(name_expr.ilike(f"%{q.strip()}%"))
+
+        total = base.count()
+        logs = (
+            base.order_by(ActionLog.executed_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        # Per-request caches so N rows don't trigger N*k queries.
+        ent_cache: dict[tuple, tuple] = {}   # (level, id) -> (name, platform_obj_id)
+        native_cache: dict[str, str | None] = {}  # campaign_uuid -> native act id
+
+        def _entity_meta(log: ActionLog) -> tuple[str, str, str | None]:
+            """Return (entity_level, entity_name, platform_object_id)."""
+            if log.ad_id:
+                key = ("ad", log.ad_id)
+                if key not in ent_cache:
+                    row = db.query(Ad.name, Ad.platform_ad_id).filter(Ad.id == log.ad_id).first()
+                    ent_cache[key] = (row[0], row[1]) if row else ("—", None)
+                return ("ad", *ent_cache[key])
+            if log.ad_set_id:
+                key = ("ad_set", log.ad_set_id)
+                if key not in ent_cache:
+                    row = db.query(AdSet.name, AdSet.platform_adset_id).filter(AdSet.id == log.ad_set_id).first()
+                    ent_cache[key] = (row[0], row[1]) if row else ("—", None)
+                return ("ad_set", *ent_cache[key])
+            if log.campaign_id:
+                key = ("campaign", log.campaign_id)
+                if key not in ent_cache:
+                    row = db.query(Campaign.name, Campaign.platform_campaign_id).filter(Campaign.id == log.campaign_id).first()
+                    ent_cache[key] = (row[0], row[1]) if row else ("—", None)
+                return ("campaign", *ent_cache[key])
+            return ("—", "—", None)
+
+        def _native_account(campaign_uuid: str | None) -> str | None:
+            if not campaign_uuid:
+                return account.account_id if account else None
+            if campaign_uuid not in native_cache:
+                native_cache[campaign_uuid] = (
+                    db.query(AdAccount.account_id)
+                    .join(Campaign, Campaign.account_id == AdAccount.id)
+                    .filter(Campaign.id == campaign_uuid)
+                    .scalar()
+                )
+            return native_cache[campaign_uuid]
+
+        def _meta_url(log: ActionLog, level: str, obj_id: str | None) -> str | None:
+            if log.platform != "meta" or not obj_id or level not in _META_LINK:
+                return None
+            section, sel_key = _META_LINK[level]
+            native = _native_account(log.campaign_id)
+            base_url = f"https://adsmanager.facebook.com/adsmanager/manage/{section}"
+            params = [f"{sel_key}={obj_id}"]
+            if native:
+                params.insert(0, f"act={native}")
+            return f"{base_url}?{'&'.join(params)}"
+
+        entries = []
+        for log in logs:
+            ap = log.action_params or {}
+            before = ap.get("original_state") or {}
+            after = ap.get("new_state") or {}
+            snap = log.metrics_snapshot or {}
+            level, name, obj_id = _entity_meta(log)
+            entries.append({
+                "id": log.id,
+                "executed_at": log.executed_at.isoformat() if log.executed_at else None,
+                "action": log.action,
+                "label": _ACTION_LABELS.get(log.action, log.action.replace("_", " ").title()),
+                "kind": _action_kind(log.action, before, after),
+                "entity_level": level,
+                "entity_name": name,
+                "external_url": _meta_url(log, level, obj_id),
+                "triggered_by": log.triggered_by,
+                "success": log.success,
+                "error_message": log.error_message,
+                "before": {
+                    "status": before.get("status"),
+                    "daily_budget": before.get("daily_budget"),
+                },
+                "after": {
+                    "status": after.get("status"),
+                    "daily_budget": after.get("daily_budget"),
+                },
+                "metrics": {
+                    "roas": snap.get("roas"),
+                    "ctr": snap.get("ctr"),
+                    "spend": snap.get("spend"),
+                    "cpa": snap.get("cpa"),
+                    "revenue": snap.get("revenue"),
+                },
+            })
+
+        return _api_response(data={
+            "tactic_id": tactic.id,
+            "tactic_name": tactic.name,
+            "account_timezone": account_tz,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "entries": entries,
         })
     except Exception as e:
         return _api_response(error=str(e))
