@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/components/AuthContext'
 import { API_BASE } from '@/lib/api'
@@ -27,7 +27,6 @@ const TABS: { key: TabKey; label: string; help: string }[] = [
 
 export default function LandingPageEditor() {
   const params = useParams()
-  const router = useRouter()
   const pageId = params.id as string
   const { canEditSection } = useAuth()
   const canEdit = canEditSection('landing_pages')
@@ -41,10 +40,6 @@ export default function LandingPageEditor() {
   const [dirty, setDirty] = useState(false)
   const [changeNote, setChangeNote] = useState('')
 
-  // Approval state
-  const [showSubmit, setShowSubmit] = useState(false)
-  const [users, setUsers] = useState<{ id: string; full_name: string; email: string }[]>([])
-  const [reviewerIds, setReviewerIds] = useState<string[]>([])
   const [latestVersionId, setLatestVersionId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -84,14 +79,6 @@ export default function LandingPageEditor() {
     load()
   }, [pageId])
 
-  // Load users for reviewer picker (admins + creators)
-  useEffect(() => {
-    fetch(`${API_BASE}/api/users`, { credentials: 'include' })
-      .then((r) => r.json())
-      .then((j) => { if (j.success) setUsers(j.data || []) })
-      .catch(() => {})
-  }, [])
-
   const patch = <K extends keyof LandingPageContent>(key: K, value: LandingPageContent[K]) => {
     setContent((c) => ({ ...c, [key]: value }))
     setDirty(true)
@@ -115,42 +102,6 @@ export default function LandingPageEditor() {
         setChangeNote('')
         setLatestVersionId(j.data.id)
         alert(`Saved version #${j.data.version_num}`)
-      }
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const submitForApproval = async () => {
-    if (!latestVersionId) {
-      alert('Save a version first')
-      return
-    }
-    if (reviewerIds.length === 0) {
-      alert('Pick at least one reviewer')
-      return
-    }
-    setSaving(true)
-    try {
-      const res = await fetch(`${API_BASE}/api/landing-pages/${pageId}/approvals`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          version_id: latestVersionId,
-          reviewer_ids: reviewerIds,
-          deadline_hours: 48,
-        }),
-      })
-      const j = await res.json()
-      if (!j.success) {
-        alert(`Submit failed: ${j.error}`)
-      } else {
-        setShowSubmit(false)
-        setReviewerIds([])
-        alert('Submitted for approval')
-        router.refresh()
-        window.location.reload()
       }
     } finally {
       setSaving(false)
@@ -199,13 +150,9 @@ export default function LandingPageEditor() {
               <button onClick={saveVersion} disabled={!dirty || saving} className="px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
                 {saving ? 'Saving…' : dirty ? 'Save version' : 'Saved'}
               </button>
-              {page.status === 'DRAFT' || page.status === 'REJECTED' ? (
-                <button onClick={() => setShowSubmit(true)} disabled={!latestVersionId} className="px-3 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50">
-                  Submit for Approval
-                </button>
-              ) : page.status === 'APPROVED' ? (
-                <button onClick={publish} className="px-3 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">Publish</button>
-              ) : null}
+              <button onClick={publish} disabled={!latestVersionId} className="px-3 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50">
+                {page.status === 'PUBLISHED' ? 'Republish' : 'Publish'}
+              </button>
             </>
           )}
         </div>
@@ -264,42 +211,6 @@ export default function LandingPageEditor() {
             </div>
           )}
         </>
-      )}
-
-      {/* Submit-for-approval modal */}
-      {showSubmit && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-[500px] p-6">
-            <h2 className="text-lg font-bold mb-2">Submit for Approval</h2>
-            <p className="text-sm text-gray-600 mb-4">
-              Pick reviewers. All reviewers must approve before the page can be published.
-              Any single rejection marks the version REJECTED and sends it back to you.
-            </p>
-            <label className="text-xs text-gray-600 block mb-1">Reviewers</label>
-            <div className="max-h-48 overflow-auto border border-gray-200 rounded p-2 space-y-1">
-              {users.map((u) => (
-                <label key={u.id} className="flex items-center gap-2 text-sm py-1 hover:bg-gray-50 px-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={reviewerIds.includes(u.id)}
-                    onChange={(e) => {
-                      if (e.target.checked) setReviewerIds([...reviewerIds, u.id])
-                      else setReviewerIds(reviewerIds.filter((i) => i !== u.id))
-                    }}
-                  />
-                  <span>{u.full_name}</span>
-                  <span className="text-xs text-gray-500">{u.email}</span>
-                </label>
-              ))}
-            </div>
-            <div className="flex justify-end gap-2 mt-5">
-              <button onClick={() => setShowSubmit(false)} className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded">Cancel</button>
-              <button onClick={submitForApproval} disabled={reviewerIds.length === 0 || saving} className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50">
-                {saving ? 'Submitting…' : `Submit (${reviewerIds.length})`}
-              </button>
-            </div>
-          </div>
-        </div>
       )}
     </div>
   )

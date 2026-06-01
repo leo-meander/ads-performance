@@ -10,7 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies.auth import get_current_user, require_section
+from app.dependencies.auth import require_section
 from app.models.account import AdAccount
 from app.models.landing_page import (
     LandingPage,
@@ -21,12 +21,6 @@ from app.models.landing_page import (
     STATUS_PUBLISHED,
 )
 from app.models.landing_page_ad_link import LandingPageAdLink
-from app.models.landing_page_approval import (
-    LandingPageApproval,
-    LandingPageApprovalReviewer,
-    REVIEWER_APPROVED,
-    REVIEWER_REJECTED,
-)
 from app.models.landing_page_clarity import LandingPageClaritySnapshot
 from app.models.landing_page_version import LandingPageVersion
 from app.models.user import User
@@ -34,9 +28,7 @@ from app.services.landing_page_importer import import_from_ads
 from app.services.landing_page_service import (
     create_version,
     publish_version,
-    record_reviewer_decision,
     rollup_metrics,
-    submit_for_approval,
 )
 from app.services.landing_page_url_normalizer import build_url_with_utms, normalize_url
 
@@ -116,17 +108,6 @@ class UpdatePageReq(BaseModel):
 class CreateVersionReq(BaseModel):
     content: dict[str, Any]
     change_note: str | None = None
-
-
-class SubmitApprovalReq(BaseModel):
-    version_id: str
-    reviewer_ids: list[str]
-    deadline_hours: int | None = 48
-
-
-class ReviewerDecisionReq(BaseModel):
-    decision: str = Field(pattern=r"^(APPROVED|REJECTED)$")
-    comment: str | None = None
 
 
 class LinkAdReq(BaseModel):
@@ -388,147 +369,6 @@ def publish_page(
     except Exception as e:
         db.rollback()
         return _api(error=str(e))
-
-
-# ────────────────────────── approvals ───────────────────────────────────────
-
-
-@router.post("/landing-pages/{page_id}/approvals")
-def submit_page_approval(
-    page_id: str,
-    body: SubmitApprovalReq,
-    current_user: User = Depends(require_section("landing_pages", "edit")),
-    db: Session = Depends(get_db),
-):
-    try:
-        appr = submit_for_approval(
-            db,
-            landing_page_id=page_id,
-            version_id=body.version_id,
-            submitted_by=current_user.id,
-            reviewer_ids=body.reviewer_ids,
-            deadline_hours=body.deadline_hours,
-        )
-        db.commit()
-        return _api({
-            "id": appr.id,
-            "status": appr.status,
-            "submitted_at": appr.submitted_at.isoformat(),
-            "deadline": appr.deadline.isoformat() if appr.deadline else None,
-            "reviewer_ids": body.reviewer_ids,
-        })
-    except ValueError as e:
-        return _api(error=str(e))
-    except Exception as e:
-        db.rollback()
-        return _api(error=str(e))
-
-
-@router.get("/landing-pages/{page_id}/approvals")
-def list_page_approvals(
-    page_id: str,
-    current_user: User = Depends(require_section("landing_pages", "view")),
-    db: Session = Depends(get_db),
-):
-    rows = (
-        db.query(LandingPageApproval)
-        .filter(LandingPageApproval.landing_page_id == page_id)
-        .order_by(LandingPageApproval.submitted_at.desc())
-        .all()
-    )
-    out = []
-    for a in rows:
-        revs = (
-            db.query(LandingPageApprovalReviewer)
-            .filter(LandingPageApprovalReviewer.approval_id == a.id)
-            .all()
-        )
-        out.append({
-            "id": a.id,
-            "version_id": a.version_id,
-            "round": a.round,
-            "status": a.status,
-            "submitted_by": a.submitted_by,
-            "submitted_at": a.submitted_at.isoformat(),
-            "deadline": a.deadline.isoformat() if a.deadline else None,
-            "resolved_at": a.resolved_at.isoformat() if a.resolved_at else None,
-            "reject_reason": a.reject_reason,
-            "reviewers": [
-                {
-                    "reviewer_id": r.reviewer_id,
-                    "status": r.status,
-                    "comment": r.comment,
-                    "decided_at": r.decided_at.isoformat() if r.decided_at else None,
-                }
-                for r in revs
-            ],
-        })
-    return _api(out)
-
-
-@router.post("/landing-page-approvals/{approval_id}/decision")
-def decide_page_approval(
-    approval_id: str,
-    body: ReviewerDecisionReq,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Assigned reviewer records their APPROVED / REJECTED decision."""
-    try:
-        decision_norm = REVIEWER_APPROVED if body.decision == "APPROVED" else REVIEWER_REJECTED
-        appr = record_reviewer_decision(
-            db,
-            approval_id=approval_id,
-            reviewer_id=current_user.id,
-            decision=decision_norm,
-            comment=body.comment,
-        )
-        db.commit()
-        return _api({
-            "id": appr.id,
-            "status": appr.status,
-            "resolved_at": appr.resolved_at.isoformat() if appr.resolved_at else None,
-        })
-    except (ValueError, PermissionError) as e:
-        return _api(error=str(e))
-    except Exception as e:
-        db.rollback()
-        return _api(error=str(e))
-
-
-@router.get("/landing-page-approvals/inbox")
-def approval_inbox(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """All pending approvals where the current user is a reviewer."""
-    q = (
-        db.query(LandingPageApproval, LandingPageApprovalReviewer, LandingPage)
-        .join(
-            LandingPageApprovalReviewer,
-            LandingPageApprovalReviewer.approval_id == LandingPageApproval.id,
-        )
-        .join(
-            LandingPage,
-            LandingPage.id == LandingPageApproval.landing_page_id,
-        )
-        .filter(LandingPageApprovalReviewer.reviewer_id == current_user.id)
-        .order_by(LandingPageApproval.submitted_at.desc())
-    )
-    out = []
-    for appr, rev, page in q.all():
-        out.append({
-            "approval_id": appr.id,
-            "page_id": page.id,
-            "page_title": page.title,
-            "page_url": f"https://{page.domain}/{page.slug}",
-            "version_id": appr.version_id,
-            "status": appr.status,
-            "my_decision": rev.status,
-            "submitted_at": appr.submitted_at.isoformat(),
-            "deadline": appr.deadline.isoformat() if appr.deadline else None,
-        })
-    return _api(out)
 
 
 # ────────────────────────── ad-links ────────────────────────────────────────

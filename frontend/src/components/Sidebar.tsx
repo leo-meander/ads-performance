@@ -57,7 +57,6 @@ const navSections: NavSection[] = [
     label: 'Landing Pages',
     items: [
       { href: '/landing-pages', label: 'All Pages', section: 'landing_pages', page: 'landing_pages_all' },
-      { href: '/landing-pages/approvals', label: 'Approvals', section: 'landing_pages', page: 'landing_pages_approvals', badge: true },
     ],
   },
   {

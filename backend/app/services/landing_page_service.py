@@ -7,7 +7,7 @@ Design notes (see CLAUDE.md):
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -22,26 +22,13 @@ from app.models.landing_page import (
     LandingPage,
     SOURCE_EXTERNAL,
     SOURCE_MANAGED,
-    STATUS_APPROVED,
     STATUS_ARCHIVED,
     STATUS_DISCOVERED,
     STATUS_DRAFT,
-    STATUS_PENDING_APPROVAL,
     STATUS_PUBLISHED,
     STATUS_REJECTED,
 )
 from app.models.landing_page_ad_link import LandingPageAdLink
-from app.models.landing_page_approval import (
-    APPROVAL_APPROVED,
-    APPROVAL_CANCELLED,
-    APPROVAL_PENDING,
-    APPROVAL_REJECTED,
-    LandingPageApproval,
-    LandingPageApprovalReviewer,
-    REVIEWER_APPROVED,
-    REVIEWER_PENDING,
-    REVIEWER_REJECTED,
-)
 from app.models.landing_page_clarity import LandingPageClaritySnapshot
 from app.models.landing_page_ga4 import LandingPageGA4Snapshot
 from app.models.landing_page_version import LandingPageVersion
@@ -160,32 +147,16 @@ def publish_version(
     version_id: str,
     actor_user_id: str | None = None,
 ) -> LandingPage:
-    """Move a version to PUBLISHED state (requires APPROVED first).
+    """Move a version to PUBLISHED state and point the page at it.
 
-    Creator-only: the submitter of the approval record is the only one who
-    may publish (mirrors the combo-launch rule in CLAUDE.md).
+    Managed pages publish directly from DRAFT — there is no approval gate.
+    `actor_user_id` is accepted for call-site compatibility but unused.
     """
     v = db.query(LandingPageVersion).filter(LandingPageVersion.id == version_id).one()
     page = db.query(LandingPage).filter(LandingPage.id == v.landing_page_id).one()
 
-    if page.status not in (STATUS_APPROVED, STATUS_PUBLISHED):
-        raise ValueError(
-            f"Cannot publish: page status is {page.status}, must be APPROVED"
-        )
-
-    # Verify creator-only: the latest approval record must have this user as submitter
-    if actor_user_id is not None:
-        latest_appr = (
-            db.query(LandingPageApproval)
-            .filter(
-                LandingPageApproval.landing_page_id == page.id,
-                LandingPageApproval.version_id == version_id,
-            )
-            .order_by(LandingPageApproval.submitted_at.desc())
-            .first()
-        )
-        if latest_appr and latest_appr.submitted_by and latest_appr.submitted_by != actor_user_id:
-            raise PermissionError("Only the submitter may publish this version")
+    if page.source != SOURCE_MANAGED:
+        raise ValueError("Cannot publish an external landing page")
 
     now = datetime.now(timezone.utc)
     v.published_at = now
@@ -194,126 +165,6 @@ def publish_version(
     page.published_at = now
     db.flush()
     return page
-
-
-# ---------------------------------------------------------------------------
-# Approvals (mirror combo_approvals logic)
-# ---------------------------------------------------------------------------
-
-
-def submit_for_approval(
-    db: Session,
-    *,
-    landing_page_id: str,
-    version_id: str,
-    submitted_by: str,
-    reviewer_ids: list[str],
-    deadline_hours: int | None = 48,
-) -> LandingPageApproval:
-    page = db.query(LandingPage).filter(LandingPage.id == landing_page_id).one()
-    if page.source != SOURCE_MANAGED:
-        raise ValueError("Only managed pages can be submitted for approval")
-    if page.status not in (STATUS_DRAFT, STATUS_REJECTED):
-        raise ValueError(f"Cannot submit: status is {page.status}")
-    if not reviewer_ids:
-        raise ValueError("At least one reviewer required")
-
-    # Cancel any in-flight approvals for this page
-    inflight = (
-        db.query(LandingPageApproval)
-        .filter(
-            LandingPageApproval.landing_page_id == landing_page_id,
-            LandingPageApproval.status == APPROVAL_PENDING,
-        )
-        .all()
-    )
-    now = datetime.now(timezone.utc)
-    for appr in inflight:
-        appr.status = APPROVAL_CANCELLED
-        appr.resolved_at = now
-
-    deadline = now + timedelta(hours=deadline_hours) if deadline_hours else None
-    appr = LandingPageApproval(
-        landing_page_id=landing_page_id,
-        version_id=version_id,
-        status=APPROVAL_PENDING,
-        submitted_by=submitted_by,
-        submitted_at=now,
-        deadline=deadline,
-    )
-    db.add(appr)
-    db.flush()
-
-    for rid in set(reviewer_ids):
-        rev = LandingPageApprovalReviewer(
-            approval_id=appr.id,
-            reviewer_id=rid,
-            status=REVIEWER_PENDING,
-        )
-        db.add(rev)
-
-    page.status = STATUS_PENDING_APPROVAL
-    db.flush()
-    return appr
-
-
-def record_reviewer_decision(
-    db: Session,
-    *,
-    approval_id: str,
-    reviewer_id: str,
-    decision: str,  # APPROVED | REJECTED
-    comment: str | None = None,
-) -> LandingPageApproval:
-    if decision not in (REVIEWER_APPROVED, REVIEWER_REJECTED):
-        raise ValueError(f"Invalid decision: {decision}")
-
-    row = (
-        db.query(LandingPageApprovalReviewer)
-        .filter(
-            LandingPageApprovalReviewer.approval_id == approval_id,
-            LandingPageApprovalReviewer.reviewer_id == reviewer_id,
-        )
-        .one_or_none()
-    )
-    if row is None:
-        raise PermissionError("Reviewer not assigned to this approval")
-    if row.status != REVIEWER_PENDING:
-        raise ValueError(f"Already decided: {row.status}")
-
-    now = datetime.now(timezone.utc)
-    row.status = decision
-    row.comment = comment
-    row.decided_at = now
-    db.flush()
-
-    # Recompute approval status
-    appr = db.query(LandingPageApproval).filter(LandingPageApproval.id == approval_id).one()
-    page = db.query(LandingPage).filter(LandingPage.id == appr.landing_page_id).one()
-
-    all_reviewers = (
-        db.query(LandingPageApprovalReviewer)
-        .filter(LandingPageApprovalReviewer.approval_id == approval_id)
-        .all()
-    )
-    statuses = {r.status for r in all_reviewers}
-
-    if REVIEWER_REJECTED in statuses:
-        # ANY reject → REJECTED
-        appr.status = APPROVAL_REJECTED
-        appr.resolved_at = now
-        if not appr.reject_reason and comment:
-            appr.reject_reason = comment
-        page.status = STATUS_REJECTED
-    elif statuses == {REVIEWER_APPROVED}:
-        # ALL approve → APPROVED
-        appr.status = APPROVAL_APPROVED
-        appr.resolved_at = now
-        page.status = STATUS_APPROVED
-    # else: still has PENDING reviewers → stay PENDING_APPROVAL
-
-    db.flush()
-    return appr
 
 
 # ---------------------------------------------------------------------------

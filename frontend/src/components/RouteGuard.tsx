@@ -60,7 +60,6 @@ const ROUTE_PAGE_MAP: Array<[string, string]> = [
   ['/google/search', 'google_search'],
   ['/google/recommendations', 'google_recommendations'],
   ['/budget', 'budget_planner'],
-  ['/landing-pages/approvals', 'landing_pages_approvals'],
   ['/landing-pages', 'landing_pages_all'],
   ['/tactics', 'tactics'],
   ['/logs', 'logs'],
