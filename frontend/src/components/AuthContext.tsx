@@ -37,7 +37,6 @@ export const PAGE_SECTION: Record<string, string> = {
   google_recommendations: 'google_ads',
   budget_planner: 'budget',
   landing_pages_all: 'landing_pages',
-  landing_pages_approvals: 'landing_pages',
   tactics: 'automation',
   logs: 'automation',
   insights: 'ai',

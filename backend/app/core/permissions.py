@@ -56,7 +56,6 @@ PAGES: dict[str, dict[str, str]] = {
     "budget_planner": {"section": "budget", "label": "Budget Planner"},
     # landing_pages
     "landing_pages_all": {"section": "landing_pages", "label": "All Pages"},
-    "landing_pages_approvals": {"section": "landing_pages", "label": "Approvals"},
     # automation
     "tactics": {"section": "automation", "label": "Tactics"},
     "logs": {"section": "automation", "label": "Action Logs"},
