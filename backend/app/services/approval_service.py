@@ -835,8 +835,10 @@ def revise_batch(
     reviewer_ids: list[str] | None = None,
     versions: list[dict] | None = None,
 ) -> ApprovalBatch:
-    """Edit a pending batch in place — bumps the batch + every version's round,
-    resets ALL reviewers across all versions, re-notifies once (consolidated).
+    """Edit a pending or needs-revision batch in place — bumps the batch + every
+    version's round, resets ALL reviewers + version statuses across the batch,
+    re-notifies once (consolidated). For a NEEDS_REVISION batch this is the
+    resubmit path: the whole batch re-opens at PENDING_APPROVAL.
 
     Mirrors revise_pending_approval but for the all-or-nothing batch flow: the
     batch re-opens as a whole, so a single round bump and one consolidated
@@ -866,9 +868,9 @@ def revise_batch(
         raise ValueError("Batch has no versions")
 
     current_status = _rollup_batch_status([c.status for c in children])
-    if current_status != "PENDING_APPROVAL":
+    if current_status not in ("PENDING_APPROVAL", "NEEDS_REVISION"):
         raise ValueError(
-            f"Only PENDING_APPROVAL batches can be revised in place; current status: {current_status}"
+            f"Only pending or needs-revision batches can be revised; current status: {current_status}"
         )
 
     now = datetime.now(timezone.utc)
@@ -893,6 +895,9 @@ def revise_batch(
         batch.deadline = None
 
     batch.round = (batch.round or 0) + 1
+    # Re-open the batch as a whole — a NEEDS_REVISION batch returns to review.
+    batch.status = "PENDING_APPROVAL"
+    batch.resolved_at = None
 
     edits_by_approval = {v["approval_id"]: v for v in (versions or []) if v.get("approval_id")}
 
@@ -900,6 +905,9 @@ def revise_batch(
         combo = db.query(AdCombo).filter(AdCombo.id == child.combo_id).first()
         child.round = (child.round or 0) + 1
         child.submitted_at = now
+        # Reset any prior terminal verdict so the rollup reflects the re-open.
+        child.status = "PENDING_APPROVAL"
+        child.resolved_at = None
         if parsed_deadline is not None:
             child.deadline = parsed_deadline
         elif clear_deadline:
