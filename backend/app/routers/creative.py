@@ -654,6 +654,16 @@ def list_combos(
             angs = db.query(AdAngle).filter(AdAngle.angle_id.in_(ang_ids)).all()
             ang_map = {a.angle_id: {"angle_type": a.angle_type or a.hook or "", "explain": a.angle_explain or "", "status": a.status, "ta": a.target_audience} for a in angs}
 
+        # Bulk-fetch the linked material's format + URL so the table can show a
+        # format chip and the format-insight bar can aggregate Video/Image/
+        # Carousel performance without a per-row roundtrip.
+        from app.models.ad_material import AdMaterial as Mat
+        mat_ids = {r.material_id for r in rows if r.material_id}
+        mat_map = {}
+        if mat_ids:
+            mats = db.query(Mat).filter(Mat.material_id.in_(mat_ids)).all()
+            mat_map = {m.material_id: {"type": m.material_type, "url": m.file_url} for m in mats}
+
         # Compute benchmark ROAS per account
         from app.models.account import AdAccount as Acc
         from sqlalchemy import func as sqlfunc
@@ -679,6 +689,8 @@ def list_combos(
             "angle_explain": ang_map.get(r.angle_id, {}).get("explain", ""),
             "angle_status": ang_map.get(r.angle_id, {}).get("status", ""),
             "copy_id": r.copy_id, "material_id": r.material_id,
+            "material_type": mat_map.get(r.material_id, {}).get("type"),
+            "material_url": mat_map.get(r.material_id, {}).get("url"),
             "campaign_id": r.campaign_id, "verdict": r.verdict,
             "verdict_source": r.verdict_source, "verdict_notes": r.verdict_notes,
             "spend": float(r.spend) if r.spend else None,
