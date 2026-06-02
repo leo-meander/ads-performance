@@ -108,12 +108,15 @@ export default function BatchDetailPage() {
 
   useEffect(() => { fetchBatch() }, [batchId])
 
-  const isCreatorPending =
-    !!batch && user?.id === batch.submitted_by && batch.status === 'PENDING_APPROVAL'
+  const isCreator = !!batch && user?.id === batch.submitted_by
+  const needsRevision = batch?.status === 'NEEDS_REVISION'
+  // Creator can edit in place while pending, OR resubmit after a needs-revision verdict.
+  const canRevise =
+    isCreator && (batch?.status === 'PENDING_APPROVAL' || batch?.status === 'NEEDS_REVISION')
 
   // Lazy-load reviewer/angle/keypoint options the first time the creator opens the edit panel
   useEffect(() => {
-    if (!editOpen || !isCreatorPending) return
+    if (!editOpen || !canRevise) return
     if (reviewerOptions.length === 0) {
       fetch(`${API_BASE}/api/users/reviewers`, { credentials: 'include' })
         .then(r => r.json())
@@ -132,7 +135,7 @@ export default function BatchDetailPage() {
         .then(d => { if (d.success) setKeypointOptions(d.data || []) })
         .catch(() => {})
     }
-  }, [editOpen, isCreatorPending, reviewerOptions.length, angleOptions.length, keypointOptions.length])
+  }, [editOpen, canRevise, reviewerOptions.length, angleOptions.length, keypointOptions.length])
 
   // Seed the edit form whenever the panel opens (or the batch reloads)
   useEffect(() => {
@@ -451,20 +454,24 @@ export default function BatchDetailPage() {
             </div>
           )}
 
-          {/* Creator: edit while pending — bumps round, resets reviewers across all versions */}
-          {isCreatorPending && (
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+          {/* Creator: edit while pending OR resubmit after needs-revision — bumps round, resets reviewers across all versions */}
+          {canRevise && (
+            <div className={`${needsRevision ? 'bg-orange-50 border-orange-200' : 'bg-blue-50 border-blue-200'} border rounded-xl p-4`}>
               <div className="flex items-center justify-between mb-1">
-                <h3 className="text-sm font-semibold text-blue-900">Edit while pending</h3>
+                <h3 className={`text-sm font-semibold ${needsRevision ? 'text-orange-900' : 'text-blue-900'}`}>
+                  {needsRevision ? 'Revise & Resubmit' : 'Edit while pending'}
+                </h3>
                 <button
                   onClick={() => setEditOpen(o => !o)}
-                  className="text-xs font-medium text-blue-700 hover:text-blue-800"
+                  className={`text-xs font-medium ${needsRevision ? 'text-orange-700 hover:text-orange-800' : 'text-blue-700 hover:text-blue-800'}`}
                 >
-                  {editOpen ? 'Cancel' : 'Edit →'}
+                  {editOpen ? 'Cancel' : needsRevision ? 'Revise →' : 'Edit →'}
                 </button>
               </div>
-              <p className="text-xs text-blue-700">
-                Apply quick fixes (verbal feedback). Saving bumps to round {batch.round + 1} and asks all reviewers to re-review the whole batch.
+              <p className={`text-xs ${needsRevision ? 'text-orange-700' : 'text-blue-700'}`}>
+                {needsRevision
+                  ? `A reviewer asked for changes. Update the versions below, then resubmit round ${batch.round + 1} to all reviewers.`
+                  : `Apply quick fixes (verbal feedback). Saving bumps to round ${batch.round + 1} and asks all reviewers to re-review the whole batch.`}
               </p>
 
               {editOpen && (
@@ -660,9 +667,13 @@ export default function BatchDetailPage() {
                   <button
                     onClick={handleRevise}
                     disabled={editing}
-                    className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+                    className={`${needsRevision ? 'bg-orange-600 hover:bg-orange-700' : 'bg-blue-600 hover:bg-blue-700'} text-white px-6 py-2 rounded-lg text-sm font-medium disabled:opacity-50`}
                   >
-                    {editing ? 'Saving…' : `Save & re-notify (round ${batch.round + 1})`}
+                    {editing
+                      ? 'Saving…'
+                      : needsRevision
+                        ? `Resubmit round ${batch.round + 1}`
+                        : `Save & re-notify (round ${batch.round + 1})`}
                   </button>
                 </div>
               )}

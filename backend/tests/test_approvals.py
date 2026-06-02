@@ -749,6 +749,49 @@ def test_batch_revise_rejected_after_resolved():
     assert "pending" in resp.json()["error"].lower()
 
 
+def test_batch_revise_resubmits_after_needs_revision():
+    """A needs-revision batch can be revised in place — it re-opens as the
+    resubmit path: round bumps, version + reviewer statuses reset to pending."""
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combos = _create_combos(2)
+    batch = _submit_batch(creator, [reviewer], combos).json()["data"]
+    batch_id = batch["id"]
+    v0_id = batch["versions"][0]["id"]
+
+    # Reviewer asks for changes → whole batch flips to NEEDS_REVISION.
+    client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "NEEDS_REVISION", "feedback": "tighten the hook"},
+        headers=_auth_headers(reviewer),
+    )
+
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/revise",
+        json={
+            "reviewer_ids": [reviewer.id],
+            "versions": [{"approval_id": v0_id, "working_file_url": "https://example.com/v2"}],
+        },
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()["data"]
+    assert resp.json()["success"] is True
+    assert data["status"] == "PENDING_APPROVAL"  # batch re-opened
+    assert data["round"] == 2
+    assert all(v["status"] == "PENDING_APPROVAL" for v in data["versions"])  # verdicts cleared
+    assert all(rv["status"] == "PENDING" for rv in data["reviewers"])
+    v0 = next(v for v in data["versions"] if v["id"] == v0_id)
+    assert v0["working_file_url"] == "https://example.com/v2"
+
+    # Reviewer can now decide afresh on the resubmitted batch.
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(reviewer),
+    )
+    assert resp.json()["success"] is True
+
+
 # ── Auto-queue Figma render on full approval ─────────────────
 
 
