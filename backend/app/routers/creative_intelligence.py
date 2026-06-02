@@ -22,11 +22,13 @@ from app.core.permissions import scoped_account_ids
 from app.database import get_db
 from app.dependencies.auth import require_section
 from app.models.account import AdAccount
+from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
 from app.models.creative_visual_tag import CreativeVisualTag
 from app.models.figma import FigmaJob
+from app.models.keypoint import BranchKeypoint
 from app.models.user import User
 
 router = APIRouter()
@@ -658,5 +660,284 @@ def find_similar_combos(
             "source_combo_id": combo_id,
             "source_tag_count": len(source_tags),
         })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+# ── Combo detail (drawer) + "why this verdict" ───────────────
+
+
+def _branch_metric_context(db: Session, branch_id: str) -> dict:
+    """Branch-wide reference figures the heuristic compares a combo against.
+
+    benchmark_roas mirrors the verdict rule (Σrevenue / Σspend). The per-metric
+    averages are simple means over the branch's combos (non-null only) — used as
+    a 'vs branch average' yardstick so reasons are grounded in this account's
+    own track record rather than arbitrary global thresholds.
+    """
+    agg = (
+        db.query(
+            func.sum(AdCombo.spend).label("spend"),
+            func.sum(AdCombo.revenue).label("revenue"),
+            func.avg(AdCombo.ctr).label("ctr"),
+            func.avg(AdCombo.cost_per_purchase).label("cpp"),
+            func.avg(AdCombo.hook_rate).label("hook"),
+            func.avg(AdCombo.thruplay_rate).label("thru"),
+            func.avg(AdCombo.video_complete_rate).label("comp"),
+            func.avg(AdCombo.engagement_rate).label("eng"),
+        )
+        .filter(AdCombo.branch_id == branch_id)
+        .first()
+    )
+    s = float(agg.spend or 0)
+    r = float(agg.revenue or 0)
+    return {
+        "benchmark_roas": (r / s) if s > 0 else 0.0,
+        "avg_ctr": float(agg.ctr) if agg.ctr is not None else None,
+        "avg_cost_per_purchase": float(agg.cpp) if agg.cpp is not None else None,
+        "avg_hook_rate": float(agg.hook) if agg.hook is not None else None,
+        "avg_thruplay_rate": float(agg.thru) if agg.thru is not None else None,
+        "avg_video_complete_rate": float(agg.comp) if agg.comp is not None else None,
+        "avg_engagement_rate": float(agg.eng) if agg.eng is not None else None,
+    }
+
+
+def _reason(key, label, value, reference, sentiment, text):
+    return {
+        "key": key, "label": label, "value": value,
+        "reference": reference, "sentiment": sentiment, "text": text,
+    }
+
+
+def _cmp_higher(value, reference):
+    """Sentiment for a higher-is-better metric vs a reference (±5% deadband)."""
+    if value is None or reference is None or reference == 0:
+        return "neutral"
+    if value >= reference * 1.05:
+        return "positive"
+    if value <= reference * 0.95:
+        return "negative"
+    return "neutral"
+
+
+def _heuristic_insight(combo: AdCombo, ctx: dict, material_type: str | None) -> dict:
+    """Rule-based 'why WIN/LOSE' — instant, no model call.
+
+    Compares the combo's metrics to the branch benchmark / averages and emits a
+    list of signed reasons the drawer renders as green/red chips, plus a
+    one-line headline.
+    """
+    reasons: list[dict] = []
+    bench = ctx["benchmark_roas"]
+    roas = float(combo.roas) if combo.roas is not None else None
+
+    # ROAS vs benchmark — the primary verdict driver.
+    if roas is not None and bench:
+        delta = (roas - bench) / bench * 100 if bench else 0
+        if roas >= bench:
+            reasons.append(_reason(
+                "roas", "ROAS", f"{roas:.2f}x", f"{bench:.2f}x", "positive",
+                f"ROAS {roas:.2f}x beats the branch benchmark {bench:.2f}x (+{delta:.0f}%).",
+            ))
+        else:
+            reasons.append(_reason(
+                "roas", "ROAS", f"{roas:.2f}x", f"{bench:.2f}x", "negative",
+                f"ROAS {roas:.2f}x is below the branch benchmark {bench:.2f}x ({delta:.0f}%).",
+            ))
+
+    # Bookings (conversions) — absolute signal.
+    conv = combo.conversions or 0
+    if conv >= 5:
+        reasons.append(_reason(
+            "bookings", "Bookings", str(conv), "≥5", "positive",
+            f"{conv} bookings — past the 5-booking bar for a proven combo.",
+        ))
+    elif conv == 0 and combo.spend:
+        reasons.append(_reason(
+            "bookings", "Bookings", "0", "≥1", "negative",
+            "No bookings yet despite spend — still in test.",
+        ))
+
+    # Cost per purchase — lower is better.
+    cpp = float(combo.cost_per_purchase) if combo.cost_per_purchase is not None else None
+    avg_cpp = ctx["avg_cost_per_purchase"]
+    if cpp is not None and avg_cpp:
+        if cpp <= avg_cpp * 0.95:
+            reasons.append(_reason(
+                "cpp", "Cost / booking", f"{cpp:,.0f}", f"{avg_cpp:,.0f}", "positive",
+                f"Cost per booking {cpp:,.0f} undercuts the branch average {avg_cpp:,.0f}.",
+            ))
+        elif cpp >= avg_cpp * 1.05:
+            reasons.append(_reason(
+                "cpp", "Cost / booking", f"{cpp:,.0f}", f"{avg_cpp:,.0f}", "negative",
+                f"Cost per booking {cpp:,.0f} runs above the branch average {avg_cpp:,.0f}.",
+            ))
+
+    # CTR — higher is better.
+    ctr = float(combo.ctr) if combo.ctr is not None else None
+    avg_ctr = ctx["avg_ctr"]
+    s = _cmp_higher(ctr, avg_ctr)
+    if ctr is not None and avg_ctr and s != "neutral":
+        reasons.append(_reason(
+            "ctr", "CTR", f"{ctr*100:.2f}%", f"{avg_ctr*100:.2f}%", s,
+            f"CTR {ctr*100:.2f}% is {'above' if s=='positive' else 'below'} "
+            f"the branch average {avg_ctr*100:.2f}%.",
+        ))
+
+    # Video engagement signals — only meaningful for video creatives.
+    if material_type == "video":
+        hook = float(combo.hook_rate) if combo.hook_rate is not None else None
+        avg_hook = ctx["avg_hook_rate"]
+        sh = _cmp_higher(hook, avg_hook)
+        if hook is not None and avg_hook and sh != "neutral":
+            reasons.append(_reason(
+                "hook", "Hook rate", f"{hook*100:.1f}%", f"{avg_hook*100:.1f}%", sh,
+                f"3-sec hook {hook*100:.1f}% is {'stronger' if sh=='positive' else 'weaker'} "
+                f"than the branch average {avg_hook*100:.1f}% — "
+                f"{'the opener grabs attention' if sh=='positive' else 'the opener loses viewers early'}.",
+            ))
+        thru = float(combo.thruplay_rate) if combo.thruplay_rate is not None else None
+        avg_thru = ctx["avg_thruplay_rate"]
+        st = _cmp_higher(thru, avg_thru)
+        if thru is not None and avg_thru and st != "neutral":
+            reasons.append(_reason(
+                "thruplay", "Thruplay", f"{thru*100:.1f}%", f"{avg_thru*100:.1f}%", st,
+                f"Thruplay {thru*100:.1f}% is {'above' if st=='positive' else 'below'} "
+                f"the branch average {avg_thru*100:.1f}%.",
+            ))
+
+    pos = sum(1 for r in reasons if r["sentiment"] == "positive")
+    neg = sum(1 for r in reasons if r["sentiment"] == "negative")
+    if combo.verdict == "WIN":
+        headline = "Winning combo — clears the ROAS benchmark with supporting signals." if pos else "Marked WIN."
+    elif combo.verdict == "LOSE":
+        headline = "Underperformer — trailing the benchmark on the drivers below." if neg else "Marked LOSE."
+    else:
+        headline = "Still testing — not enough volume to call yet."
+    return {"headline": headline, "reasons": reasons, "positive": pos, "negative": neg}
+
+
+@router.get("/creative/combos/{combo_id}/detail")
+def get_combo_detail(
+    combo_id: str,
+    current_user: User = Depends(require_section("meta_ads")),
+    db: Session = Depends(get_db),
+):
+    """Everything the right-hand drawer renders for one combo.
+
+    Bundles the linked copy + material (with visual tags), angle, keypoints,
+    full metrics, the branch reference figures, and a rule-based 'why this
+    verdict' insight — so the drawer opens with one request and no model call.
+    """
+    try:
+        combo = db.query(AdCombo).filter(AdCombo.combo_id == combo_id).first()
+        if not combo:
+            return _api_response(error=f"Combo {combo_id} not found")
+
+        ok, scoped_ids, err = scoped_account_ids(db, current_user, "meta_ads")
+        if not ok:
+            return _api_response(error=err)
+        if scoped_ids is not None and combo.branch_id not in scoped_ids:
+            return _api_response(error="No access to this combo")
+
+        branch = db.query(AdAccount).filter(AdAccount.id == combo.branch_id).first()
+        copy = db.query(AdCopy).filter(AdCopy.copy_id == combo.copy_id).first() if combo.copy_id else None
+        material = (
+            db.query(AdMaterial).filter(AdMaterial.material_id == combo.material_id).first()
+            if combo.material_id else None
+        )
+        angle = db.query(AdAngle).filter(AdAngle.angle_id == combo.angle_id).first() if combo.angle_id else None
+
+        # Visual tags for the material, grouped by category.
+        tags_grouped: dict[str, list[dict]] = {}
+        if material:
+            for t in (
+                db.query(CreativeVisualTag)
+                .filter(CreativeVisualTag.material_id == material.material_id)
+                .order_by(CreativeVisualTag.tag_category, CreativeVisualTag.tag_value)
+                .all()
+            ):
+                tags_grouped.setdefault(t.tag_category, []).append(_serialize_tag(t))
+
+        # Keypoint titles.
+        kp_titles: list[str] = []
+        if isinstance(combo.keypoint_ids, list) and combo.keypoint_ids:
+            kps = db.query(BranchKeypoint).filter(BranchKeypoint.id.in_(combo.keypoint_ids)).all()
+            kp_titles = [k.title for k in kps if k.title]
+
+        ctx = _branch_metric_context(db, combo.branch_id)
+        material_type = material.material_type if material else None
+        insight = _heuristic_insight(combo, ctx, material_type)
+
+        return _api_response(data={
+            "combo": {
+                "id": combo.id, "combo_id": combo.combo_id, "branch_id": combo.branch_id,
+                "branch_name": branch.account_name if branch else None,
+                "currency": branch.currency if branch else None,
+                "ad_name": combo.ad_name, "verdict": combo.verdict,
+                "verdict_source": combo.verdict_source, "verdict_notes": combo.verdict_notes,
+                "target_audience": combo.target_audience, "country": combo.country,
+                "spend": float(combo.spend) if combo.spend is not None else None,
+                "impressions": combo.impressions, "clicks": combo.clicks,
+                "conversions": combo.conversions,
+                "revenue": float(combo.revenue) if combo.revenue is not None else None,
+                "roas": float(combo.roas) if combo.roas is not None else None,
+                "cost_per_purchase": float(combo.cost_per_purchase) if combo.cost_per_purchase is not None else None,
+                "ctr": float(combo.ctr) if combo.ctr is not None else None,
+                "engagement_rate": float(combo.engagement_rate) if combo.engagement_rate is not None else None,
+                "hook_rate": float(combo.hook_rate) if combo.hook_rate is not None else None,
+                "thruplay_rate": float(combo.thruplay_rate) if combo.thruplay_rate is not None else None,
+                "video_complete_rate": float(combo.video_complete_rate) if combo.video_complete_rate is not None else None,
+            },
+            "copy": {
+                "copy_id": copy.copy_id, "headline": copy.headline,
+                "body_text": copy.body_text, "cta": copy.cta, "language": copy.language,
+            } if copy else None,
+            "material": {
+                "material_id": material.material_id, "material_type": material.material_type,
+                "file_url": material.file_url, "description": material.description,
+                "vision_analyzed_at": material.vision_analyzed_at.isoformat() if material.vision_analyzed_at else None,
+                "tags": tags_grouped,
+            } if material else None,
+            "angle": {
+                "angle_id": angle.angle_id, "angle_type": angle.angle_type or angle.hook or "",
+                "explain": angle.angle_explain or "", "status": angle.status,
+            } if angle else None,
+            "keypoints": kp_titles,
+            "branch_context": ctx,
+            "insight": insight,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.post("/creative/combos/{combo_id}/why")
+def analyze_combo_why(
+    combo_id: str,
+    current_user: User = Depends(require_section("meta_ads")),
+    db: Session = Depends(get_db),
+):
+    """AI narrative for 'why did this combo win/lose' — Claude Sonnet.
+
+    Grounded in the combo's own metrics, copy, visual tags and the branch
+    averages. Returns gracefully (error field) when ANTHROPIC_API_KEY is unset
+    so the heuristic panel still stands on its own.
+    """
+    try:
+        combo = db.query(AdCombo).filter(AdCombo.combo_id == combo_id).first()
+        if not combo:
+            return _api_response(error=f"Combo {combo_id} not found")
+
+        ok, scoped_ids, err = scoped_account_ids(db, current_user, "meta_ads")
+        if not ok:
+            return _api_response(error=err)
+        if scoped_ids is not None and combo.branch_id not in scoped_ids:
+            return _api_response(error="No access to this combo")
+
+        from app.services.creative_why_service import analyze_why
+        result = analyze_why(db, combo=combo)
+        if result.get("error"):
+            return _api_response(error=result["error"])
+        return _api_response(data=result)
     except Exception as e:
         return _api_response(error=str(e))
