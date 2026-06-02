@@ -643,6 +643,112 @@ def test_batch_access_denied_for_outsider():
     assert "denied" in resp.json()["error"].lower()
 
 
+def test_batch_revise_bumps_round_and_resets_reviewers():
+    creator = _create_user(["creator"])
+    r1 = _create_user(["reviewer"])
+    r2 = _create_user(["reviewer"])
+    combos = _create_combos(2)
+
+    batch = _submit_batch(creator, [r1, r2], combos).json()["data"]
+    batch_id = batch["id"]
+    v0_id = batch["versions"][0]["id"]
+
+    # One reviewer decides before the creator revises.
+    client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(r1),
+    )
+
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/revise",
+        json={
+            "reviewer_ids": [r1.id, r2.id],
+            "versions": [{"approval_id": v0_id, "working_file_url": "https://example.com/new"}],
+        },
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()["data"]
+    assert resp.json()["success"] is True
+    assert data["status"] == "PENDING_APPROVAL"
+    assert data["round"] == 2  # batch round bumped
+    assert all(v["round"] == 2 for v in data["versions"])  # each version bumped
+    assert all(rv["status"] == "PENDING" for rv in data["reviewers"])  # decisions reset
+    v0 = next(v for v in data["versions"] if v["id"] == v0_id)
+    assert v0["working_file_url"] == "https://example.com/new"
+
+    # The reviewer who already decided can decide again on the re-opened batch.
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(r1),
+    )
+    assert resp.json()["success"] is True
+
+
+def test_batch_revise_only_creator():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combos = _create_combos(2)
+    batch_id = _submit_batch(creator, [reviewer], combos).json()["data"]["id"]
+
+    other = _create_user(["creator"])
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/revise",
+        json={"reviewer_ids": [reviewer.id], "versions": []},
+        headers=_auth_headers(other),
+    )
+    assert resp.json()["success"] is False
+    assert "creator" in resp.json()["error"].lower()
+
+
+def test_batch_revise_replaces_reviewer_set():
+    creator = _create_user(["creator"])
+    r1 = _create_user(["reviewer"])
+    r2 = _create_user(["reviewer"])
+    combos = _create_combos(2)
+    batch_id = _submit_batch(creator, [r1, r2], combos).json()["data"]["id"]
+
+    # Drop r2 — only r1 remains a reviewer across all versions.
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/revise",
+        json={"reviewer_ids": [r1.id], "versions": []},
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()["data"]
+    assert resp.json()["success"] is True
+    assert {rv["reviewer_id"] for rv in data["reviewers"]} == {r1.id}
+
+    # r2 is no longer assigned and cannot decide.
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(r2),
+    )
+    assert resp.json()["success"] is False
+
+
+def test_batch_revise_rejected_after_resolved():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combos = _create_combos(2)
+    batch_id = _submit_batch(creator, [reviewer], combos).json()["data"]["id"]
+
+    client.post(
+        f"/api/approval-batches/{batch_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(reviewer),
+    )
+
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/revise",
+        json={"reviewer_ids": [reviewer.id], "versions": []},
+        headers=_auth_headers(creator),
+    )
+    assert resp.json()["success"] is False
+    assert "pending" in resp.json()["error"].lower()
+
+
 # ── Auto-queue Figma render on full approval ─────────────────
 
 

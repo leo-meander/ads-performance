@@ -17,6 +17,7 @@ from app.services.approval_service import (
     resend_batch_review_request_emails,
     resend_review_request_emails,
     resubmit,
+    revise_batch,
     revise_pending_approval,
     submit_batch,
     submit_for_approval,
@@ -62,6 +63,29 @@ class SubmitBatchRequest(BaseModel):
     reviewer_ids: list[str]
     deadline: str | None = None  # ISO8601 datetime string
     note: str | None = None
+
+
+class ReviseBatchVersion(BaseModel):
+    """Per-version edits inside a batch revise. approval_id targets the child
+    combo_approval. Any field omitted (None) is left unchanged."""
+    approval_id: str
+    working_file_url: str | None = None
+    working_file_label: str | None = None
+    angle_id: str | None = None
+    keypoint_ids: list[str] | None = None
+    headline: str | None = None
+    body_text: str | None = None
+    cta: str | None = None
+    language: str | None = None
+    target_audience: str | None = None
+
+
+class ReviseBatchRequest(BaseModel):
+    """In-place edit on a PENDING batch. deadline + reviewer_ids are batch-wide;
+    per-version content lives in `versions`."""
+    deadline: str | None = None
+    reviewer_ids: list[str] | None = None
+    versions: list[ReviseBatchVersion] = []
 
 
 class ResubmitRequest(BaseModel):
@@ -296,6 +320,34 @@ def resend_batch_request(
             requester_id=current_user.id,
         )
         return _api_response(data=result)
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.post("/approval-batches/{batch_id}/revise")
+def revise_approval_batch(
+    batch_id: str,
+    body: ReviseBatchRequest,
+    current_user: User = Depends(require_role(["creator", "admin"])),
+    _section: User = Depends(require_page("approvals", "edit")),
+    db: Session = Depends(get_db),
+):
+    """In-place edit while pending: bumps the batch + every version's round,
+    resets reviewer decisions across all versions, re-notifies once."""
+    try:
+        batch = revise_batch(
+            db=db,
+            batch_id=batch_id,
+            creator_id=current_user.id,
+            deadline=body.deadline,
+            reviewer_ids=body.reviewer_ids,
+            versions=[v.model_dump() for v in body.versions],
+        )
+        detail = get_batch_detail(db, batch.id)
+        return _api_response(data=detail)
     except ValueError as e:
         return _api_response(error=str(e))
     except Exception as e:
