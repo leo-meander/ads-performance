@@ -51,6 +51,14 @@ SYSTEM_PROMPT = """You are a hotel ad strategist. Given ad text + the available 
    - If it's a genuinely new selling point not in the existing list → propose a new keypoint.
    Do NOT propose a new keypoint when an existing one already covers the idea — reuse aggressively.
 
+   Each proposed keypoint must be SINGLE-FOCUS — one landmark / feature / fact, stated
+   straight. Do NOT bundle. No em-dash tails that tack on extra description, no lists of
+   examples, no "A + B", no parenthetical lists of venues. If the ad mentions several
+   distinct things, split them into separate keypoints — one each. A trailing distance
+   "(~300m)" or a place's own name "(阿宗麵線)" is fine; a tacked-on descriptor is not.
+   Good:  "~5-min walk to Nguyen Hue Walking Street"
+   Bad:   "~5-min walk to Nguyen Hue Walking Street — rooftop bars (Chill Skybar, Social Club, EON51)"
+
 Output STRICT JSON only (no markdown):
 
 {
@@ -59,7 +67,7 @@ Output STRICT JSON only (no markdown):
   "angle_rationale": "one sentence — why this angle",
   "matched_keypoint_ids": ["<existing keypoint id>", ...],
   "proposed_keypoints": [
-    {"title": "Short selling point, max 60 chars",
+    {"title": "One single selling point, max 60 chars — no bundling",
      "category": "location | amenity | experience | value",
      "rationale": "one sentence — why it's new, not a duplicate"}
   ]
