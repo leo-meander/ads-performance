@@ -187,6 +187,41 @@ TOOLS = [
             "properties": {},
         },
     },
+    {
+        "name": "get_ad_count",
+        "description": (
+            "Count distinct ads at the AD (creative) level that ran with spend in a date "
+            "range, broken down by branch. This is the true ad/creative count — finer than "
+            "get_campaigns, which only counts campaigns (one campaign holds many ads). "
+            "Sourced from Meta ad-level daily insights; Google/TikTok ad-level counts are "
+            "NOT included. Use to size creative production needs (e.g. 'how many ads are "
+            "live with spend per branch')."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date_from": {
+                    "type": "string",
+                    "description": "Start date YYYY-MM-DD (default: 30 days ago)",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "End date YYYY-MM-DD (default: today)",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name substring, e.g. 'Saigon', 'Oani', 'Osaka'",
+                },
+                "min_spend": {
+                    "type": "number",
+                    "description": (
+                        "Only count ads whose TOTAL spend over the window exceeds this "
+                        "(default 0 = any spend at all)."
+                    ),
+                },
+            },
+        },
+    },
 ]
 
 
@@ -201,6 +236,7 @@ def call_tool(name: str, arguments: dict, db: Session) -> Any:
         "get_campaigns": _get_campaigns,
         "get_budget_status": _get_budget_status,
         "get_branches": _get_branches,
+        "get_ad_count": _get_ad_count,
     }
     handler = handlers.get(name)
     if not handler:
@@ -595,6 +631,66 @@ def _get_budget_status(args: dict, db: Session) -> dict:
     return {
         "month": month_start.strftime("%Y-%m"),
         "plans": result,
+    }
+
+
+def _get_ad_count(args: dict, db: Session) -> dict:
+    """Count distinct ads (creatives) that spent in the window, per branch.
+
+    Meta ad-level only — ad_daily_metrics is the sole table at ad grain. The
+    grain of ad_daily_metrics is (account, ad_id, day), so we first collapse
+    the daily rows to one window-total per (branch, ad_id), drop ads at/below
+    min_spend, then COUNT the survivors per branch. Counting distinct ad_id is
+    what makes this an AD-level count rather than the campaign-level count that
+    get_campaigns returns.
+    """
+    date_from, date_to = _default_dates()
+    date_from = args.get("date_from", date_from)
+    date_to = args.get("date_to", date_to)
+    branch = args.get("branch")
+    min_spend = float(args.get("min_spend", 0) or 0)
+
+    filters = ["m.date BETWEEN :date_from AND :date_to"]
+    params: dict = {"date_from": date_from, "date_to": date_to, "min_spend": min_spend}
+    if branch:
+        # LOWER(...) LIKE LOWER(...) instead of ILIKE so the query runs on both
+        # Postgres (prod) and SQLite (tests).
+        filters.append("LOWER(a.account_name) LIKE LOWER(:branch)")
+        params["branch"] = f"%{branch}%"
+
+    where = " AND ".join(filters)
+    sql = text(f"""
+        SELECT
+            branch,
+            COUNT(*)                        AS ads_with_spend,
+            CAST(SUM(ad_spend) AS FLOAT)    AS spend
+        FROM (
+            SELECT
+                a.account_name      AS branch,
+                m.ad_id             AS ad_id,
+                SUM(m.spend)        AS ad_spend
+            FROM ad_daily_metrics m
+            JOIN ad_accounts a ON a.id = m.account_id
+            WHERE {where}
+            GROUP BY a.account_name, m.ad_id
+            HAVING SUM(m.spend) > :min_spend
+        ) t
+        GROUP BY branch
+        ORDER BY ads_with_spend DESC
+    """)
+
+    rows = db.execute(sql, params).mappings().all()
+    by_branch = [dict(r) for r in rows]
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "min_spend": min_spend,
+        "note": (
+            "Ad-level (creative) counts from Meta ad insights only. "
+            "Google/TikTok ad-level data is not tracked at this grain."
+        ),
+        "by_branch": by_branch,
+        "total_ads_with_spend": sum(int(r["ads_with_spend"] or 0) for r in by_branch),
     }
 
 
