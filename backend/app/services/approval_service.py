@@ -224,6 +224,74 @@ def record_decision(
     return approval
 
 
+def _apply_combo_content_edits(
+    db: Session,
+    combo: AdCombo,
+    *,
+    angle_id: str | None = None,
+    keypoint_ids: list[str] | None = None,
+    headline: str | None = None,
+    body_text: str | None = None,
+    cta: str | None = None,
+    language: str | None = None,
+    target_audience: str | None = None,
+) -> None:
+    """Apply angle / keypoint / copy edits onto a combo in place (no commit).
+
+    Shared by single-approval and batch revise. Sentinel: None leaves a field
+    unchanged; empty string clears angle_id / keypoint_ids.
+
+    Copy edits clone-on-shared: if the linked AdCopy is used by more than one
+    combo, a fresh copy_id is cloned and the combo re-pointed so the change does
+    not leak; if exclusive, edited in place.
+    """
+    if angle_id is not None:
+        combo.angle_id = angle_id or None
+    if keypoint_ids is not None:
+        combo.keypoint_ids = keypoint_ids or None
+
+    copy_fields_changed = any(
+        x is not None for x in (headline, body_text, cta, language, target_audience)
+    )
+    if not copy_fields_changed:
+        return
+
+    from app.models.ad_copy import AdCopy
+    from app.services.creative_service import next_copy_id
+
+    copy = db.query(AdCopy).filter(AdCopy.copy_id == combo.copy_id).first()
+    if not copy:
+        return
+
+    shared_count = db.query(AdCombo).filter(AdCombo.copy_id == combo.copy_id).count()
+    if shared_count > 1:
+        new_id = next_copy_id(db)
+        clone = AdCopy(
+            branch_id=copy.branch_id,
+            copy_id=new_id,
+            target_audience=target_audience if target_audience is not None else copy.target_audience,
+            angle_id=copy.angle_id,
+            headline=headline if headline is not None else copy.headline,
+            body_text=body_text if body_text is not None else copy.body_text,
+            cta=(cta if cta is not None else copy.cta) or None,
+            language=language if language is not None else copy.language,
+        )
+        db.add(clone)
+        db.flush()
+        combo.copy_id = new_id
+    else:
+        if headline is not None:
+            copy.headline = headline
+        if body_text is not None:
+            copy.body_text = body_text
+        if cta is not None:
+            copy.cta = cta or None
+        if language is not None:
+            copy.language = language
+        if target_audience is not None:
+            copy.target_audience = target_audience
+
+
 def revise_pending_approval(
     db: Session,
     approval_id: str,
@@ -290,50 +358,17 @@ def revise_pending_approval(
         else:
             approval.deadline = None
 
-    if angle_id is not None:
-        combo.angle_id = angle_id or None
-    if keypoint_ids is not None:
-        combo.keypoint_ids = keypoint_ids or None
-
-    # Copy edits: clone-on-shared, edit-in-place if exclusive to this combo
-    copy_fields_changed = any(
-        x is not None for x in (headline, body_text, cta, language, target_audience)
+    _apply_combo_content_edits(
+        db,
+        combo,
+        angle_id=angle_id,
+        keypoint_ids=keypoint_ids,
+        headline=headline,
+        body_text=body_text,
+        cta=cta,
+        language=language,
+        target_audience=target_audience,
     )
-    if copy_fields_changed:
-        from app.models.ad_copy import AdCopy
-        from app.services.creative_service import next_copy_id
-
-        copy = db.query(AdCopy).filter(AdCopy.copy_id == combo.copy_id).first()
-        if copy:
-            shared_count = (
-                db.query(AdCombo).filter(AdCombo.copy_id == combo.copy_id).count()
-            )
-            if shared_count > 1:
-                new_id = next_copy_id(db)
-                clone = AdCopy(
-                    branch_id=copy.branch_id,
-                    copy_id=new_id,
-                    target_audience=target_audience if target_audience is not None else copy.target_audience,
-                    angle_id=copy.angle_id,
-                    headline=headline if headline is not None else copy.headline,
-                    body_text=body_text if body_text is not None else copy.body_text,
-                    cta=(cta if cta is not None else copy.cta) or None,
-                    language=language if language is not None else copy.language,
-                )
-                db.add(clone)
-                db.flush()
-                combo.copy_id = new_id
-            else:
-                if headline is not None:
-                    copy.headline = headline
-                if body_text is not None:
-                    copy.body_text = body_text
-                if cta is not None:
-                    copy.cta = cta or None
-                if language is not None:
-                    copy.language = language
-                if target_audience is not None:
-                    copy.target_audience = target_audience
 
     # Reviewer set: replace if caller passed a non-empty list, else reset existing.
     existing = (
@@ -788,6 +823,204 @@ def record_batch_decision(
                         "Auto-queue Figma render on batch approval failed for %s", child.id
                     )
 
+    _queue_emails(email_tasks)
+    return batch
+
+
+def revise_batch(
+    db: Session,
+    batch_id: str,
+    creator_id: str,
+    deadline: str | None = None,
+    reviewer_ids: list[str] | None = None,
+    versions: list[dict] | None = None,
+) -> ApprovalBatch:
+    """Edit a pending batch in place — bumps the batch + every version's round,
+    resets ALL reviewers across all versions, re-notifies once (consolidated).
+
+    Mirrors revise_pending_approval but for the all-or-nothing batch flow: the
+    batch re-opens as a whole, so a single round bump and one consolidated
+    re-review request cover every version.
+
+    `versions` is a list of per-version edit dicts keyed by `approval_id` (the
+    child combo_approval id). Each may carry working_file_url / working_file_label
+    and content edits (angle_id, keypoint_ids, headline, body_text, cta, language,
+    target_audience). A version absent from the list keeps its content but still
+    has its round bumped + reviewers reset. `deadline` and `reviewer_ids` are
+    batch-wide. Sentinel: None leaves a field unchanged; empty string clears.
+    """
+    batch = db.query(ApprovalBatch).filter(ApprovalBatch.id == batch_id).first()
+    if not batch:
+        raise ValueError("Batch not found")
+
+    if batch.submitted_by != creator_id:
+        raise ValueError("Only the original creator can revise this batch")
+
+    children = (
+        db.query(ComboApproval)
+        .filter(ComboApproval.batch_id == batch_id)
+        .order_by(ComboApproval.created_at.asc())
+        .all()
+    )
+    if not children:
+        raise ValueError("Batch has no versions")
+
+    current_status = _rollup_batch_status([c.status for c in children])
+    if current_status != "PENDING_APPROVAL":
+        raise ValueError(
+            f"Only PENDING_APPROVAL batches can be revised in place; current status: {current_status}"
+        )
+
+    now = datetime.now(timezone.utc)
+
+    # Parse batch-wide deadline once (None = leave unchanged, "" = clear).
+    parsed_deadline = None
+    clear_deadline = False
+    if deadline is not None:
+        if deadline:
+            from datetime import datetime as dt_cls
+            try:
+                parsed_deadline = dt_cls.fromisoformat(deadline)
+            except (ValueError, TypeError):
+                parsed_deadline = None
+                deadline = None  # unparseable → leave unchanged
+        else:
+            clear_deadline = True
+
+    if parsed_deadline is not None:
+        batch.deadline = parsed_deadline
+    elif clear_deadline:
+        batch.deadline = None
+
+    batch.round = (batch.round or 0) + 1
+
+    edits_by_approval = {v["approval_id"]: v for v in (versions or []) if v.get("approval_id")}
+
+    for child in children:
+        combo = db.query(AdCombo).filter(AdCombo.id == child.combo_id).first()
+        child.round = (child.round or 0) + 1
+        child.submitted_at = now
+        if parsed_deadline is not None:
+            child.deadline = parsed_deadline
+        elif clear_deadline:
+            child.deadline = None
+
+        edit = edits_by_approval.get(child.id)
+        if edit and combo:
+            if edit.get("working_file_url") is not None:
+                child.working_file_url = edit["working_file_url"] or None
+            if edit.get("working_file_label") is not None:
+                child.working_file_label = edit["working_file_label"] or None
+            _apply_combo_content_edits(
+                db,
+                combo,
+                angle_id=edit.get("angle_id"),
+                keypoint_ids=edit.get("keypoint_ids"),
+                headline=edit.get("headline"),
+                body_text=edit.get("body_text"),
+                cta=edit.get("cta"),
+                language=edit.get("language"),
+                target_audience=edit.get("target_audience"),
+            )
+
+    # Reconcile reviewers across EVERY version so the batch stays consistent.
+    child_ids = [c.id for c in children]
+    existing = (
+        db.query(ApprovalReviewer)
+        .filter(ApprovalReviewer.approval_id.in_(child_ids))
+        .all()
+    )
+    rows_by_child: dict[str, list] = {}
+    for r in existing:
+        rows_by_child.setdefault(r.approval_id, []).append(r)
+
+    if reviewer_ids:
+        new_ids = set(reviewer_ids)
+        for child in children:
+            by_rid = {r.reviewer_id: r for r in rows_by_child.get(child.id, [])}
+            for rid, row in by_rid.items():
+                if rid not in new_ids:
+                    db.delete(row)
+                else:
+                    row.status = "PENDING"
+                    row.decided_at = None
+                    row.feedback = None
+                    row.notified_email_at = None
+                    row.notified_system_at = now
+            for rid in new_ids - set(by_rid.keys()):
+                db.add(ApprovalReviewer(
+                    approval_id=child.id,
+                    reviewer_id=rid,
+                    status="PENDING",
+                    notified_system_at=now,
+                ))
+        final_reviewer_ids = new_ids
+    else:
+        for r in existing:
+            r.status = "PENDING"
+            r.decided_at = None
+            r.feedback = None
+            r.notified_email_at = None
+            r.notified_system_at = now
+        final_reviewer_ids = {r.reviewer_id for r in existing}
+
+    db.flush()
+
+    # One consolidated re-review request per reviewer (mirrors submit_batch).
+    submitter = db.query(User).filter(User.id == creator_id).first()
+    submitter_name = submitter.full_name if submitter else "Unknown"
+    version_count = len(children)
+    first_combo = db.query(AdCombo).filter(AdCombo.id == children[0].combo_id).first()
+    first_name = (
+        (first_combo.ad_name or first_combo.combo_id) if first_combo else "your submission"
+    )
+    batch_label = (
+        first_name if version_count == 1 else f"{first_name} (+{version_count - 1} more)"
+    )
+    branch = (
+        db.query(AdAccount).filter(AdAccount.id == first_combo.branch_id).first()
+        if first_combo and first_combo.branch_id else None
+    )
+    branch_name = branch.account_name if branch else None
+    working_file_url = children[0].working_file_url
+
+    email_tasks = []
+    for rid in final_reviewer_ids:
+        reviewer = db.query(User).filter(User.id == rid).first()
+        if not reviewer:
+            continue
+        create_notification(
+            db,
+            user_id=rid,
+            type="REVIEW_REQUESTED",
+            title=f"Revised — please re-review: {batch_label}",
+            body=(
+                f"{submitter_name} updated {version_count} "
+                f"version{'s' if version_count != 1 else ''} "
+                f"(round {batch.round}). Please re-review."
+            ),
+            reference_id=batch.id,
+            reference_type="approval_batch",
+        )
+        if reviewer.notification_email and reviewer.email:
+            subject, html = render_review_request_email(
+                combo_name=batch_label,
+                reviewer_name=reviewer.full_name,
+                submitter_name=submitter_name,
+                working_file_url=working_file_url,
+                approval_id=batch.id,
+                branch_name=branch_name,
+                deadline=batch.deadline,
+                platform_url=settings.FRONTEND_URL,
+            )
+            email_tasks.append((reviewer.email, subject, html))
+            for row in db.query(ApprovalReviewer).filter(
+                ApprovalReviewer.approval_id.in_(child_ids),
+                ApprovalReviewer.reviewer_id == rid,
+            ).all():
+                row.notified_email_at = now
+
+    db.commit()
     _queue_emails(email_tasks)
     return batch
 
