@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Plus, ArrowUpDown, X, Sparkles, Film, Image as ImageIcon, LayoutGrid, ExternalLink } from 'lucide-react'
+import KeypointDoubleCheckModal from '@/components/KeypointDoubleCheckModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -19,7 +20,6 @@ interface Combo {
   thruplay_rate: number | null; video_complete_rate: number | null
 }
 interface Account { id: string; account_name: string }
-interface Keypoint { id: string; branch_id: string; category: string; title: string }
 interface Angle { angle_id: string; branch_id: string | null; angle_type: string; status: string }
 
 const VERDICT_COLORS: Record<string, string> = {
@@ -45,12 +45,12 @@ function CreativePageInner() {
 
   const [combos, setCombos] = useState<Combo[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
-  const [allKeypoints, setAllKeypoints] = useState<Keypoint[]>([])
   const [allAngles, setAllAngles] = useState<Angle[]>([])
   const [comboTotal, setComboTotal] = useState(0)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [classifyMsg, setClassifyMsg] = useState('')
   const [detailId, setDetailId] = useState<string | null>(null)
+  const [kpModalCombo, setKpModalCombo] = useState<Combo | null>(null)
 
   // Filters
   const [fBranch, setFBranch] = useState('')
@@ -88,7 +88,6 @@ function CreativePageInner() {
         }
       })
       .catch(() => {})
-    fetch(`${API_BASE}/api/keypoints`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAllKeypoints(d.data) }).catch(() => {})
     fetch(`${API_BASE}/api/angles`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setAllAngles(d.data) }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -136,14 +135,6 @@ function CreativePageInner() {
   const updateCombo = (comboId: string, data: { angle_id?: string; keypoint_ids?: string[] }) => {
     fetch(`${API_BASE}/api/combos/${comboId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify(data) })
       .then(() => { setEditingId(null) })
-  }
-
-  const toggleKeypoint = (combo: Combo, kpId: string) => {
-    const current = combo.keypoint_ids || []
-    const updated = current.includes(kpId) ? current.filter(id => id !== kpId) : [...current, kpId]
-    updateCombo(combo.combo_id, { keypoint_ids: updated })
-    // Optimistic update
-    setCombos(prev => prev.map(c => c.combo_id === combo.combo_id ? { ...c, keypoint_ids: updated, keypoint_titles: updated.map(id => allKeypoints.find(k => k.id === id)?.title || '') } : c))
   }
 
   const accName = (id: string) => accounts.find(a => a.id === id)?.account_name || '—'
@@ -333,24 +324,18 @@ function CreativePageInner() {
                   <td className="py-2 px-2 text-xs text-gray-600">{accName(c.branch_id)}</td>
                   <td className="py-2 px-2"><span className="text-xs px-1.5 py-0.5 rounded bg-gray-100">{c.target_audience || '—'}</span></td>
                   <td className="py-2 px-2 text-xs text-gray-600">{c.country || '—'}</td>
-                  <td className="py-2 px-2 text-xs max-w-[160px] relative" onClick={e => e.stopPropagation()}>
-                    {editingId === `kp-${c.combo_id}` ? (
-                      <div className="absolute z-10 bg-white border border-gray-200 rounded-lg shadow-lg p-2 w-56 max-h-48 overflow-auto" style={{top: 0, left: 0}}>
-                        <p className="text-[10px] text-gray-400 mb-1">Select keypoints:</p>
-                        {allKeypoints.filter(k => k.branch_id === c.branch_id).map(k => (
-                          <label key={k.id} className="flex items-center gap-1.5 py-1 text-[11px] cursor-pointer hover:bg-gray-50 rounded px-1">
-                            <input type="checkbox" checked={(c.keypoint_ids || []).includes(k.id)} onChange={() => toggleKeypoint(c, k.id)} className="w-3 h-3" />
-                            <span className="text-gray-400">[{k.category}]</span> {k.title}
-                          </label>
-                        ))}
-                        <button onClick={() => setEditingId(null)} className="text-[10px] text-blue-600 mt-1">Done</button>
-                      </div>
-                    ) : null}
-                    <div onClick={() => setEditingId(editingId === `kp-${c.combo_id}` ? null : `kp-${c.combo_id}`)} className="cursor-pointer min-h-[20px]">
+                  <td className="py-2 px-2 text-xs max-w-[180px]" onClick={e => e.stopPropagation()}>
+                    <div className="mb-1">
                       {c.keypoint_titles.length > 0 ? c.keypoint_titles.map((t, i) => (
                         <span key={i} className="inline-block bg-blue-50 text-blue-700 rounded px-1 py-0.5 text-[10px] mr-1 mb-0.5">{t.length > 25 ? t.slice(0, 25) + '...' : t}</span>
-                      )) : <span className="text-gray-300 text-[10px]">+ add keypoints</span>}
+                      )) : <span className="text-gray-300 text-[10px]">No keypoints</span>}
                     </div>
+                    <button
+                      onClick={() => setKpModalCombo(c)}
+                      className="inline-flex items-center gap-1 text-[10px] font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded px-1.5 py-0.5"
+                    >
+                      <Sparkles className="w-3 h-3" /> Double check
+                    </button>
                   </td>
                   <td className="py-2 px-2 text-xs max-w-[140px] relative" onClick={e => e.stopPropagation()}>
                     {editingId === `ang-${c.combo_id}` ? (
@@ -402,6 +387,17 @@ function CreativePageInner() {
       </div>
 
       {detailId && <ComboDrawer comboId={detailId} onClose={() => setDetailId(null)} />}
+
+      {kpModalCombo && (
+        <KeypointDoubleCheckModal
+          comboId={kpModalCombo.combo_id}
+          branchId={kpModalCombo.branch_id}
+          adName={kpModalCombo.ad_name}
+          initialKeypointIds={kpModalCombo.keypoint_ids || []}
+          onClose={() => setKpModalCombo(null)}
+          onSaved={() => { setKpModalCombo(null); refetchCombos() }}
+        />
+      )}
     </div>
   )
 }

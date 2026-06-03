@@ -23,6 +23,7 @@ export interface AutoAssignResult {
 
 interface Props {
   branchId: string
+  comboId?: string
   headline?: string
   bodyText?: string
   onResult: (r: AutoAssignResult) => void
@@ -38,7 +39,7 @@ interface Props {
  * until "Use these" is pressed, at which point confirmed new keypoints are
  * created via /api/keypoints and the full selection is bubbled up.
  */
-export default function AutoAssignPanel({ branchId, headline, bodyText, onResult, onClose }: Props) {
+export default function AutoAssignPanel({ branchId, comboId, headline, bodyText, onResult, onClose }: Props) {
   const [script, setScript] = useState('')
   const [loading, setLoading] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -56,6 +57,7 @@ export default function AutoAssignPanel({ branchId, headline, bodyText, onResult
     setSug(null)
     try {
       const body: Record<string, unknown> = { branch_id: branchId }
+      if (comboId) body.combo_id = comboId
       if (script.trim()) {
         body.script_text = script.trim()
       } else {
@@ -139,6 +141,11 @@ export default function AutoAssignPanel({ branchId, headline, bodyText, onResult
                   {bodyText && <span className="block mt-0.5 line-clamp-2">{bodyText}</span>}
                 </div>
               )}
+              {comboId && !headline && !bodyText && !script.trim() && (
+                <div className="text-xs text-gray-500 bg-gray-50 rounded p-2">
+                  Source: this combo&apos;s ad copy ({comboId}).
+                </div>
+              )}
               <div>
                 <label className="block text-xs text-gray-500 mb-1">
                   Or paste a video script (overrides the ad text above)
@@ -154,7 +161,7 @@ export default function AutoAssignPanel({ branchId, headline, bodyText, onResult
               {err && <p className="text-sm text-red-600">{err}</p>}
               <button
                 onClick={runSuggest}
-                disabled={loading || (!headline && !bodyText && !script.trim())}
+                disabled={loading || (!comboId && !headline && !bodyText && !script.trim())}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
               >
                 <Sparkles className="w-4 h-4" /> {loading ? 'Analyzing…' : 'Suggest'}
