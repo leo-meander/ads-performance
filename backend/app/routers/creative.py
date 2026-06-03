@@ -43,6 +43,10 @@ class KeypointCreate(BaseModel):
     title: str
 
 
+class KeypointBulkDelete(BaseModel):
+    ids: list[str]
+
+
 @router.get("/keypoints")
 def list_keypoints(
     branch_id: str | None = None,
@@ -206,6 +210,59 @@ def delete_keypoint(
         kp.is_active = False
         db.commit()
         return _api_response(data={"id": kp.id, "is_active": False})
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.post("/keypoints/bulk-delete")
+def bulk_delete_keypoints(
+    body: KeypointBulkDelete,
+    current_user: User = Depends(require_page("keypoints", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Soft-delete keypoints that carry no combos. Intended for cleaning up
+    unused selling points. Server re-verifies usage from ad_combos.keypoint_ids
+    rather than trusting the client — a keypoint still referenced by any combo
+    is skipped, never deleted, even if its id is in the request."""
+    try:
+        if not body.ids:
+            return _api_response(data={"deleted": [], "skipped": []})
+
+        # Build the set of keypoint ids actually referenced by any combo, so we
+        # never delete one that is still in use (mirrors list_keypoints usage).
+        used: set[str] = set()
+        for (kp_ids,) in db.query(AdCombo.keypoint_ids).filter(AdCombo.keypoint_ids.isnot(None)).all():
+            if isinstance(kp_ids, list):
+                used.update(kp_ids)
+
+        requested = set(body.ids)
+        rows = db.query(BranchKeypoint).filter(
+            BranchKeypoint.id.in_(requested), BranchKeypoint.is_active.is_(True)
+        ).all()
+
+        deleted: list[str] = []
+        skipped: list[dict] = []
+        for kp in rows:
+            ok, _ids, _err = scoped_account_ids(
+                db, current_user, "meta_ads", requested_account_id=kp.branch_id, min_level="edit"
+            )
+            if not ok:
+                skipped.append({"id": kp.id, "reason": "no_permission"})
+                continue
+            if kp.id in used:
+                skipped.append({"id": kp.id, "reason": "in_use"})
+                continue
+            kp.is_active = False
+            deleted.append(kp.id)
+
+        # Ids that matched no active keypoint (already deleted / bad id).
+        found = {kp.id for kp in rows}
+        for missing in requested - found:
+            skipped.append({"id": missing, "reason": "not_found"})
+
+        db.commit()
+        return _api_response(data={"deleted": deleted, "skipped": skipped})
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))

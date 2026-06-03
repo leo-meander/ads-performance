@@ -41,6 +41,7 @@ export default function KeypointsPage() {
   // Filters
   const [fBranch, setFBranch] = useState('')
   const [fVerdict, setFVerdict] = useState('')
+  const [fUsage, setFUsage] = useState('') // '' | 'unused' | 'used'
   const [fTA, setFTA] = useState('')
   const [fCountry, setFCountry] = useState('')
   const [countries, setCountries] = useState<{ code: string; name: string }[]>([])
@@ -76,12 +77,32 @@ export default function KeypointsPage() {
     fetch(`${API_BASE}/api/keypoints/${id}`, { method: 'DELETE', credentials: 'include' }).then(() => fetch_kp(fTA, fCountry))
   }
 
+  const bulkDeleteUnused = (ids: string[]) => {
+    if (ids.length === 0) return
+    if (!window.confirm(`Xóa ${ids.length} keypoint chưa dùng (0 ads)? Các keypoint đang được dùng sẽ tự động bị bỏ qua.`)) return
+    fetch(`${API_BASE}/api/keypoints/bulk-delete`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ ids }),
+    }).then(r => r.json()).then(d => {
+      if (d.success) {
+        const skipped = (d.data.skipped || []).length
+        if (skipped > 0) alert(`Đã xóa ${d.data.deleted.length}. Bỏ qua ${skipped} (đang dùng / không đủ quyền).`)
+      }
+    }).finally(() => fetch_kp(fTA, fCountry))
+  }
+
   // Apply filters
   const filtered = keypoints.filter(kp => {
     if (fBranch && kp.branch_id !== fBranch) return false
     if (fVerdict && kp.verdict !== fVerdict) return false
+    if (fUsage === 'unused' && kp.combos > 0) return false
+    if (fUsage === 'used' && kp.combos === 0) return false
     return true
   })
+
+  // Unused keypoints currently in view — used for the bulk-delete action.
+  const unusedInView = filtered.filter(kp => kp.combos === 0)
 
   // Group by branch
   const grouped: Record<string, { name: string; items: Keypoint[] }> = {}
@@ -113,6 +134,11 @@ export default function KeypointsPage() {
           <option value="">All Verdicts</option>
           {VERDICTS.map(v => <option key={v} value={v}>{v}</option>)}
         </select>
+        <select value={fUsage} onChange={e => setFUsage(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+          <option value="">All Usage</option>
+          <option value="unused">Unused (0 ads)</option>
+          <option value="used">Used (≥1 ad)</option>
+        </select>
         <select value={fTA} onChange={e => setFTA(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
           <option value="">All Audiences</option>
           {TARGET_AUDIENCES.map(ta => <option key={ta} value={ta}>{ta}</option>)}
@@ -122,6 +148,11 @@ export default function KeypointsPage() {
           {countries.map(c => <option key={c.code} value={c.code}>{c.code === 'ALL' ? 'Multi-country' : `${c.name} (${c.code})`}</option>)}
         </select>
         {(fTA || fCountry) && <span className="self-center text-xs text-gray-400">metrics shown for <strong className="text-gray-600">{[fTA, fCountry && (countries.find(c => c.code === fCountry)?.name || fCountry)].filter(Boolean).join(' · ')}</strong> only</span>}
+        {canEdit && unusedInView.length > 0 && (
+          <button onClick={() => bulkDeleteUnused(unusedInView.map(kp => kp.id))} className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 border border-red-200 rounded-lg text-sm font-medium hover:bg-red-100">
+            <Trash2 className="w-4 h-4" /> Delete {unusedInView.length} unused
+          </button>
+        )}
       </div>
 
       {showCreate && (
@@ -150,8 +181,10 @@ export default function KeypointsPage() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-medium text-gray-900">{kp.title}</p>
-                        {kp.combos > 0 && (
+                        {kp.combos > 0 ? (
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${VERDICT_COLORS[kp.verdict] || 'bg-gray-100 text-gray-600'}`}>{kp.verdict}</span>
+                        ) : (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 bg-gray-200 text-gray-500">Unused</span>
                         )}
                       </div>
                       {kp.combos > 0 && (
