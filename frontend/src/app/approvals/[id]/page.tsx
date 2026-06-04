@@ -805,7 +805,7 @@ export default function ApprovalDetailPage() {
                 onClick={() => setBmModalOpen(true)}
                 className="inline-flex items-center gap-1.5 bg-green-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-green-700"
               >
-                Branch Manager đã duyệt
+                Branch Manager approved
               </button>
             </div>
           )}
