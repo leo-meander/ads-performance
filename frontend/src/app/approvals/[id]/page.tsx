@@ -6,6 +6,7 @@ import { useAuth } from '@/components/AuthContext'
 import ApprovalStatusBadge from '@/components/ApprovalStatusBadge'
 import ReviewerStatusList from '@/components/ReviewerStatusList'
 import WorkingFileLinkCard from '@/components/WorkingFileLinkCard'
+import BranchManagerApproveModal from '@/components/BranchManagerApproveModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -29,6 +30,9 @@ interface ApprovalDetail {
   launch_status: string | null
   launch_meta_ad_id: string | null
   launched_at: string | null
+  bm_approved_at: string | null
+  bm_approved_by_name: string | null
+  bm_proof_image: string | null
   reviewers: {
     id: string
     reviewer_id: string
@@ -83,6 +87,7 @@ export default function ApprovalDetailPage() {
   const [resubmitFile, setResubmitFile] = useState('')
   const [resubmitDeadline, setResubmitDeadline] = useState('')
   const [resubmitError, setResubmitError] = useState('')
+  const [bmModalOpen, setBmModalOpen] = useState(false)
 
   // Revise-while-pending state (creator-only edit panel)
   const [editOpen, setEditOpen] = useState(false)
@@ -254,6 +259,11 @@ export default function ApprovalDetailPage() {
     r => r.reviewer_id === user?.id && r.status === 'PENDING'
   )
   const canLaunch = (isCreator || isAdmin) && approval.status === 'APPROVED' && !approval.launch_status
+  // Branch-manager sign-off (done offline) can be recorded while the approval
+  // is still open — it marks the combo APPROVED, bypassing the reviewer round.
+  const canBmApprove =
+    (isCreator || isAdmin) &&
+    (approval.status === 'PENDING_APPROVAL' || approval.status === 'NEEDS_REVISION')
 
   return (
     <div>
@@ -783,6 +793,43 @@ export default function ApprovalDetailPage() {
             </div>
           )}
 
+          {/* Branch Manager approval — record offline sign-off with a screenshot */}
+          {canBmApprove && (
+            <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+              <h3 className="text-sm font-semibold text-green-900 mb-1">Branch Manager Approval</h3>
+              <p className="text-xs text-green-700 mb-3">
+                Branch manager already approved (over chat)? Paste the screenshot to mark this
+                approved instantly — no reviewer round needed.
+              </p>
+              <button
+                onClick={() => setBmModalOpen(true)}
+                className="inline-flex items-center gap-1.5 bg-green-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-green-700"
+              >
+                Branch Manager đã duyệt
+              </button>
+            </div>
+          )}
+
+          {/* Proof of branch-manager approval, once recorded */}
+          {approval.bm_approved_at && (
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <h3 className="text-sm font-semibold text-gray-900 mb-1">Branch Manager Approval</h3>
+              <p className="text-xs text-gray-500 mb-3">
+                Recorded by {approval.bm_approved_by_name || 'a teammate'} · {new Date(approval.bm_approved_at).toLocaleString()}
+              </p>
+              {approval.bm_proof_image && (
+                <a href={approval.bm_proof_image} target="_blank" rel="noopener noreferrer">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={approval.bm_proof_image}
+                    alt="Branch manager approval screenshot"
+                    className="w-full rounded-lg border border-gray-200 max-h-96 object-contain bg-gray-50"
+                  />
+                </a>
+              )}
+            </div>
+          )}
+
           {canLaunch && (
             <div className="bg-white rounded-xl border border-gray-200 p-4">
               <h3 className="text-sm font-semibold text-gray-900 mb-3">Launch to Meta Ads</h3>
@@ -802,6 +849,18 @@ export default function ApprovalDetailPage() {
           <WorkingFileLinkCard url={approval.working_file_url} label={approval.working_file_label} />
         </div>
       </div>
+
+      {bmModalOpen && (
+        <BranchManagerApproveModal
+          endpoint={`/api/approvals/${id}/branch-manager-approve`}
+          title={approval.combo_name || approval.combo_id_display || 'Combo'}
+          onClose={() => setBmModalOpen(false)}
+          onApproved={data => {
+            setApproval(data as ApprovalDetail)
+            setBmModalOpen(false)
+          }}
+        />
+      )}
     </div>
   )
 }

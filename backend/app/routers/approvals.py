@@ -12,7 +12,9 @@ from app.services.approval_service import (
     get_approval_detail,
     get_approvals_list_summary,
     get_batch_detail,
+    record_batch_branch_manager_approval,
     record_batch_decision,
+    record_branch_manager_approval,
     record_decision,
     resend_batch_review_request_emails,
     resend_review_request_emails,
@@ -50,6 +52,10 @@ class SubmitApprovalRequest(BaseModel):
 class DecisionRequest(BaseModel):
     decision: str  # APPROVED | REJECTED | NEEDS_REVISION
     feedback: str | None = None
+
+
+class BranchManagerApproveRequest(BaseModel):
+    proof_image: str  # base64 data URL of the approval screenshot
 
 
 class BatchVersion(BaseModel):
@@ -305,6 +311,32 @@ def decide_approval_batch(
         return _api_response(error=str(e))
 
 
+@router.post("/approval-batches/{batch_id}/branch-manager-approve")
+def branch_manager_approve_batch(
+    batch_id: str,
+    body: BranchManagerApproveRequest,
+    current_user: User = Depends(require_role(["creator", "admin"])),
+    _section: User = Depends(require_page("approvals", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Record a branch-manager sign-off (with screenshot proof) for a whole
+    batch and mark every version APPROVED — bypassing the reviewer round."""
+    try:
+        batch = record_batch_branch_manager_approval(
+            db=db,
+            batch_id=batch_id,
+            actor_id=current_user.id,
+            proof_image=body.proof_image,
+        )
+        detail = get_batch_detail(db, batch.id)
+        return _api_response(data=detail)
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
 @router.post("/approval-batches/{batch_id}/resend-request")
 def resend_batch_request(
     batch_id: str,
@@ -403,6 +435,32 @@ def decide_approval(
             reviewer_id=current_user.id,
             decision=body.decision,
             feedback=body.feedback,
+        )
+        detail = get_approval_detail(db, approval.id)
+        return _api_response(data=detail)
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.post("/approvals/{approval_id}/branch-manager-approve")
+def branch_manager_approve(
+    approval_id: str,
+    body: BranchManagerApproveRequest,
+    current_user: User = Depends(require_role(["creator", "admin"])),
+    _section: User = Depends(require_page("approvals", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Record a branch-manager sign-off (with screenshot proof) and mark the
+    combo APPROVED — bypassing the in-app reviewer round."""
+    try:
+        approval = record_branch_manager_approval(
+            db=db,
+            approval_id=approval_id,
+            actor_id=current_user.id,
+            proof_image=body.proof_image,
         )
         detail = get_approval_detail(db, approval.id)
         return _api_response(data=detail)

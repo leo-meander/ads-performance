@@ -224,6 +224,137 @@ def record_decision(
     return approval
 
 
+# Branch-manager screenshots are stored inline as base64 data URLs (no blob
+# storage in this app). Cap the payload so a stray huge image can't bloat the
+# row / response. ~8M chars of base64 ≈ 6 MB of binary — plenty for a chat
+# screenshot.
+_MAX_PROOF_IMAGE_CHARS = 8_000_000
+
+
+def _validate_proof_image(proof_image: str | None) -> str:
+    """Validate a pasted screenshot data URL; return it trimmed.
+
+    Must be a non-empty `data:image/...;base64,...` URL within the size cap.
+    """
+    cleaned = (proof_image or "").strip()
+    if not cleaned:
+        raise ValueError("A screenshot of the branch-manager approval is required")
+    if not cleaned.startswith("data:image/"):
+        raise ValueError("Proof must be a pasted/uploaded image")
+    if len(cleaned) > _MAX_PROOF_IMAGE_CHARS:
+        raise ValueError("Screenshot is too large; please paste a smaller image")
+    return cleaned
+
+
+def record_branch_manager_approval(
+    db: Session,
+    approval_id: str,
+    actor_id: str,
+    proof_image: str,
+) -> ComboApproval:
+    """Record a branch-manager sign-off (done offline) with a screenshot as
+    proof, and mark the combo APPROVED immediately — bypassing the reviewer
+    round. The status transition is server-enforced.
+
+    Only works while the approval is still open (PENDING_APPROVAL or
+    NEEDS_REVISION); already-resolved approvals are rejected so this can't
+    silently overwrite a real reviewer verdict.
+    """
+    proof = _validate_proof_image(proof_image)
+
+    approval = db.query(ComboApproval).filter(ComboApproval.id == approval_id).first()
+    if not approval:
+        raise ValueError("Approval not found")
+
+    if approval.status not in ("PENDING_APPROVAL", "NEEDS_REVISION"):
+        raise ValueError(
+            f"Approval is already {approval.status}; branch-manager approval only "
+            "applies while it's still open"
+        )
+
+    now = datetime.now(timezone.utc)
+    approval.status = "APPROVED"
+    approval.resolved_at = now
+    approval.bm_approved_at = now
+    approval.bm_approved_by = actor_id
+    approval.bm_proof_image = proof
+
+    email_tasks: list = []
+    _notify_creator_of_result(db, approval, "APPROVED", None, email_tasks)
+
+    db.commit()
+
+    # Mirror record_decision: on full approval with a Figma working file, queue
+    # the render. Best-effort — the approval is already committed.
+    try:
+        _auto_queue_figma_render(db, approval)
+    except Exception:
+        logger.exception(
+            "Auto-queue Figma render on branch-manager approval failed for %s",
+            approval_id,
+        )
+
+    _queue_emails(email_tasks)
+    return approval
+
+
+def record_batch_branch_manager_approval(
+    db: Session,
+    batch_id: str,
+    actor_id: str,
+    proof_image: str,
+) -> ApprovalBatch:
+    """Apply a branch-manager sign-off to every version of a batch at once
+    (all-or-nothing), mirroring record_batch_decision's APPROVED path. The same
+    screenshot is stored on each child as the shared proof.
+    """
+    proof = _validate_proof_image(proof_image)
+
+    batch = db.query(ApprovalBatch).filter(ApprovalBatch.id == batch_id).first()
+    if not batch:
+        raise ValueError("Batch not found")
+
+    children = (
+        db.query(ComboApproval)
+        .filter(ComboApproval.batch_id == batch_id)
+        .all()
+    )
+    if not children:
+        raise ValueError("Batch has no versions")
+
+    current_status = _rollup_batch_status([c.status for c in children])
+    if current_status not in ("PENDING_APPROVAL", "NEEDS_REVISION"):
+        raise ValueError(
+            f"Batch is already {current_status}; branch-manager approval only "
+            "applies while it's still open"
+        )
+
+    now = datetime.now(timezone.utc)
+    for child in children:
+        child.status = "APPROVED"
+        child.resolved_at = now
+        child.bm_approved_at = now
+        child.bm_approved_by = actor_id
+        child.bm_proof_image = proof
+
+    email_tasks: list = []
+    _notify_creator_of_batch_result(db, batch, children, "APPROVED", None, email_tasks)
+
+    db.commit()
+
+    for child in children:
+        try:
+            _auto_queue_figma_render(db, child)
+        except Exception:
+            logger.exception(
+                "Auto-queue Figma render on batch branch-manager approval failed for %s",
+                child.id,
+            )
+
+    _queue_emails(email_tasks)
+    return batch
+
+
 def _apply_combo_content_edits(
     db: Session,
     combo: AdCombo,
@@ -558,6 +689,9 @@ def get_approvals_list_summary(db: Session, approvals: list[ComboApproval]) -> l
             "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None,
             "deadline": a.deadline.isoformat() if a.deadline else None,
             "resolved_at": a.resolved_at.isoformat() if a.resolved_at else None,
+            # Proof image is intentionally omitted from the list (too heavy);
+            # the timestamp is enough to badge a branch-manager-approved row.
+            "bm_approved_at": a.bm_approved_at.isoformat() if a.bm_approved_at else None,
             "reviewers": reviewer_list,
         })
     return items
@@ -1126,10 +1260,18 @@ def get_batch_detail(db: Session, batch_id: str) -> dict | None:
         if batch.submitted_by else None
     )
 
+    # Branch-manager proof is applied to the whole batch at once (same screenshot
+    # on every child), so surface it once at batch level from the first version
+    # that carries it.
+    bm_version = next((v for v in versions if v.get("bm_approved_at")), None)
+
     return {
         "id": batch.id,
         "round": batch.round,
         "status": _rollup_batch_status([c.status for c in children]),
+        "bm_approved_at": bm_version["bm_approved_at"] if bm_version else None,
+        "bm_approved_by_name": bm_version["bm_approved_by_name"] if bm_version else None,
+        "bm_proof_image": bm_version["bm_proof_image"] if bm_version else None,
         "submitted_by": batch.submitted_by,
         "submitter_name": submitter.full_name if submitter else None,
         "submitted_at": batch.submitted_at.isoformat() if batch.submitted_at else None,
@@ -1148,6 +1290,10 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
 
     combo = db.query(AdCombo).filter(AdCombo.id == approval.combo_id).first()
     submitter = db.query(User).filter(User.id == approval.submitted_by).first() if approval.submitted_by else None
+    bm_approver = (
+        db.query(User).filter(User.id == approval.bm_approved_by).first()
+        if approval.bm_approved_by else None
+    )
 
     reviewers = (
         db.query(ApprovalReviewer)
@@ -1351,6 +1497,10 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
         "launch_status": approval.launch_status,
         "launch_meta_ad_id": approval.launch_meta_ad_id,
         "launched_at": approval.launched_at.isoformat() if approval.launched_at else None,
+        "bm_approved_at": approval.bm_approved_at.isoformat() if approval.bm_approved_at else None,
+        "bm_approved_by": approval.bm_approved_by,
+        "bm_approved_by_name": bm_approver.full_name if bm_approver else None,
+        "bm_proof_image": approval.bm_proof_image,
         "reviewers": reviewer_list,
         "copy": copy_data,
         "material": material_data,

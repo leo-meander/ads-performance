@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { useAuth } from '@/components/AuthContext'
 import ApprovalStatusBadge from '@/components/ApprovalStatusBadge'
 import ReviewerStatusList from '@/components/ReviewerStatusList'
+import BranchManagerApproveModal from '@/components/BranchManagerApproveModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -57,6 +58,9 @@ interface BatchDetail {
   submitted_at: string | null
   deadline: string | null
   note: string | null
+  bm_approved_at: string | null
+  bm_approved_by_name: string | null
+  bm_proof_image: string | null
   reviewers: Reviewer[]
   versions: Version[]
 }
@@ -86,6 +90,7 @@ export default function BatchDetailPage() {
   const [deciding, setDeciding] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [decisionError, setDecisionError] = useState('')
+  const [bmModalOpen, setBmModalOpen] = useState(false)
 
   // Revise-while-pending state (creator-only edit panel)
   const [editOpen, setEditOpen] = useState(false)
@@ -241,6 +246,12 @@ export default function BatchDetailPage() {
   const isAssignedReviewer = batch.reviewers.some(
     r => r.reviewer_id === user?.id && r.status === 'PENDING'
   )
+  const isAdmin = !!user && (user.is_admin === true || (user.roles || []).includes('admin'))
+  // Branch-manager sign-off (offline) marks the whole batch APPROVED, bypassing
+  // the reviewer round — available while it's still open.
+  const canBmApprove =
+    (isCreator || isAdmin) &&
+    (batch.status === 'PENDING_APPROVAL' || batch.status === 'NEEDS_REVISION')
   const overdue = batch.deadline ? new Date(batch.deadline) < new Date() && batch.status === 'PENDING_APPROVAL' : false
 
   return (
@@ -404,6 +415,43 @@ export default function BatchDetailPage() {
               </div>
             </div>
           ))}
+
+          {/* Branch Manager approval — record offline sign-off with a screenshot */}
+          {canBmApprove && (
+            <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+              <h3 className="text-sm font-semibold text-green-900 mb-1">Branch Manager Approval</h3>
+              <p className="text-xs text-green-700 mb-3">
+                Branch manager already approved (over chat)? Paste the screenshot to mark all
+                {' '}{batch.versions.length} version{batch.versions.length !== 1 ? 's' : ''} approved instantly — no reviewer round needed.
+              </p>
+              <button
+                onClick={() => setBmModalOpen(true)}
+                className="inline-flex items-center gap-1.5 bg-green-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-green-700"
+              >
+                Branch Manager đã duyệt
+              </button>
+            </div>
+          )}
+
+          {/* Proof of branch-manager approval, once recorded */}
+          {batch.bm_approved_at && (
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <h3 className="text-sm font-semibold text-gray-900 mb-1">Branch Manager Approval</h3>
+              <p className="text-xs text-gray-500 mb-3">
+                Recorded by {batch.bm_approved_by_name || 'a teammate'} · {new Date(batch.bm_approved_at).toLocaleString()}
+              </p>
+              {batch.bm_proof_image && (
+                <a href={batch.bm_proof_image} target="_blank" rel="noopener noreferrer">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={batch.bm_proof_image}
+                    alt="Branch manager approval screenshot"
+                    className="w-full rounded-lg border border-gray-200 max-h-96 object-contain bg-gray-50"
+                  />
+                </a>
+              )}
+            </div>
+          )}
 
           {/* Reviewer decision — one control for the whole batch */}
           {isAssignedReviewer && batch.status === 'PENDING_APPROVAL' && (
@@ -728,6 +776,18 @@ export default function BatchDetailPage() {
           </div>
         </div>
       </div>
+
+      {bmModalOpen && (
+        <BranchManagerApproveModal
+          endpoint={`/api/approval-batches/${batchId}/branch-manager-approve`}
+          title={`Batch — ${batch.versions.length} version${batch.versions.length !== 1 ? 's' : ''}`}
+          onClose={() => setBmModalOpen(false)}
+          onApproved={data => {
+            setBatch(data as BatchDetail)
+            setBmModalOpen(false)
+          }}
+        />
+      )}
     </div>
   )
 }
