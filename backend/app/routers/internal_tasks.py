@@ -727,61 +727,65 @@ def trigger_backfill_google_country(
 # --------------------------------------------------- Combo country backfill --
 
 
-def _do_backfill_combo_country(db):
+def _do_backfill_combo_country(db, force: bool = False):
     """Populate AdCombo.country from the synced Ad -> AdSet link.
 
-    Creative-library combos are keyed by Meta ad name but never carried a
-    country: creative_sync only fetched campaign/ad names, not adset names,
-    and country is parsed from the adset-name prefix. AdSet.country is already
-    parsed at sync time and Ad.name == AdCombo.ad_name, so we map
-    (branch, ad_name) -> AdSet.country and fill combos that lack one.
-    Safe to run repeatedly — only touches combos with no usable country."""
-    from app.models.ad import Ad
+    Country is chosen as the DOMINANT market (highest ad-level spend) for each
+    ad_name, not an arbitrary first match — so a TW-heavy creative is tagged TW,
+    not whatever adset happened to sort first. See creative_sync.dominant_country_map.
+
+    - force=False (default): only fills combos with NO usable country (None /
+      '' / 'Unknown'). Safe to run repeatedly; never overrides an existing value.
+    - force=True: also CORRECTS combos whose stored country disagrees with the
+      computed dominant country (use this to fix rows mis-tagged before the fix,
+      e.g. KOL_Mishu tagged KR while it ran mostly in TW)."""
     from app.models.ad_combo import AdCombo
-    from app.models.ad_set import AdSet
+    from app.services.creative_sync import dominant_country_map
 
-    rows = (
-        db.query(Ad.account_id, Ad.name, AdSet.country)
-        .join(AdSet, AdSet.id == Ad.ad_set_id)
-        .filter(AdSet.country.isnot(None))
-        .all()
-    )
-    country_by_ad: dict[tuple, str] = {}
-    for account_id, name, country in rows:
-        if name and country and country != "Unknown":
-            country_by_ad.setdefault((account_id, name), country)
+    country_by_ad = dominant_country_map(db)
 
-    combos = (
-        db.query(AdCombo)
-        .filter(
-            (AdCombo.country.is_(None))
-            | (AdCombo.country == "")
-            | (AdCombo.country == "Unknown")
+    if force:
+        combos = db.query(AdCombo).all()
+    else:
+        combos = (
+            db.query(AdCombo)
+            .filter(
+                (AdCombo.country.is_(None))
+                | (AdCombo.country == "")
+                | (AdCombo.country == "Unknown")
+            )
+            .all()
         )
-        .all()
-    )
     updated = 0
     for combo in combos:
         c = country_by_ad.get((combo.branch_id, combo.ad_name))
-        if c:
+        if not c:
+            continue
+        is_missing = combo.country in (None, "", "Unknown")
+        if is_missing or (force and combo.country != c):
             combo.country = c
             updated += 1
     db.commit()
     logger.info(
-        "[backfill-combo-country] %d combos updated (of %d candidates)",
-        updated, len(combos),
+        "[backfill-combo-country] %d combos updated (of %d candidates, force=%s)",
+        updated, len(combos), force,
     )
 
 
 @router.post("/internal/tasks/backfill-combo-country", status_code=202)
 def trigger_backfill_combo_country(
     x_internal_secret: str | None = Header(default=None),
+    force: bool = False,
 ):
-    """One-shot: fill AdCombo.country from the Ad -> AdSet link so the keypoints
-    country filter has data. Safe to run multiple times."""
+    """One-shot: set AdCombo.country to the dominant market (by spend) from the
+    Ad -> AdSet link so the keypoints/creative country filters have data.
+
+    Default fills only missing countries. Pass `force=true` to also correct
+    combos whose country was set wrong before the dominant-country fix. Safe to
+    run multiple times."""
     _require_secret(x_internal_secret)
-    _run_in_thread(_do_backfill_combo_country, "backfill-combo-country")
-    return _api_response(data={"status": "started"})
+    _run_in_thread(_do_backfill_combo_country, "backfill-combo-country", force=force)
+    return _api_response(data={"status": "started", "force": force})
 
 
 # ----------------------------------------------------------------- debug ----

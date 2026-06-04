@@ -4,6 +4,7 @@ synced Ad -> AdSet link, so the keypoints country filter has data.
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 import pytest
 from sqlalchemy import create_engine
@@ -17,6 +18,7 @@ from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
 from app.models.ad_set import AdSet
 from app.models.base import Base
+from app.models.metrics import MetricsCache
 from app.routers.internal_tasks import _do_backfill_combo_country
 
 
@@ -63,6 +65,29 @@ def _ad(db, branch_id: str, ad_name: str, country: str | None):
         id=str(uuid.uuid4()), ad_set_id=adset.id, campaign_id=campaign_id,
         account_id=branch_id, platform="meta",
         platform_ad_id=f"ad_{uuid.uuid4().hex[:8]}", name=ad_name, status="ACTIVE",
+    ))
+
+
+def _ad_with_spend(db, branch_id: str, ad_name: str, country: str, spend: float):
+    """An Ad in a `country` adset with one ad-level metrics row of `spend`."""
+    campaign_id = str(uuid.uuid4())
+    adset = AdSet(
+        id=str(uuid.uuid4()), campaign_id=campaign_id, account_id=branch_id,
+        platform="meta", platform_adset_id=f"as_{uuid.uuid4().hex[:8]}",
+        name=f"{country}_Solo_TOF", status="ACTIVE", country=country,
+    )
+    db.add(adset)
+    db.flush()
+    ad = Ad(
+        id=str(uuid.uuid4()), ad_set_id=adset.id, campaign_id=campaign_id,
+        account_id=branch_id, platform="meta",
+        platform_ad_id=f"ad_{uuid.uuid4().hex[:8]}", name=ad_name, status="ACTIVE",
+    )
+    db.add(ad)
+    db.flush()
+    db.add(MetricsCache(
+        id=str(uuid.uuid4()), campaign_id=campaign_id, ad_set_id=adset.id,
+        ad_id=ad.id, platform="meta", date=date(2024, 1, 1), spend=spend,
     ))
 
 
@@ -134,4 +159,36 @@ def test_backfill_skips_unknown_and_leaves_existing_country():
 
     assert _country(db, c1) is None
     assert _country(db, c2) == "TW"
+    db.close()
+
+
+def test_backfill_picks_dominant_country_by_spend():
+    """Same ad_name in TW (high spend) + KR (low spend) → combo tagged TW."""
+    db = TestSession()
+    branch = _branch(db)
+    _ad_with_spend(db, branch, "[Video] KOL_Mishu", "TW", 900)
+    _ad_with_spend(db, branch, "[Video] KOL_Mishu", "KR", 100)
+    cid = _combo(db, branch, "[Video] KOL_Mishu", None)
+    db.commit()
+
+    _do_backfill_combo_country(db)
+
+    assert _country(db, cid) == "TW"
+    db.close()
+
+
+def test_backfill_force_corrects_wrong_country():
+    """A combo wrongly tagged KR is left alone by default, fixed to TW with force."""
+    db = TestSession()
+    branch = _branch(db)
+    _ad_with_spend(db, branch, "[Video] KOL_Mishu", "TW", 900)
+    _ad_with_spend(db, branch, "[Video] KOL_Mishu", "KR", 100)
+    cid = _combo(db, branch, "[Video] KOL_Mishu", "KR")  # wrong, non-null
+    db.commit()
+
+    _do_backfill_combo_country(db, force=False)
+    assert _country(db, cid) == "KR"  # untouched without force
+
+    _do_backfill_combo_country(db, force=True)
+    assert _country(db, cid) == "TW"  # corrected to dominant market
     db.close()

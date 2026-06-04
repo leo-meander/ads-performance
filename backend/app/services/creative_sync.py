@@ -34,29 +34,80 @@ def _detect_ta(name: str) -> str:
     return parse_campaign_metadata(name)["ta"]
 
 
-def _country_by_ad_name(db: Session, account_id) -> dict[str, str]:
-    """Map ad_name -> parsed country via the synced Ad -> AdSet link for one
-    branch.
+def dominant_country_map(db: Session, account_id=None) -> dict[tuple, str]:
+    """Map (account_id, ad_name) -> the DOMINANT country (highest ad-level spend).
 
-    Country lives on AdSet (parsed from the adset-name prefix at sync time);
-    combos are keyed by Meta ad name and never carried a country of their own.
-    creative_sync runs after the Ad table is upserted, so this join is fresh.
-    'Unknown'/blank countries are skipped so they don't shadow a real value.
+    A single Meta ad_name is reused across many adsets in different countries;
+    each ad_id belongs to exactly one adset (one country). We sum ad-level spend
+    per (ad_name, country) and pick the highest-spend country, so a combo
+    reflects where the creative actually ran — not an arbitrary first row. The
+    old logic took whatever country the join returned first, which is why a
+    TW-heavy ad could end up tagged KR.
+
+    Country lives on AdSet (parsed from the adset-name prefix at sync time).
+    'Unknown'/blank countries are ignored. For ad_names that have no spend rows
+    yet (freshly synced, metrics not pulled), we fall back to the first-seen
+    real country so they still get a value instead of NULL.
+
+    Pass `account_id` to restrict to one branch.
     """
+    from sqlalchemy import func
+
     from app.models.ad import Ad
     from app.models.ad_set import AdSet
+    from app.models.metrics import MetricsCache
 
-    rows = (
-        db.query(Ad.name, AdSet.country)
+    base_filters = [AdSet.country.isnot(None), AdSet.country != "Unknown"]
+    if account_id is not None:
+        base_filters.append(Ad.account_id == account_id)
+
+    out: dict[tuple, str] = {}
+    best: dict[tuple, float] = {}
+
+    # 1) Dominant country by total ad-level spend.
+    spend_rows = (
+        db.query(
+            Ad.account_id,
+            Ad.name,
+            AdSet.country,
+            func.coalesce(func.sum(MetricsCache.spend), 0).label("spend"),
+        )
         .join(AdSet, AdSet.id == Ad.ad_set_id)
-        .filter(Ad.account_id == account_id, AdSet.country.isnot(None))
+        .join(MetricsCache, MetricsCache.ad_id == Ad.id)
+        .filter(*base_filters)
+        .group_by(Ad.account_id, Ad.name, AdSet.country)
         .all()
     )
-    out: dict[str, str] = {}
-    for name, country in rows:
-        if name and country and country != "Unknown":
-            out.setdefault(name, country)
+    for acc, name, country, spend in spend_rows:
+        if not name or not country:
+            continue
+        key = (acc, name)
+        spend = float(spend or 0)
+        if key not in best or spend > best[key]:
+            best[key] = spend
+            out[key] = country
+
+    # 2) Fallback for ad_names with no spend rows at all (first-seen real country).
+    fallback_rows = (
+        db.query(Ad.account_id, Ad.name, AdSet.country)
+        .join(AdSet, AdSet.id == Ad.ad_set_id)
+        .filter(*base_filters)
+        .all()
+    )
+    for acc, name, country in fallback_rows:
+        key = (acc, name)
+        if name and country and key not in out:
+            out[key] = country
     return out
+
+
+def _country_by_ad_name(db: Session, account_id) -> dict[str, str]:
+    """ad_name -> dominant country for ONE account (thin wrapper over
+    dominant_country_map, keyed by ad_name only)."""
+    return {
+        name: country
+        for (_acc, name), country in dominant_country_map(db, account_id=account_id).items()
+    }
 
 
 def _detect_material_type(ad_name: str) -> str:
@@ -79,7 +130,10 @@ def _detect_language(text: str) -> str:
 
 def sync_creative_library_for_account(db: Session, account: AdAccount) -> dict:
     """Upsert AdMaterial / AdCopy / AdCombo rows from Meta ad creatives for one account."""
-    summary = {"materials_created": 0, "copies_created": 0, "combos_created": 0, "errors": []}
+    summary = {
+        "materials_created": 0, "copies_created": 0, "combos_created": 0,
+        "combos_recountried": 0, "errors": [],
+    }
 
     if not account.access_token_enc:
         return summary
@@ -194,7 +248,9 @@ def sync_creative_library_for_account(db: Session, account: AdAccount) -> dict:
                 continue
 
         # ── Combo (keyed by ad_name) ──
-        if ad_name not in existing_combos:
+        dominant_country = country_by_ad.get(ad_name)
+        existing_combo = existing_combos.get(ad_name)
+        if existing_combo is None:
             try:
                 cb_id = next_combo_id(db)
                 combo = AdCombo(
@@ -204,7 +260,7 @@ def sync_creative_library_for_account(db: Session, account: AdAccount) -> dict:
                     copy_id=copy.copy_id,
                     material_id=material.material_id,
                     target_audience=ta,
-                    country=country_by_ad.get(ad_name),
+                    country=dominant_country,
                     verdict="TEST",
                     verdict_source="auto",
                 )
@@ -217,6 +273,12 @@ def sync_creative_library_for_account(db: Session, account: AdAccount) -> dict:
                 logger.exception("Creative sync: failed to create combo for %s", ad_name)
                 summary["errors"].append(f"combo {ad_name[:40]}: {e}")
                 continue
+        elif dominant_country and existing_combo.country != dominant_country:
+            # Correct combos whose country was set arbitrarily before this fix
+            # (e.g. TW-heavy creative previously tagged KR). Only overwrite when
+            # we have a real dominant value — never blank out an existing one.
+            existing_combo.country = dominant_country
+            summary["combos_recountried"] += 1
 
     db.commit()
     return summary
