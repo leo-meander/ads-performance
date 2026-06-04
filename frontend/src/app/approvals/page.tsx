@@ -421,7 +421,7 @@ export default function ApprovalsPage() {
                               title="Branch manager approved — paste screenshot to mark approved"
                             >
                               <Check className="w-3 h-3" />
-                              BM duyệt
+                              BM approved
                             </button>
                             {status === 'PENDING_APPROVAL' && (
                               <button
