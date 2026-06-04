@@ -2,9 +2,10 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { Plus, Send, Layers, Search, AlertTriangle, ChevronRight, ChevronDown } from 'lucide-react'
+import { Plus, Send, Layers, Search, AlertTriangle, ChevronRight, ChevronDown, Check } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
 import ApprovalStatusBadge from '@/components/ApprovalStatusBadge'
+import BranchManagerApproveModal from '@/components/BranchManagerApproveModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -21,6 +22,7 @@ interface Approval {
   submitted_at: string | null
   deadline: string | null
   resolved_at: string | null
+  bm_approved_at: string | null
   reviewers: { reviewer_name: string; status: string }[]
 }
 
@@ -120,6 +122,8 @@ export default function ApprovalsPage() {
   const [search, setSearch] = useState('')
   const [resending, setResending] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  // Target for the Branch-Manager-approve modal: which row to sign off on.
+  const [bmTarget, setBmTarget] = useState<{ id: string; isBatch: boolean; title: string } | null>(null)
 
   const toggleExpand = (key: string) =>
     setExpanded(prev => {
@@ -163,14 +167,16 @@ export default function ApprovalsPage() {
   // client-side so the summary counts stay stable and filtering is instant.
   // The list endpoint already scopes rows by role (reviewers see only what
   // they're assigned), so the "Pending" chip doubles as a reviewer's queue.
-  useEffect(() => {
+  const fetchApprovals = () => {
     setLoading(true)
     fetch(`${API_BASE}/api/approvals`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (data.success) setApprovals(data.data.items || []) })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }
+
+  useEffect(() => { fetchApprovals() }, [])
 
   // Pre-compute per-row status + urgency once; reused for counts, filter, sort.
   const rows = useMemo(() => {
@@ -399,19 +405,38 @@ export default function ApprovalsPage() {
                       {head.submitted_at ? new Date(head.submitted_at).toLocaleDateString() : '-'}
                     </td>
                     <td className="px-4 py-3 text-xs">
-                      {status === 'PENDING_APPROVAL' && (user?.id === head.submitted_by || user?.roles?.includes('admin')) ? (
-                        <button
-                          onClick={() => handleResend(isBatch ? row.key : head.id, isBatch)}
-                          disabled={resending === (isBatch ? row.key : head.id)}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                          title="Resend review request email to pending reviewers"
-                        >
-                          <Send className="w-3 h-3" />
-                          {resending === (isBatch ? row.key : head.id) ? 'Sending…' : 'Resend'}
-                        </button>
-                      ) : (
-                        <span className="text-gray-300">-</span>
-                      )}
+                      {(() => {
+                        const canAct = user?.id === head.submitted_by || user?.roles?.includes('admin')
+                        const isOpen = status === 'PENDING_APPROVAL' || status === 'NEEDS_REVISION'
+                        if (!canAct || !isOpen) return <span className="text-gray-300">-</span>
+                        const targetId = isBatch ? row.key : head.id
+                        const title = isBatch
+                          ? `Batch — ${row.members.length} version${row.members.length !== 1 ? 's' : ''}`
+                          : head.combo_name || head.combo_id_display || 'Combo'
+                        return (
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => setBmTarget({ id: targetId, isBatch, title })}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-green-700 hover:text-green-800 hover:bg-green-50 rounded"
+                              title="Branch manager approved — paste screenshot to mark approved"
+                            >
+                              <Check className="w-3 h-3" />
+                              BM duyệt
+                            </button>
+                            {status === 'PENDING_APPROVAL' && (
+                              <button
+                                onClick={() => handleResend(targetId, isBatch)}
+                                disabled={resending === targetId}
+                                className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                                title="Resend review request email to pending reviewers"
+                              >
+                                <Send className="w-3 h-3" />
+                                {resending === targetId ? 'Sending…' : 'Resend'}
+                              </button>
+                            )}
+                          </div>
+                        )
+                      })()}
                     </td>
                   </tr>
                   {/* History: older standalone rounds, shown when expanded. */}
@@ -444,6 +469,22 @@ export default function ApprovalsPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {bmTarget && (
+        <BranchManagerApproveModal
+          endpoint={
+            bmTarget.isBatch
+              ? `/api/approval-batches/${bmTarget.id}/branch-manager-approve`
+              : `/api/approvals/${bmTarget.id}/branch-manager-approve`
+          }
+          title={bmTarget.title}
+          onClose={() => setBmTarget(null)}
+          onApproved={() => {
+            setBmTarget(null)
+            fetchApprovals()
+          }}
+        />
       )}
     </div>
   )

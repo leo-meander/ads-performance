@@ -792,6 +792,184 @@ def test_batch_revise_resubmits_after_needs_revision():
     assert resp.json()["success"] is True
 
 
+# ── Branch-manager approval (screenshot proof) ───────────────
+
+# A valid 1x1 PNG data URL — enough to pass proof-image validation.
+SAMPLE_PROOF = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0"
+    "lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def _submit_single(creator, reviewers, combo):
+    return client.post(
+        "/api/approvals",
+        json={"combo_id": combo.id, "reviewer_ids": [r.id for r in reviewers]},
+        headers=_auth_headers(creator),
+    )
+
+
+def test_branch_manager_approve_marks_approved_and_stores_proof():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo = _create_combo()
+
+    approval_id = _submit_single(creator, [reviewer], combo).json()["data"]["id"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/branch-manager-approve",
+        json={"proof_image": SAMPLE_PROOF},
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()
+    assert data["success"] is True
+    assert data["data"]["status"] == "APPROVED"
+    assert data["data"]["bm_proof_image"] == SAMPLE_PROOF
+    assert data["data"]["bm_approved_at"] is not None
+    assert data["data"]["bm_approved_by_name"] == creator.full_name
+
+
+def test_branch_manager_approve_requires_image():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo = _create_combo()
+    approval_id = _submit_single(creator, [reviewer], combo).json()["data"]["id"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/branch-manager-approve",
+        json={"proof_image": ""},
+        headers=_auth_headers(creator),
+    )
+    assert resp.json()["success"] is False
+    assert "required" in resp.json()["error"].lower()
+
+
+def test_branch_manager_approve_rejects_non_image():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo = _create_combo()
+    approval_id = _submit_single(creator, [reviewer], combo).json()["data"]["id"]
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/branch-manager-approve",
+        json={"proof_image": "https://example.com/not-an-image.png"},
+        headers=_auth_headers(creator),
+    )
+    assert resp.json()["success"] is False
+
+
+def test_branch_manager_approve_rejects_already_resolved():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo = _create_combo()
+    approval_id = _submit_single(creator, [reviewer], combo).json()["data"]["id"]
+
+    # Reviewer approves first → resolved.
+    client.post(
+        f"/api/approvals/{approval_id}/decide",
+        json={"decision": "APPROVED"},
+        headers=_auth_headers(reviewer),
+    )
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/branch-manager-approve",
+        json={"proof_image": SAMPLE_PROOF},
+        headers=_auth_headers(creator),
+    )
+    assert resp.json()["success"] is False
+    assert "already" in resp.json()["error"].lower()
+
+
+def test_branch_manager_approve_works_after_needs_revision():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo = _create_combo()
+    approval_id = _submit_single(creator, [reviewer], combo).json()["data"]["id"]
+
+    client.post(
+        f"/api/approvals/{approval_id}/decide",
+        json={"decision": "NEEDS_REVISION", "feedback": "fix the hook"},
+        headers=_auth_headers(reviewer),
+    )
+
+    resp = client.post(
+        f"/api/approvals/{approval_id}/branch-manager-approve",
+        json={"proof_image": SAMPLE_PROOF},
+        headers=_auth_headers(creator),
+    )
+    assert resp.json()["success"] is True
+    assert resp.json()["data"]["status"] == "APPROVED"
+
+
+def test_branch_manager_approve_requires_creator_or_admin():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo = _create_combo()
+    approval_id = _submit_single(creator, [reviewer], combo).json()["data"]["id"]
+
+    # A reviewer-only user has no creator/admin role → 403 from require_role.
+    resp = client.post(
+        f"/api/approvals/{approval_id}/branch-manager-approve",
+        json={"proof_image": SAMPLE_PROOF},
+        headers=_auth_headers(reviewer),
+    )
+    assert resp.status_code == 403
+
+
+def test_branch_manager_approve_notifies_creator():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combo = _create_combo()
+    approval_id = _submit_single(creator, [reviewer], combo).json()["data"]["id"]
+
+    client.post(
+        f"/api/approvals/{approval_id}/branch-manager-approve",
+        json={"proof_image": SAMPLE_PROOF},
+        headers=_auth_headers(creator),
+    )
+
+    resp = client.get("/api/notifications", headers=_auth_headers(creator))
+    items = resp.json()["data"]["items"]
+    assert any(n["type"] == "COMBO_APPROVED" for n in items)
+
+
+def test_batch_branch_manager_approve_marks_all_approved():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combos = _create_combos(3)
+    batch_id = _submit_batch(creator, [reviewer], combos).json()["data"]["id"]
+
+    resp = client.post(
+        f"/api/approval-batches/{batch_id}/branch-manager-approve",
+        json={"proof_image": SAMPLE_PROOF},
+        headers=_auth_headers(creator),
+    )
+    data = resp.json()["data"]
+    assert resp.json()["success"] is True
+    assert data["status"] == "APPROVED"
+    assert all(v["status"] == "APPROVED" for v in data["versions"])
+    assert data["bm_proof_image"] == SAMPLE_PROOF
+    assert all(v["bm_proof_image"] == SAMPLE_PROOF for v in data["versions"])
+
+
+def test_batch_branch_manager_approve_notifies_creator_once():
+    creator = _create_user(["creator"])
+    reviewer = _create_user(["reviewer"])
+    combos = _create_combos(2)
+    batch_id = _submit_batch(creator, [reviewer], combos).json()["data"]["id"]
+
+    client.post(
+        f"/api/approval-batches/{batch_id}/branch-manager-approve",
+        json={"proof_image": SAMPLE_PROOF},
+        headers=_auth_headers(creator),
+    )
+
+    resp = client.get("/api/notifications", headers=_auth_headers(creator))
+    items = resp.json()["data"]["items"]
+    approved = [n for n in items if n["type"] == "COMBO_APPROVED"]
+    assert len(approved) == 1
+
+
 # ── Auto-queue Figma render on full approval ─────────────────
 
 

@@ -60,6 +60,18 @@ class ComboApproval(Base, TimestampMixin):
     # Free-text note from the submitter, shown to reviewers for extra context
     note = Column(Text, nullable=True)
 
+    # Branch-manager sign-off (recorded offline, e.g. over chat). When set, the
+    # combo was marked APPROVED via this evidence path instead of the in-app
+    # reviewer round. bm_proof_image holds the screenshot as a base64 data URL
+    # (the app has no blob storage, so the proof lives inline on the row).
+    bm_approved_at = Column(DateTime(timezone=True), nullable=True)
+    bm_approved_by = Column(
+        UUIDType,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    bm_proof_image = Column(Text, nullable=True)
+
     # Launch info (populated after launch)
     launch_campaign_id = Column(
         UUIDType,
