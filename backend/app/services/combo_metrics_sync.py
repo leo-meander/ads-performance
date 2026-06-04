@@ -44,11 +44,14 @@ def _first_value(arr) -> int:
 
 
 def sync_combo_metrics_for_account(
-    db: Session, account: AdAccount, days_back: int = 45
+    db: Session, account: AdAccount, days_back: int | None = None
 ) -> dict:
-    """Pull ad-level insights for one Meta account over the last `days_back`
-    days and overwrite the matching ad_combos rows. Does NOT commit — the
-    caller owns the transaction.
+    """Pull ad-level insights for one Meta account and overwrite the matching
+    ad_combos rows. Does NOT commit — the caller owns the transaction.
+
+    `days_back=None` (default) syncs LIFETIME metrics (Meta's `maximum` preset)
+    so the Creative Library matches Meta Ads Manager's "Maximum" view. Pass an
+    int to restrict to a rolling last-N-days window instead.
     """
     summary = {"combos_updated": 0, "ad_names": 0, "errors": []}
 
@@ -60,8 +63,14 @@ def sync_combo_metrics_for_account(
         if account.account_id.startswith("act_")
         else f"act_{account.account_id}"
     )
-    date_to = date.today()
-    date_from = date_to - timedelta(days=days_back)
+    if days_back is None:
+        time_params = {"date_preset": "maximum"}
+    else:
+        date_to = date.today()
+        date_from = date_to - timedelta(days=days_back)
+        time_params = {
+            "time_range": {"since": date_from.isoformat(), "until": date_to.isoformat()}
+        }
 
     # (ad_name) -> aggregated totals. Reset per account.
     agg: dict[str, dict] = defaultdict(lambda: {
@@ -78,10 +87,7 @@ def sync_combo_metrics_for_account(
         # in the window (active, paused, or archived).
         rows = fb.get_insights(
             fields=_INSIGHT_FIELDS,
-            params={
-                "level": "ad",
-                "time_range": {"since": date_from.isoformat(), "until": date_to.isoformat()},
-            },
+            params={"level": "ad", **time_params},
         )
     except Exception as e:
         logger.exception(
@@ -155,8 +161,12 @@ def sync_combo_metrics_for_account(
     return summary
 
 
-def sync_all_combo_metrics(db: Session, days_back: int = 45) -> dict:
-    """Sync combo metrics for every active Meta account. Commits once at the end."""
+def sync_all_combo_metrics(db: Session, days_back: int | None = None) -> dict:
+    """Sync combo metrics for every active Meta account. Commits once at the end.
+
+    `days_back=None` (default) syncs lifetime metrics; pass an int for a rolling
+    last-N-days window instead.
+    """
     accounts = db.query(AdAccount).filter(AdAccount.is_active.is_(True)).all()
     totals = {"accounts": 0, "combos_updated": 0, "errors": []}
 
@@ -174,7 +184,8 @@ def sync_all_combo_metrics(db: Session, days_back: int = 45) -> dict:
 
     db.commit()
     logger.info(
-        "[combo-metrics] done: %d combos updated across %d accounts (days_back=%d)",
-        totals["combos_updated"], totals["accounts"], days_back,
+        "[combo-metrics] done: %d combos updated across %d accounts (window=%s)",
+        totals["combos_updated"], totals["accounts"],
+        "lifetime" if days_back is None else f"{days_back}d",
     )
     return totals
