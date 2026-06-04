@@ -1,7 +1,7 @@
 # Daily 05:00 UTC — Creative Library combo metrics (ad-level Meta spend/ROAS/
 # CPP/CTR/hook rate). Runs after the 03:00 Ads Platform sync so any new combo
-# rows exist first. 45-day rolling window; metrics are overwritten per combo
-# so overlapping runs never double-count.
+# rows exist first. Lifetime window (Meta "maximum" preset) so numbers match
+# Ads Manager; metrics are overwritten per combo so re-runs never double-count.
 name: Cron — Creative combo metrics
 
 on:
