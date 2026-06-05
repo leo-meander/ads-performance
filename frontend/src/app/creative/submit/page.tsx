@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus, Trash2, Sparkles } from 'lucide-react'
+import AutoAssignPanel, { AutoAssignResult } from '@/components/AutoAssignPanel'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -27,11 +28,15 @@ interface Version {
   materialId: string
   // working file override
   workingFileUrl: string
+  // per-version targeting
+  keypointIds: string[]
+  angleId: string
 }
 
 const emptyVersion = (): Version => ({
   mode: 'new', adName: '', creativeUrl: '', creativeType: 'image',
   headline: '', primaryText: '', cta: '', copyId: '', materialId: '', workingFileUrl: '',
+  keypointIds: [], angleId: '',
 })
 
 export default function CreateBatchAndSubmitPage() {
@@ -49,9 +54,9 @@ export default function CreateBatchAndSubmitPage() {
   const [branchId, setBranchId] = useState('')
   const [targetAudience, setTargetAudience] = useState('')
   const [language, setLanguage] = useState('')
-  const [selectedKeypoints, setSelectedKeypoints] = useState<string[]>([])
-  const [selectedAngle, setSelectedAngle] = useState('')
   const [selectedReviewers, setSelectedReviewers] = useState<string[]>([])
+  // Index of the version whose auto-assign panel is open (null = none).
+  const [autoAssignVersion, setAutoAssignVersion] = useState<number | null>(null)
   const [workingFileLabel, setWorkingFileLabel] = useState('Figma Frame')
   const [deadline, setDeadline] = useState('')
   const [note, setNote] = useState('')
@@ -73,7 +78,6 @@ export default function CreateBatchAndSubmitPage() {
   }, [branchId])
 
   const toggleReviewer = (id: string) => setSelectedReviewers(prev => prev.includes(id) ? prev.filter(r => r !== id) : [...prev, id])
-  const toggleKeypoint = (id: string) => setSelectedKeypoints(prev => prev.includes(id) ? prev.filter(k => k !== id) : [...prev, id])
 
   const branchKeypoints = keypoints.filter(k => k.branch_id === branchId)
   const branchAngles = angles.filter(a => !a.branch_id || a.branch_id === branchId)
@@ -84,14 +88,41 @@ export default function CreateBatchAndSubmitPage() {
     setVersions(prev => prev.map((v, idx) => idx === i ? { ...v, ...patch } : v))
   const addVersion = () => setVersions(prev => [...prev, emptyVersion()])
   const removeVersion = (i: number) => setVersions(prev => prev.filter((_, idx) => idx !== i))
+  const toggleVersionKeypoint = (i: number, id: string) =>
+    setVersions(prev => prev.map((v, idx) => idx === i
+      ? { ...v, keypointIds: v.keypointIds.includes(id) ? v.keypointIds.filter(k => k !== id) : [...v.keypointIds, id] }
+      : v))
+
+  // Headline/body the auto-assign panel analyzes for a given version.
+  const autoAssignSource = (v: Version): { headline: string; bodyText: string } => {
+    if (v.mode === 'new') return { headline: v.headline, bodyText: v.primaryText }
+    const copy = copies.find(c => c.copy_id === v.copyId)
+    return { headline: copy?.headline || '', bodyText: copy?.body_text || '' }
+  }
+
+  const handleAutoAssignResult = (i: number, r: AutoAssignResult) => {
+    setAutoAssignVersion(null)
+    // Newly-created keypoints must appear in the branch checkbox list.
+    if (r.created_keypoints.length > 0) {
+      setKeypoints(prev => [
+        ...prev,
+        ...r.created_keypoints.map(k => ({ id: k.id, branch_id: branchId, category: k.category, title: k.title })),
+      ])
+    }
+    setVersions(prev => prev.map((v, idx) => idx === i ? {
+      ...v,
+      angleId: r.angle_id || v.angleId,
+      keypointIds: Array.from(new Set([...v.keypointIds, ...r.keypoint_ids])),
+    } : v))
+  }
 
   const createCombo = async (v: Version): Promise<{ id: string; workingFileUrl: string } | null> => {
     const shared = {
       branch_id: branchId,
       ad_name: v.adName,
       target_audience: targetAudience || null,
-      keypoint_ids: selectedKeypoints.length > 0 ? selectedKeypoints : null,
-      angle_id: selectedAngle || null,
+      keypoint_ids: v.keypointIds.length > 0 ? v.keypointIds : null,
+      angle_id: v.angleId || null,
     }
     if (v.mode === 'existing') {
       const res = await fetch(`${API_BASE}/api/combos`, {
@@ -187,7 +218,7 @@ export default function CreateBatchAndSubmitPage() {
           <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-xs text-gray-500 mb-1">Branch *</label>
-              <select value={branchId} onChange={e => { setBranchId(e.target.value); setVersions(vs => vs.map(v => ({ ...v, copyId: '', materialId: '' }))) }}
+              <select value={branchId} onChange={e => { setBranchId(e.target.value); setVersions(vs => vs.map(v => ({ ...v, copyId: '', materialId: '', keypointIds: [], angleId: '' }))) }}
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
                 <option value="">Select branch</option>
                 {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
@@ -215,32 +246,6 @@ export default function CreateBatchAndSubmitPage() {
             </div>
           </div>
 
-          {branchId && (
-            <div className="mt-4 space-y-4">
-              <div>
-                <label className="block text-xs text-gray-500 mb-2">Keypoints</label>
-                {branchKeypoints.length === 0 ? <p className="text-xs text-gray-400">No keypoints for this branch.</p> : (
-                  <div className="grid grid-cols-2 gap-1 max-h-40 overflow-auto">
-                    {branchKeypoints.map(k => (
-                      <label key={k.id} className="flex items-center gap-2 p-1.5 rounded hover:bg-gray-50 cursor-pointer text-xs">
-                        <input type="checkbox" checked={selectedKeypoints.includes(k.id)} onChange={() => toggleKeypoint(k.id)} className="w-3 h-3" />
-                        <span className="text-gray-400">[{k.category}]</span>
-                        <span className="text-gray-700">{k.title}</span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-2">Ad Angle</label>
-                <select value={selectedAngle} onChange={e => setSelectedAngle(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                  <option value="">No angle</option>
-                  {branchAngles.map(a => <option key={a.angle_id} value={a.angle_id}>{a.angle_id} - {a.angle_type} ({a.status})</option>)}
-                </select>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Versions */}
@@ -336,6 +341,48 @@ export default function CreateBatchAndSubmitPage() {
                   placeholder="Leave empty to use the creative URL"
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
+
+              {/* Per-version targeting: keypoints + angle */}
+              <div className="pt-3 mt-1 border-t border-gray-100 space-y-4">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-medium text-gray-500">Keypoints &amp; Angle</label>
+                  <button type="button"
+                    onClick={() => setAutoAssignVersion(i)}
+                    disabled={!branchId || (!autoAssignSource(v).headline && !autoAssignSource(v).bodyText)}
+                    title={!branchId ? 'Select a branch first' : (!autoAssignSource(v).headline && !autoAssignSource(v).bodyText ? 'Fill the headline/copy first' : '')}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-purple-700 bg-purple-50 rounded hover:bg-purple-100 disabled:opacity-40 disabled:cursor-not-allowed">
+                    <Sparkles className="w-3.5 h-3.5" /> Auto-assign
+                  </button>
+                </div>
+                {!branchId ? (
+                  <p className="text-xs text-gray-400">Select a branch to choose keypoints &amp; angle.</p>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-2">Keypoints</label>
+                      {branchKeypoints.length === 0 ? <p className="text-xs text-gray-400">No keypoints for this branch.</p> : (
+                        <div className="grid grid-cols-2 gap-1 max-h-40 overflow-auto">
+                          {branchKeypoints.map(k => (
+                            <label key={k.id} className="flex items-center gap-2 p-1.5 rounded hover:bg-gray-50 cursor-pointer text-xs">
+                              <input type="checkbox" checked={v.keypointIds.includes(k.id)} onChange={() => toggleVersionKeypoint(i, k.id)} className="w-3 h-3" />
+                              <span className="text-gray-400">[{k.category}]</span>
+                              <span className="text-gray-700">{k.title}</span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-2">Ad Angle</label>
+                      <select value={v.angleId} onChange={e => updateVersion(i, { angleId: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                        <option value="">No angle</option>
+                        {branchAngles.map(a => <option key={a.angle_id} value={a.angle_id}>{a.angle_id} - {a.angle_type} ({a.status})</option>)}
+                      </select>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         ))}
@@ -392,6 +439,16 @@ export default function CreateBatchAndSubmitPage() {
           {submitting ? 'Creating & Submitting...' : `Submit ${versions.length} version${versions.length !== 1 ? 's' : ''} for Approval`}
         </button>
       </div>
+
+      {autoAssignVersion !== null && versions[autoAssignVersion] && (
+        <AutoAssignPanel
+          branchId={branchId}
+          headline={autoAssignSource(versions[autoAssignVersion]).headline}
+          bodyText={autoAssignSource(versions[autoAssignVersion]).bodyText}
+          onResult={r => handleAutoAssignResult(autoAssignVersion, r)}
+          onClose={() => setAutoAssignVersion(null)}
+        />
+      )}
     </div>
   )
 }
