@@ -2,10 +2,6 @@
 
 import { useEffect, useMemo, useState, useCallback, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
-import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend,
-} from 'recharts'
 import { ChevronRight } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import FunnelRecommendations from '@/components/FunnelRecommendations'
@@ -21,6 +17,8 @@ import TaBreakdownTable, { TaRow } from '@/components/dashboard/TaBreakdownTable
 import CampaignBreakdownTable, { CampaignRow } from '@/components/dashboard/CampaignBreakdownTable'
 import ActivityLogPanel from '@/components/dashboard/activity/ActivityLogPanel'
 import ManualEntryModal from '@/components/dashboard/activity/ManualEntryModal'
+import MetricTrendChart, { TrendRow } from '@/components/dashboard/MetricTrendChart'
+import BranchComparisonChart from '@/components/dashboard/BranchComparisonChart'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -35,7 +33,7 @@ type FunnelStage = {
 type CountryOption = { code: string; name: string; adset_count: number }
 type Branch = { name: string; currency: string }
 
-type DailyRow = { date: string; spend: number; revenue: number; roas: number }
+type DailyRow = TrendRow
 
 function DashboardInner() {
   const search = useSearchParams()
@@ -181,8 +179,11 @@ function DashboardInner() {
         }
       }
       if (daily.success && daily.data) {
-        setDaily((daily.data.series || []).map((s: { date: string; spend: number; revenue: number; roas: number }) => ({
-          date: s.date, spend: s.spend, revenue: s.revenue, roas: s.roas,
+        setDaily((daily.data.series || []).map((s: Partial<TrendRow> & { date: string }) => ({
+          date: s.date,
+          spend: s.spend ?? 0, revenue: s.revenue ?? 0, roas: s.roas ?? 0,
+          ctr: s.ctr ?? 0, cpa: s.cpa ?? 0, cpc: s.cpc ?? 0,
+          cr: s.cr ?? 0, aov: s.aov ?? 0, conversions: s.conversions ?? 0,
         })))
       }
       if (funnel.success && funnel.data) {
@@ -476,6 +477,13 @@ function DashboardInner() {
         />
       </div>
 
+      {/* Branch comparison — ROAS / CPA / CTR side-by-side across branches */}
+      {byBranch.length > 0 && (
+        <div className="mb-6">
+          <BranchComparisonChart rows={byBranch as (BranchBreakdownRow & { roas: number; cpa: number; ctr: number })[]} />
+        </div>
+      )}
+
       {/* Country comparison — always shown, click row to filter */}
       {comparison.length > 0 && (
         <div className="mb-6">
@@ -555,35 +563,10 @@ function DashboardInner() {
         </div>
       )}
 
-      {/* Spend/Revenue + ROAS timeseries */}
+      {/* Metric trends — tick any combination of metrics to overlay their lines */}
       {daily.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="text-sm font-semibold text-gray-700 mb-4">Spend vs Revenue — {responseCurrency}</h2>
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={daily}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(5)} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => fmtNum(v)} />
-                <Tooltip formatter={(v: number) => fmtMoney(v, responseCurrency)} labelFormatter={(l) => `Date: ${l}`} />
-                <Legend />
-                <Area type="monotone" dataKey="spend" name="Spend" stroke="#ef4444" fill="#fef2f2" strokeWidth={2} />
-                <Area type="monotone" dataKey="revenue" name="Revenue" stroke="#10b981" fill="#ecfdf5" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="text-sm font-semibold text-gray-700 mb-4">ROAS</h2>
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={daily}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(5)} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${v.toFixed(1)}x`} />
-                <Tooltip formatter={(v: number) => `${v.toFixed(2)}x`} labelFormatter={(l) => `Date: ${l}`} />
-                <Area type="monotone" dataKey="roas" name="ROAS" stroke="#3b82f6" fill="#eff6ff" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+        <div className="mb-6">
+          <MetricTrendChart data={daily} currency={responseCurrency} />
         </div>
       )}
 

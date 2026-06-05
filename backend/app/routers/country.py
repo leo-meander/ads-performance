@@ -358,9 +358,11 @@ def daily_spend_series(
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
-    """Daily spend + revenue + ROAS series for the performance sparkline that
-    the Activity Log overlays change-markers onto. Honors the same scoping +
-    filters as the main KPI endpoint."""
+    """Daily per-metric series (spend, revenue, ROAS, CTR, CPA, CPC, CR, AOV,
+    conversions) for the performance trend chart that the Activity Log overlays
+    change-markers onto. Honors the same scoping + filters as the main KPI
+    endpoint. Ratio metrics are re-derived per day from summed counters so they
+    stay correct under FX conversion."""
     try:
         account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
         if err:
@@ -382,6 +384,9 @@ def daily_spend_series(
                 AdAccount.currency.label("currency"),
                 func.sum(MetricsCache.spend).label("spend"),
                 func.sum(MetricsCache.revenue).label("revenue"),
+                func.sum(MetricsCache.impressions).label("impressions"),
+                func.sum(MetricsCache.clicks).label("clicks"),
+                func.sum(MetricsCache.conversions).label("conversions"),
             )
             .join(Campaign, Campaign.id == MetricsCache.campaign_id)
             .join(AdAccount, AdAccount.id == Campaign.account_id)
@@ -395,23 +400,37 @@ def daily_spend_series(
             d = row.date.isoformat() if row.date else None
             if not d:
                 continue
-            entry = agg.setdefault(d, {"date": d, "spend": 0.0, "revenue": 0.0})
+            entry = agg.setdefault(d, {
+                "spend": 0.0, "revenue": 0.0,
+                "impressions": 0, "clicks": 0, "conversions": 0,
+            })
             fx = _fx(row.currency) if convert_to_vnd else 1
             entry["spend"] += float(row.spend or 0) * fx
             entry["revenue"] += float(row.revenue or 0) * fx
+            entry["impressions"] += int(row.impressions or 0)
+            entry["clicks"] += int(row.clicks or 0)
+            entry["conversions"] += int(row.conversions or 0)
 
         series = []
         cursor = df
         while cursor <= dt:
             key = cursor.isoformat()
-            entry = agg.get(key, {"date": key, "spend": 0.0, "revenue": 0.0})
-            spend = entry["spend"]
-            revenue = entry["revenue"]
+            entry = agg.get(key, {
+                "spend": 0.0, "revenue": 0.0,
+                "impressions": 0, "clicks": 0, "conversions": 0,
+            })
+            derived = _breakdown_derive(
+                entry["spend"], entry["revenue"], entry["impressions"],
+                entry["clicks"], entry["conversions"],
+            )
             series.append({
                 "date": key,
-                "spend": round(spend, 2),
-                "revenue": round(revenue, 2),
-                "roas": round(revenue / spend, 4) if spend > 0 else 0,
+                "spend": round(entry["spend"], 2),
+                "revenue": round(entry["revenue"], 2),
+                "impressions": entry["impressions"],
+                "clicks": entry["clicks"],
+                "conversions": entry["conversions"],
+                **derived,
             })
             cursor = cursor + timedelta(days=1)
 
