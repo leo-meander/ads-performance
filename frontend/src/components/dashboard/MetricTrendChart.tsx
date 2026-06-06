@@ -3,9 +3,12 @@
 import { useMemo, useState } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend,
+  Tooltip, ResponsiveContainer, Legend, ReferenceDot,
 } from 'recharts'
 import { fmtMoney, fmtNum } from './dashboardUtils'
+
+// An activity marker overlaid on the trend at a given day.
+export type TrendMarker = { day: string; count: number; color: string; firstId: string }
 
 export type TrendRow = {
   date: string
@@ -49,10 +52,16 @@ function formatValue(v: number, kind: MetricKind, currency: string): string {
 }
 
 export default function MetricTrendChart({
-  data, currency,
+  data, currency, markers = [], onMarkerClick, title = 'Metric Trends', headerRight, bare = false,
 }: {
   data: TrendRow[]
   currency: string
+  markers?: TrendMarker[]
+  onMarkerClick?: (firstId: string) => void
+  title?: string
+  headerRight?: React.ReactNode
+  // When true, render without the card chrome so it can be embedded in another card.
+  bare?: boolean
 }) {
   // Default to the two headline metrics most people watch.
   const [selected, setSelected] = useState<MetricKey[]>(['spend', 'roas'])
@@ -88,19 +97,32 @@ export default function MetricTrendChart({
 
   const selectedDefs = METRICS.filter(d => selected.includes(d.key))
 
+  // Anchor activity markers onto the first selected metric's line so they sit
+  // on the curve (matching the indexed/raw mode currently shown).
+  const anchorDef = selectedDefs[0]
+  const anchorKey = anchorDef ? (indexed ? `${anchorDef.key}__idx` : anchorDef.key) : null
+  const valueByDay = useMemo(() => {
+    const m: Record<string, number> = {}
+    if (anchorKey) for (const row of chartData) m[row.date as string] = Number(row[anchorKey]) || 0
+    return m
+  }, [chartData, anchorKey])
+
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
+    <div className={bare ? '' : 'bg-white rounded-xl border border-gray-200 p-6'}>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <h2 className="text-sm font-semibold text-gray-700">Metric Trends</h2>
-        <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={indexed}
-            onChange={() => setIndexed(v => !v)}
-            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-          />
-          Indexed (100 = period max)
-        </label>
+        <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={indexed}
+              onChange={() => setIndexed(v => !v)}
+              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            Indexed (100 = period max)
+          </label>
+          {headerRight}
+        </div>
       </div>
 
       {/* Metric toggles — tick any combination to overlay their trend lines. */}
@@ -174,6 +196,23 @@ export default function MetricTrendChart({
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4 }}
+              />
+            ))}
+            {anchorKey && markers.map(m => (
+              <ReferenceDot
+                key={m.day}
+                x={m.day}
+                y={valueByDay[m.day] ?? 0}
+                r={m.count > 5 ? 7 : 5}
+                fill={m.color}
+                stroke="#fff"
+                strokeWidth={2}
+                ifOverflow="visible"
+                onClick={() => onMarkerClick?.(m.firstId)}
+                style={{ cursor: onMarkerClick ? 'pointer' : 'default' }}
+                label={m.count > 1 ? {
+                  value: m.count, fill: '#fff', fontSize: 9, fontWeight: 700, position: 'center',
+                } : undefined}
               />
             ))}
           </LineChart>
