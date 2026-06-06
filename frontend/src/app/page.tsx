@@ -17,7 +17,7 @@ import TaBreakdownTable, { TaRow } from '@/components/dashboard/TaBreakdownTable
 import CampaignBreakdownTable, { CampaignRow } from '@/components/dashboard/CampaignBreakdownTable'
 import ActivityLogPanel from '@/components/dashboard/activity/ActivityLogPanel'
 import ManualEntryModal from '@/components/dashboard/activity/ManualEntryModal'
-import MetricTrendChart, { TrendRow } from '@/components/dashboard/MetricTrendChart'
+import { TrendRow } from '@/components/dashboard/MetricTrendChart'
 import BranchComparisonChart from '@/components/dashboard/BranchComparisonChart'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -301,8 +301,12 @@ function DashboardInner() {
 
   return (
     <div>
+      {/* Sticky header + filter bar — stays pinned so filters remain usable
+          while scrolling. -mx/-mt cancel the <main> padding for a full-bleed
+          bar; px/pt restore the inner spacing. */}
+      <div className="sticky top-0 z-30 -mx-6 -mt-6 px-6 pt-6 pb-3 mb-4 bg-gray-50/95 backdrop-blur border-b border-gray-200">
       {/* Header + filter bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <h1 className="text-2xl font-bold text-blue-600">ADS Performance</h1>
         <div className="flex flex-wrap items-center gap-2">
           <select value={datePreset} onChange={e => setDatePreset(e.target.value)}
@@ -374,14 +378,17 @@ function DashboardInner() {
       </div>
 
       {/* Active filter chips */}
-      <ActiveFiltersChips chips={chips} onResetAll={resetAll} />
+      <div className="[&>div]:mb-0">
+        <ActiveFiltersChips chips={chips} onResetAll={resetAll} />
+      </div>
 
       {/* Period info */}
       {periodInfo && (
-        <p className="text-xs text-gray-400 mb-4">
+        <p className="text-xs text-gray-400 mt-2">
           {periodInfo.from} → {periodInfo.to} &nbsp;vs&nbsp; {periodInfo.prev_from} → {periodInfo.prev_to}
         </p>
       )}
+      </div>{/* end sticky header */}
 
       {/* KPI summary — headline + ROAS decomposition. Shown for both country=
           empty (aggregated) and country=set (per-country). The decomposition
@@ -563,24 +570,10 @@ function DashboardInner() {
         </div>
       )}
 
-      {/* Metric trends — tick any combination of metrics to overlay their lines */}
-      {daily.length > 0 && (
-        <div className="mb-6">
-          <MetricTrendChart data={daily} currency={responseCurrency} />
-        </div>
-      )}
-
-      {/* AI funnel recommendations — deep-links back into this page with filters set */}
-      <FunnelRecommendations
-        branches={branchParam}
-        platform={platform}
-        dateFrom={resolvedRange.from}
-        dateTo={resolvedRange.to}
-      />
-
-      {/* Activity log — what changed during this period (manual + automated)
-          so the user can correlate spend/ROAS swings to specific actions. */}
-      <div className="mt-6">
+      {/* Metric trends + activity log (combined) — tick any metrics to overlay
+          their lines, with change-markers showing what changed each day so the
+          user can correlate spend/ROAS swings to specific actions. */}
+      <div className="mb-6">
         <ActivityLogPanel
           country={country}
           branches={branchParam}
@@ -590,8 +583,18 @@ function DashboardInner() {
           canEdit={canEditAnalytics}
           onAddManual={() => setManualModalOpen(true)}
           refreshKey={activityRefreshKey}
+          trend={daily}
+          currency={responseCurrency}
         />
       </div>
+
+      {/* AI funnel recommendations — deep-links back into this page with filters set */}
+      <FunnelRecommendations
+        branches={branchParam}
+        platform={platform}
+        dateFrom={resolvedRange.from}
+        dateTo={resolvedRange.to}
+      />
 
       {!loading && kpiItems.length === 0 && (
         <div className="text-center py-12 text-gray-400">
