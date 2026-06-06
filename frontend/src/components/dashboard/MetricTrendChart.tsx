@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid,
+  AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend, ReferenceDot,
 } from 'recharts'
 import { fmtMoney, fmtNum } from './dashboardUtils'
@@ -151,7 +151,15 @@ export default function MetricTrendChart({
         <p className="text-gray-400 text-sm text-center py-20">Select at least one metric.</p>
       ) : (
         <ResponsiveContainer width="100%" height={320}>
-          <LineChart data={chartData}>
+          <AreaChart data={chartData}>
+            <defs>
+              {selectedDefs.map(def => (
+                <linearGradient key={def.key} id={`grad-${def.key}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={def.color} stopOpacity={0.22} />
+                  <stop offset="100%" stopColor={def.color} stopOpacity={0} />
+                </linearGradient>
+              ))}
+            </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
             <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={(v) => String(v).slice(5)} />
             <YAxis
@@ -187,13 +195,15 @@ export default function MetricTrendChart({
             />
             <Legend />
             {selectedDefs.map(def => (
-              <Line
+              <Area
                 key={def.key}
                 type="monotone"
                 dataKey={indexed ? `${def.key}__idx` : def.key}
                 name={def.label}
                 stroke={def.color}
                 strokeWidth={2}
+                fill={`url(#grad-${def.key})`}
+                fillOpacity={1}
                 dot={false}
                 activeDot={{ r: 4 }}
               />
@@ -215,7 +225,7 @@ export default function MetricTrendChart({
                 } : undefined}
               />
             ))}
-          </LineChart>
+          </AreaChart>
         </ResponsiveContainer>
       )}
     </div>
