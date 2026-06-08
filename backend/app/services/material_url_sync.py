@@ -1,21 +1,74 @@
 """Service: refresh ad_materials.file_url from Meta AdCreative preview URLs.
 
 Deduped by ad_name — only fetches the creative once per unique ad_name per branch.
+
+Meta's signed CDN URLs expire after a few weeks, so by default we don't store the
+link at all: we download the image and freeze it as an inline base64 data URL
+(see _snapshot_data_url + config.CREATIVE_SNAPSHOT_*). That makes previews
+permanent — the app has no blob storage, so base64 in the TEXT file_url column is
+the established pattern. If snapshotting fails or is disabled, we fall back to
+storing the live (expiring) URL, preserving the old behavior.
 """
+import base64
+import io
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import requests
 from facebook_business.api import FacebookAdsApi
 from facebook_business.adobjects.adaccount import AdAccount as FBAdAccount
 from facebook_business.adobjects.adcreative import AdCreative
+from PIL import Image
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 
 logger = logging.getLogger(__name__)
+
+_DOWNLOAD_TIMEOUT = 15  # seconds
+
+
+def _snapshot_data_url(url: str) -> Optional[str]:
+    """Download a Meta preview image and return it as a permanent base64 data
+    URL, downscaled per config. Returns None on any failure (caller falls back
+    to the live URL). For video creatives the resolved URL is a poster frame, so
+    the snapshot is a still image — that's intentional (we can't inline video).
+    """
+    max_dim = settings.CREATIVE_SNAPSHOT_MAX_DIM
+    max_bytes = settings.CREATIVE_SNAPSHOT_MAX_BYTES
+    try:
+        resp = requests.get(url, timeout=_DOWNLOAD_TIMEOUT)
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+        img.thumbnail((max_dim, max_dim))  # in-place, preserves aspect ratio
+
+        # Encode, stepping quality down until we fit the byte cap.
+        for quality in (settings.CREATIVE_SNAPSHOT_JPEG_QUALITY, 65, 50):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True)
+            data = buf.getvalue()
+            if len(data) <= max_bytes:
+                b64 = base64.b64encode(data).decode("ascii")
+                return f"data:image/jpeg;base64,{b64}"
+
+        # Still too big — halve dimensions once and retry at low quality.
+        img.thumbnail((max_dim // 2, max_dim // 2))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=55, optimize=True)
+        data = buf.getvalue()
+        if len(data) <= max_bytes:
+            b64 = base64.b64encode(data).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}"
+
+        logger.warning("snapshot exceeded %d bytes after downscale: %s", max_bytes, url[:80])
+        return None
+    except Exception:
+        logger.warning("snapshot failed for %s", url[:80], exc_info=True)
+        return None
 
 CREATIVE_FIELDS = [
     "id",
@@ -216,13 +269,20 @@ def sync_material_urls(db: Session, since_days: Optional[int] = None) -> dict:
                 if not url:
                     continue
 
+                # Freeze the image as a permanent base64 data URL so the preview
+                # survives Meta's CDN link expiry. Fall back to the live URL when
+                # snapshotting is disabled or fails.
+                stored_url = url
+                if settings.CREATIVE_SNAPSHOT_ENABLED:
+                    stored_url = _snapshot_data_url(url) or url
+
                 # Skip manually-set URLs (designer input) — only overwrite 'auto' rows
                 result = db.execute(
                     text(
                         "UPDATE ad_materials SET file_url = :u "
                         "WHERE material_id = ANY(:ids) AND url_source = 'auto'"
                     ),
-                    {"u": url, "ids": list(material_ids)},
+                    {"u": stored_url, "ids": list(material_ids)},
                 )
                 if result.rowcount > 0:
                     total_updated += 1

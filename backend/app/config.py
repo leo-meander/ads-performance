@@ -104,6 +104,16 @@ class Settings(BaseSettings):
     # Sync
     SYNC_INTERVAL_MINUTES: int = 15
 
+    # Creative snapshot — freeze Meta preview images as inline base64 data URLs
+    # at material-URL-sync time so previews never break when Meta's signed CDN
+    # links expire. App has no blob storage; base64 lives in ad_materials.file_url
+    # (TEXT, TOAST-offloaded so it doesn't slow row scans). Downscale keeps it
+    # light. Set CREATIVE_SNAPSHOT_ENABLED=False to revert to storing live links.
+    CREATIVE_SNAPSHOT_ENABLED: bool = True
+    CREATIVE_SNAPSHOT_MAX_DIM: int = 768  # longest edge in px before JPEG encode
+    CREATIVE_SNAPSHOT_JPEG_QUALITY: int = 80
+    CREATIVE_SNAPSHOT_MAX_BYTES: int = 200_000  # skip snapshot if still bigger
+
     # Internal scheduled-task endpoints (Zeabur cron hits these with X-Internal-Secret header)
     INTERNAL_TASK_SECRET: str = ""
 

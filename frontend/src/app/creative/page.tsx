@@ -412,6 +412,7 @@ interface ComboDetail {
   keypoints: string[]
   branch_context: any
   insight: { headline: string; reasons: { key: string; label: string; value: string; reference: string; sentiment: string; text: string }[]; positive: number; negative: number }
+  working_file: { url: string; label: string | null } | null
 }
 
 const SENTIMENT_CLS: Record<string, string> = {
@@ -420,22 +421,53 @@ const SENTIMENT_CLS: Record<string, string> = {
   neutral: 'bg-gray-50 border-gray-200 text-gray-600',
 }
 
-function CreativePreview({ material }: { material: ComboDetail['material'] }) {
+function CreativePreview({ material, workingFile }: { material: ComboDetail['material']; workingFile?: ComboDetail['working_file'] }) {
   const [failed, setFailed] = useState(false)
+  // Designer's working file (Google Drive etc.) — a durable link that doesn't
+  // expire. Shown for videos (can't inline) and whenever a preview can't render.
+  const workingFileLink = workingFile?.url ? (
+    <a href={workingFile.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline mt-1.5">
+      <ExternalLink className="w-3 h-3" /> {workingFile.label || 'Open working file'}
+    </a>
+  ) : null
+
   if (!material?.file_url) {
+    if (workingFileLink) {
+      return (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 flex flex-col items-center justify-center text-center h-40">
+          <p className="text-xs text-gray-500">No preview — open the working file.</p>
+          {workingFileLink}
+        </div>
+      )
+    }
     return <div className="bg-gray-100 rounded-lg h-40 flex items-center justify-center text-xs text-gray-400">No creative linked</div>
   }
   const { material_type, file_url } = material
+  // Frozen base64 snapshot (set at sync time so previews never expire). Always a
+  // still image — render as <img> even for video materials (it's a poster frame).
+  const isSnapshot = file_url.startsWith('data:image')
   const openLink = (
     <a href={file_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline mt-1.5">
       <ExternalLink className="w-3 h-3" /> Open original creative
     </a>
   )
+  if (!failed && isSnapshot) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return (
+      <div>
+        <img src={file_url} alt="creative" className="w-full max-h-72 object-contain rounded-lg bg-gray-50 border border-gray-100" onError={() => setFailed(true)} />
+        {material_type === 'video' && <p className="text-[10px] text-gray-400 mt-1">Video — showing poster frame</p>}
+        {material_type === 'carousel' && <p className="text-[10px] text-gray-400 mt-1">Carousel — showing first frame</p>}
+        {/* Poster only — the working file is the way to actually watch the video. */}
+        {material_type === 'video' && workingFileLink ? workingFileLink : openLink}
+      </div>
+    )
+  }
   if (!failed && material_type === 'video') {
     return (
       <div>
         <video src={file_url} controls className="w-full max-h-72 rounded-lg bg-black" onError={() => setFailed(true)} />
-        {openLink}
+        {workingFileLink || openLink}
       </div>
     )
   }
@@ -449,10 +481,12 @@ function CreativePreview({ material }: { material: ComboDetail['material'] }) {
       </div>
     )
   }
-  // Fallback: URL can't be embedded (e.g. Drive share link) — offer the link.
+  // Fallback: URL can't be embedded (e.g. expired link, Drive share link) —
+  // offer the durable working file if we have one, else the original link.
   return (
     <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 flex flex-col items-center justify-center text-center h-40">
       <p className="text-xs text-gray-500">Preview unavailable for this link.</p>
+      {workingFileLink}
       {openLink}
     </div>
   )
@@ -563,7 +597,7 @@ function ComboDrawer({ comboId, onClose }: { comboId: string; onClose: () => voi
               {/* Creative preview */}
               <section>
                 <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-2">Creative</h3>
-                <CreativePreview material={data.material} />
+                <CreativePreview material={data.material} workingFile={data.working_file} />
                 {data.material?.description && <p className="text-xs text-gray-500 mt-1.5">{data.material.description}</p>}
               </section>
 

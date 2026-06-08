@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -24,6 +25,7 @@ from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
+from app.models.approval import ComboApproval
 from app.models.base import Base
 from app.models.creative_visual_tag import CreativeVisualTag
 from app.models.user import User
@@ -162,6 +164,37 @@ def test_detail_loser_flags_negative_roas():
     assert body["success"], body
     roas_reasons = [r for r in body["data"]["insight"]["reasons"] if r["key"] == "roas"]
     assert roas_reasons and roas_reasons[0]["sentiment"] == "negative"
+
+
+def test_detail_working_file_null_without_approval():
+    _seed()
+    admin = _admin()
+    resp = client.get("/api/creative/combos/CMB-WIN/detail", headers=_auth(admin))
+    assert resp.json()["data"]["working_file"] is None
+
+
+def test_detail_surfaces_latest_working_file_from_approval():
+    _seed()
+    admin = _admin()
+    db = TestSession()
+    combo = db.query(AdCombo).filter(AdCombo.combo_id == "CMB-WIN").first()
+    # Two approval rounds — the most recent working file should win.
+    db.add(ComboApproval(
+        id=str(uuid.uuid4()), combo_id=combo.id, round=1,
+        submitted_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        working_file_url="https://drive.google.com/old", working_file_label="v1",
+    ))
+    db.add(ComboApproval(
+        id=str(uuid.uuid4()), combo_id=combo.id, round=2,
+        submitted_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        working_file_url="https://drive.google.com/new", working_file_label="v2",
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/api/creative/combos/CMB-WIN/detail", headers=_auth(admin))
+    wf = resp.json()["data"]["working_file"]
+    assert wf == {"url": "https://drive.google.com/new", "label": "v2"}
 
 
 def test_detail_unknown_combo_errors():

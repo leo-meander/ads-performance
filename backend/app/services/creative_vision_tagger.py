@@ -91,6 +91,17 @@ class _VisionTagResult:
         self.error = error
 
 
+def _image_source(image_url: str) -> dict:
+    """Build the Anthropic image source block. file_url may be a live http(s)
+    URL or a frozen base64 data URL (data:image/<fmt>;base64,<...>); the latter
+    must be sent as a base64 source, not a fetchable URL."""
+    if image_url.startswith("data:"):
+        header, _, b64 = image_url.partition(",")
+        media_type = header[5:].split(";", 1)[0] or "image/jpeg"
+        return {"type": "base64", "media_type": media_type, "data": b64}
+    return {"type": "url", "url": image_url}
+
+
 def _call_claude_vision(
     client: Anthropic, image_url: str
 ) -> _VisionTagResult:
@@ -106,7 +117,7 @@ def _call_claude_vision(
                     "content": [
                         {
                             "type": "image",
-                            "source": {"type": "url", "url": image_url},
+                            "source": _image_source(image_url),
                         },
                         {
                             "type": "text",
