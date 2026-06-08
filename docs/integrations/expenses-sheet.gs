@@ -54,6 +54,10 @@ var CONFIG = {
     'MEANDER Oani':   'Oani',
   },
 
+  // Chỉ ghi các branch này (phải khớp data validation ở cột Branch của sheet).
+  // Bread (nhà hàng) bị loại vì sheet không cho. Để [] nếu muốn ghi hết.
+  BRANCH_WHITELIST: ['Saigon', 'Osaka', '1948', 'Taipei', 'Oani'],
+
   // Thứ tự sort (sau khi đã xếp theo năm → tháng).
   BRANCH_ORDER:  ['Saigon', 'Osaka', '1948', 'Taipei', 'Oani', 'Bread'],
   CHANNEL_ORDER: ['Meta', 'Google', 'TikTok', 'KOL', 'CRM'],
@@ -117,8 +121,10 @@ function syncExpenses() {
     });
   });
 
-  // Lọc dòng rỗng + tính % .
+  // Lọc branch ngoài whitelist (tránh đụng data validation) + dòng rỗng.
+  var allow = CONFIG.BRANCH_WHITELIST || [];
   var rows = raw.filter(function (r) {
+    if (allow.length && allow.indexOf(r.branch) < 0) return false;
     return !(CONFIG.SKIP_EMPTY && r.alloc === 0 && r.actual === 0);
   });
   rows.forEach(function (r) { r.pct = r.alloc > 0 ? r.actual / r.alloc : ''; });
