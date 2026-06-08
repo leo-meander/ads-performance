@@ -21,9 +21,22 @@ from app.models.base import Base
 from app.models.creative_visual_tag import CreativeVisualTag
 from app.services.creative_vision_tagger import (
     VISION_MODEL,
+    _image_source,
     tag_material,
     tag_pending_materials,
 )
+
+
+def test_image_source_http_url():
+    assert _image_source("https://meta.cdn/x.jpg") == {
+        "type": "url",
+        "url": "https://meta.cdn/x.jpg",
+    }
+
+
+def test_image_source_base64_data_url():
+    src = _image_source("data:image/jpeg;base64,QUJD")
+    assert src == {"type": "base64", "media_type": "image/jpeg", "data": "QUJD"}
 
 
 engine = create_engine(

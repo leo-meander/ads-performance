@@ -24,6 +24,7 @@ from app.dependencies.auth import require_section
 from app.models.account import AdAccount
 from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
+from app.models.approval import ComboApproval
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
 from app.models.creative_visual_tag import CreativeVisualTag
@@ -869,6 +870,23 @@ def get_combo_detail(
         material_type = material.material_type if material else None
         insight = _heuristic_insight(combo, ctx, material_type)
 
+        # Designer's working-file link (Google Drive etc.) from the latest
+        # approval that has one — a durable fallback when the creative itself
+        # can't be previewed inline (notably videos: we only snapshot a poster).
+        wf = (
+            db.query(ComboApproval)
+            .filter(
+                ComboApproval.combo_id == combo.id,
+                ComboApproval.working_file_url.isnot(None),
+            )
+            .order_by(ComboApproval.submitted_at.desc())
+            .first()
+        )
+        working_file = (
+            {"url": wf.working_file_url, "label": wf.working_file_label}
+            if wf else None
+        )
+
         return _api_response(data={
             "combo": {
                 "id": combo.id, "combo_id": combo.combo_id, "branch_id": combo.branch_id,
@@ -906,6 +924,7 @@ def get_combo_detail(
             "keypoints": kp_titles,
             "branch_context": ctx,
             "insight": insight,
+            "working_file": working_file,
         })
     except Exception as e:
         return _api_response(error=str(e))
