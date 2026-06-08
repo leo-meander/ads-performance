@@ -54,7 +54,11 @@ from app.models.keypoint import BranchKeypoint
 from app.models.metrics import MetricsCache
 from app.models.spy_saved_ad import SpySavedAd
 from app.models.user import User
-from app.services.budget_service import get_yearly_plan, list_monthly_splits
+from app.services.budget_service import (
+    get_channel_monthly_vnd,
+    get_yearly_plan,
+    list_monthly_splits,
+)
 from app.services.country_utils import COUNTRY_NAMES
 from app.services.export_auth import create_api_key, validate_api_key
 
@@ -762,6 +766,38 @@ def export_budget_monthly_splits(
     try:
         items = list_monthly_splits(db, branch, year)
         return _api_response(data={"branch": branch, "year": year, "months": items})
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/budget/channel-monthly")
+def export_budget_channel_monthly(
+    year: int = Query(..., description="4-digit year, e.g. 2026"),
+    branch: str = Query(
+        None,
+        description="Optional canonical branch (case-insensitive): saigon|taipei|1948|oani|osaka|bread",
+    ),
+    month: int = Query(None, ge=1, le=12, description="Optional month 1-12"),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Per (month × branch × channel) Allocate + Actual Spend for ad channels
+    (meta / google / tiktok), normalized to VND server-side via currency_rates.
+
+    Built for the Growth Team expenses Google Sheet — each row maps 1:1 to a
+    sheet row (Month, Year, Branch, Channel, Allocate, Actual Spend, % Spend).
+    Spend mirrors the Budget module (campaign-level metrics only). Only rows
+    with non-zero allocate or spend are returned. KOL/CRM/Designer are NOT
+    included — those stay manual in the sheet.
+    """
+    try:
+        canonical = None
+        if branch:
+            canonical = canonical_branch(branch)
+            if canonical is None:
+                return _api_response(error=f"Unknown branch: {branch}")
+        rows = get_channel_monthly_vnd(db, year, branch=canonical, month=month)
+        return _api_response(data={"year": year, "month": month, "rows": rows})
     except Exception as e:
         return _api_response(error=str(e))
 

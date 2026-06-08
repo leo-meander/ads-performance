@@ -132,6 +132,145 @@ def get_channel_summary(db: Session, month: date) -> list[dict]:
     return result
 
 
+# Ad channels the platform actually syncs spend for. KOL / CRM / Designer are
+# tracked manually in the Growth Team sheet, never here.
+AD_CHANNELS = ["meta", "google", "tiktok"]
+_CHANNEL_LABELS = {"meta": "Meta", "google": "Google", "tiktok": "TikTok"}
+
+
+def get_channel_monthly_vnd(
+    db: Session,
+    year: int,
+    branch: str | None = None,
+    month: int | None = None,
+    channels: list[str] | None = None,
+) -> list[dict]:
+    """Per (month × branch × channel) Allocate + Actual Spend, normalized to VND.
+
+    Powers the Growth Team expenses sheet: every returned row maps 1:1 to a
+    sheet row (Month, Year, Branch, Channel, Allocate, Actual Spend, % Spend).
+
+    - Allocate comes from active BudgetPlan rows (native currency).
+    - Spend mirrors the Budget module exactly — campaign-level metrics only
+      (ad_set_id IS NULL) so ad-set / ad grain don't double-count.
+    - Both are converted to VND with the branch currency's rate_to_vnd from
+      currency_rates (the same table the Budget dashboard uses).
+
+    Only rows where allocate OR spend is non-zero are returned. Ad channels
+    only (meta / google / tiktok) — KOL/CRM/Designer stay manual in the sheet.
+    """
+    channels = channels or AD_CHANNELS
+    branches = [branch] if branch else list(BRANCH_ACCOUNT_MAP.keys())
+
+    # Date-range bounds (not func.extract equality) so filtering is correct on
+    # both Postgres and SQLite and can use the date index. extract is still used
+    # for the GROUP BY month dimension only.
+    if month:
+        start = date(year, month, 1)
+        end = date(year, month, calendar.monthrange(year, month)[1])
+    else:
+        start = date(year, 1, 1)
+        end = date(year, 12, 31)
+
+    rate_cache: dict[str, Decimal] = {}
+
+    def rate_for(b: str) -> tuple[str, Decimal]:
+        cur = BRANCH_CURRENCY.get(b, "VND")
+        if cur not in rate_cache:
+            rate_cache[cur] = _get_rate_to_vnd(db, cur)
+        return cur, rate_cache[cur]
+
+    # 1) Allocate — BudgetPlan grouped by (branch, channel, month).
+    plan_q = (
+        db.query(
+            BudgetPlan.branch,
+            BudgetPlan.channel,
+            func.extract("month", BudgetPlan.month).label("m"),
+            func.sum(BudgetPlan.total_budget).label("allocate"),
+        )
+        .filter(
+            BudgetPlan.is_active.is_(True),
+            BudgetPlan.month >= start,
+            BudgetPlan.month <= end,
+            BudgetPlan.branch.in_(branches),
+            BudgetPlan.channel.in_(channels),
+        )
+        .group_by(BudgetPlan.branch, BudgetPlan.channel, func.extract("month", BudgetPlan.month))
+    )
+    allocate_map = {
+        (r.branch, r.channel, int(r.m)): float(r.allocate or 0) for r in plan_q.all()
+    }
+
+    # 2) Spend — metrics_cache joined to Campaign, campaign-level rows only,
+    # grouped by (account, platform, month) then folded into branches.
+    acct_branch: dict[str, str] = {}
+    for b in branches:
+        for aid in _get_account_ids_for_branch(db, b):
+            acct_branch[aid] = b
+    account_ids_all = list(acct_branch.keys())
+
+    spend_map: dict[tuple[str, str, int], float] = {}
+    if account_ids_all:
+        spend_q = (
+            db.query(
+                Campaign.account_id,
+                MetricsCache.platform,
+                func.extract("month", MetricsCache.date).label("m"),
+                func.sum(MetricsCache.spend).label("spend"),
+            )
+            .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+            .filter(
+                Campaign.account_id.in_(account_ids_all),
+                MetricsCache.platform.in_(channels),
+                MetricsCache.date >= start,
+                MetricsCache.date <= end,
+                MetricsCache.ad_set_id.is_(None),
+            )
+            .group_by(
+                Campaign.account_id,
+                MetricsCache.platform,
+                func.extract("month", MetricsCache.date),
+            )
+        )
+        for r in spend_q.all():
+            b = acct_branch.get(str(r.account_id))
+            if not b:
+                continue
+            key = (b, r.platform, int(r.m))
+            spend_map[key] = spend_map.get(key, 0.0) + float(r.spend or 0)
+
+    # 3) Merge, convert to VND, drop empty rows.
+    keys = set(allocate_map) | set(spend_map)
+    out: list[dict] = []
+    for (b, ch, m) in keys:
+        cur, rate = rate_for(b)
+        rate_f = float(rate)
+        allocate_native = allocate_map.get((b, ch, m), 0.0)
+        spend_native = spend_map.get((b, ch, m), 0.0)
+        allocate_vnd = round(allocate_native * rate_f)
+        spend_vnd = round(spend_native * rate_f)
+        if allocate_vnd == 0 and spend_vnd == 0:
+            continue
+        out.append({
+            "year": year,
+            "month": m,
+            "branch": b,
+            "channel": _CHANNEL_LABELS.get(ch, ch.title()),
+            "channel_key": ch,
+            "currency": cur,
+            "rate_to_vnd": rate_f,
+            "allocate_native": round(allocate_native, 2),
+            "spend_native": round(spend_native, 2),
+            "allocate_vnd": allocate_vnd,
+            "spend_vnd": spend_vnd,
+            "spend_pct": round((spend_vnd / allocate_vnd * 100), 2) if allocate_vnd > 0 else None,
+        })
+
+    # Chronological, matching the sheet: month → branch → channel.
+    out.sort(key=lambda r: (r["month"], r["branch"], r["channel"]))
+    return out
+
+
 def _get_total_allocated(db: Session, plan_id: str) -> Decimal:
     """Sum allocations for a plan."""
     result = db.query(func.sum(BudgetAllocation.amount)).filter(
