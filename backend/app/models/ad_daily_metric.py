@@ -42,6 +42,7 @@ class AdDailyMetric(TimestampMixin, Base):
     revenue = Column(Numeric(15, 2), nullable=True)
     leads = Column(Integer, nullable=True)  # lead action types
     engagement = Column(Integer, nullable=True)  # inline_post_engagement
-    video_plays = Column(Integer, nullable=True)
+    video_plays = Column(Integer, nullable=True)  # video_play_actions — ANY play incl. autoplay starts
+    video_3s = Column(Integer, nullable=True)  # actions:video_view — 3-second plays (hook_rate numerator)
     thruplay = Column(Integer, nullable=True)
     video_p100 = Column(Integer, nullable=True)

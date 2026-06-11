@@ -76,7 +76,7 @@ def sync_combo_metrics_for_account(
     agg: dict[str, dict] = defaultdict(lambda: {
         "spend": 0.0, "impressions": 0, "clicks": 0,
         "conversions": 0, "revenue": 0.0, "engagement": 0,
-        "video_plays": 0, "thruplay": 0, "video_p100": 0,
+        "video_plays": 0, "video_3s": 0, "thruplay": 0, "video_p100": 0,
     })
 
     try:
@@ -108,6 +108,11 @@ def sync_combo_metrics_for_account(
         for a in row.get("actions") or []:
             if a.get("action_type") == "omni_purchase":
                 b["conversions"] += int(a.get("value", 0))
+            # video_view = Meta's 3-second video plays — the Ads Manager
+            # "Hook rate" numerator. NOT video_play_actions, which counts
+            # every autoplay start and tracks impressions almost 1:1.
+            elif a.get("action_type") == "video_view":
+                b["video_3s"] += int(a.get("value", 0))
         for av in row.get("action_values") or []:
             if av.get("action_type") == "omni_purchase":
                 b["revenue"] += float(av.get("value", 0))
@@ -135,6 +140,7 @@ def sync_combo_metrics_for_account(
         revenue = m["revenue"]
         engagement = m["engagement"]
         video_plays = m["video_plays"]
+        video_3s = m["video_3s"]
         thruplay = m["thruplay"]
         video_p100 = m["video_p100"]
 
@@ -152,7 +158,7 @@ def sync_combo_metrics_for_account(
         combo.cost_per_purchase = (spend / conversions) if conversions > 0 else None
         combo.ctr = (clicks / impressions) if impressions > 0 else None
         combo.engagement_rate = (engagement / impressions) if impressions > 0 else None
-        combo.hook_rate = (video_plays / impressions) if video_plays and impressions > 0 else None
+        combo.hook_rate = (video_3s / impressions) if video_3s and impressions > 0 else None
         combo.thruplay_rate = (thruplay / video_plays) if thruplay and video_plays > 0 else None
         combo.video_complete_rate = (video_p100 / video_plays) if video_p100 and video_plays > 0 else None
 

@@ -64,7 +64,7 @@ for acc in accounts:
     agg = defaultdict(lambda: {
         'spend': 0.0, 'impressions': 0, 'clicks': 0,
         'conversions': 0, 'revenue': 0.0, 'engagement': 0,
-        'video_plays': 0, 'thruplay': 0, 'video_p100': 0,
+        'video_plays': 0, 'video_3s': 0, 'thruplay': 0, 'video_p100': 0,
     })
 
     try:
@@ -101,6 +101,10 @@ for acc in accounts:
                 for a in row.get('actions') or []:
                     if is_purchase(a.get('action_type', '')):
                         bucket['conversions'] += int(a.get('value', 0))
+                    # video_view = 3-second plays (Ads Manager Hook rate numerator),
+                    # NOT video_play_actions which counts every autoplay start.
+                    elif a.get('action_type') == 'video_view':
+                        bucket['video_3s'] += int(a.get('value', 0))
                 for av in row.get('action_values') or []:
                     if is_purchase(av.get('action_type', '')):
                         bucket['revenue'] += float(av.get('value', 0))
@@ -128,6 +132,7 @@ for acc in accounts:
             revenue = m['revenue']
             engagement = m['engagement']
             video_plays = m['video_plays']
+            video_3s = m['video_3s']
             thruplay = m['thruplay']
             video_p100 = m['video_p100']
 
@@ -146,7 +151,7 @@ for acc in accounts:
             combo.cost_per_purchase = (spend / conversions) if conversions > 0 else None
             combo.ctr = (clicks / impressions) if impressions > 0 else None
             combo.engagement_rate = (engagement / impressions) if impressions > 0 else None
-            combo.hook_rate = (video_plays / impressions) if video_plays and impressions > 0 else None
+            combo.hook_rate = (video_3s / impressions) if video_3s and impressions > 0 else None
             combo.thruplay_rate = (thruplay / video_plays) if thruplay and video_plays > 0 else None
             combo.video_complete_rate = (video_p100 / video_plays) if video_p100 and video_plays > 0 else None
 

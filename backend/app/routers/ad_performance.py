@@ -60,6 +60,7 @@ def _derive(s) -> dict:
     leads = int(s.leads or 0)
     engagement = int(s.engagement or 0)
     video_plays = int(s.video_plays or 0)
+    video_3s = int(s.video_3s or 0)
     thruplay = int(s.thruplay or 0)
     video_p100 = int(s.video_p100 or 0)
     return {
@@ -74,7 +75,7 @@ def _derive(s) -> dict:
         "cost_per_lead": (spend / leads) if leads > 0 else None,
         "ctr": (clicks / impressions) if impressions > 0 else None,
         "engagement_rate": (engagement / impressions) if impressions > 0 else None,
-        "hook_rate": (video_plays / impressions) if video_plays and impressions > 0 else None,
+        "hook_rate": (video_3s / impressions) if video_3s and impressions > 0 else None,
         "thruplay_rate": (thruplay / video_plays) if thruplay and video_plays > 0 else None,
         "video_complete_rate": (video_p100 / video_plays) if video_p100 and video_plays > 0 else None,
     }
@@ -89,6 +90,7 @@ _SUM_COLS = [
     sf.sum(AdDailyMetric.leads).label("leads"),
     sf.sum(AdDailyMetric.engagement).label("engagement"),
     sf.sum(AdDailyMetric.video_plays).label("video_plays"),
+    sf.sum(AdDailyMetric.video_3s).label("video_3s"),
     sf.sum(AdDailyMetric.thruplay).label("thruplay"),
     sf.sum(AdDailyMetric.video_p100).label("video_p100"),
 ]

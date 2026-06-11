@@ -37,10 +37,10 @@ class AdCombo(TimestampMixin, Base):
     engagement = Column(Integer, nullable=True)  # inline_post_engagement
     engagement_rate = Column(Numeric(8, 6), nullable=True)  # engagement / impressions
     # Video-specific
-    video_plays = Column(Integer, nullable=True)
+    video_plays = Column(Integer, nullable=True)  # video_play_actions — ANY play incl. autoplay starts
     thruplay = Column(Integer, nullable=True)  # video_thruplay_watched_actions
     video_p100 = Column(Integer, nullable=True)  # watched 100%
-    hook_rate = Column(Numeric(8, 6), nullable=True)  # video_play / impressions (3s view rate)
+    hook_rate = Column(Numeric(8, 6), nullable=True)  # 3s plays (actions:video_view) / impressions — matches Ads Manager
     thruplay_rate = Column(Numeric(8, 6), nullable=True)  # thruplay / video_plays
     video_complete_rate = Column(Numeric(8, 6), nullable=True)  # p100 / video_plays
 
