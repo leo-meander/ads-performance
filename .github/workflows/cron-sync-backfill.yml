@@ -1,17 +1,18 @@
-# Weekly Sun 19:00 UTC — deep-refresh sync-backfill (2-month window).
-# Tier-2 catch-up for offline conversion uploads that arrive past the daily
-# rolling window. Sun 19:00 UTC = Mon 02:00 VN — quiet period before the
-# morning sync.
-name: Cron — Sync backfill (weekly)
+# Daily 01:00 UTC = 08:00 VN — deep-refresh sync-backfill (1-month window).
+# Tier-2 catch-up for offline conversion uploads and late attribution
+# adjustments that arrive past the regular sync. 30 days covers Meta's
+# longest attribution window (28d). Runs an hour after the 07:00 VN
+# Ads Platform sync so the morning numbers are fully settled.
+name: Cron — Sync backfill (daily)
 
 on:
   schedule:
-    - cron: "0 19 * * 0"
+    - cron: "0 1 * * *"
   workflow_dispatch:
 
 env:
   BACKEND_URL: https://ads-performance-fuls.zeabur.app
-  ENDPOINT: sync-backfill?months_back=2
+  ENDPOINT: sync-backfill?months_back=1
 
 jobs:
   trigger:
