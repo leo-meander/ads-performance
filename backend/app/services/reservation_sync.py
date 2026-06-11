@@ -22,14 +22,20 @@ COMMIT_BATCH_SIZE = 100
 # row locks. Arbitrary 64-bit int, just needs to be unique per intent.
 _RESERVATION_SYNC_LOCK_KEY = 7423180001
 
-# Only sync hotel branches (exclude Bread restaurant)
+# Only sync hotel branches (exclude Bread restaurant). Matched case-insensitively
+# (see _is_hotel_branch) so a PMS casing change like "MEANDER Oani" vs "Meander
+# Oani" can't silently drop a whole branch — the bug that hid every Oani booking.
 HOTEL_BRANCHES = {
-    "MEANDER Saigon", "Meander Saigon",
-    "MEANDER Taipei", "Meander Taipei",
-    "MEANDER 1948", "Meander 1948",
-    "MEANDER Osaka", "Meander Osaka",
-    "Oani", "OANI",
+    "meander saigon",
+    "meander taipei",
+    "meander 1948",
+    "meander osaka",
+    "meander oani", "oani",
 }
+
+
+def _is_hotel_branch(branch: str) -> bool:
+    return branch.strip().lower() in HOTEL_BRANCHES
 
 
 def _parse_date(val) -> date | None:
@@ -164,7 +170,7 @@ def sync_reservations(
                 branch = (raw.get("branch") or "").strip()
 
                 # Skip non-hotel branches
-                if branch not in HOTEL_BRANCHES:
+                if not _is_hotel_branch(branch):
                     skipped += 1
                     continue
 
