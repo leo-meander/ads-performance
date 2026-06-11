@@ -81,6 +81,7 @@ def _rows():
                 {"action_type": "omni_purchase", "value": "2"},
                 {"action_type": "lead", "value": "3"},
                 {"action_type": "onsite_conversion.lead_grouped", "value": "1"},
+                {"action_type": "video_view", "value": "350"},
             ],
             "action_values": [{"action_type": "omni_purchase", "value": "500.0"}],
             "video_play_actions": [{"value": "800"}],
@@ -129,6 +130,7 @@ def test_filters_zero_spend_and_parses_actions(monkeypatch):
     assert float(day1.revenue) == 500.0
     assert day1.leads == 4  # 3 (lead) + 1 (onsite_conversion.lead_grouped)
     assert day1.video_plays == 800
+    assert day1.video_3s == 350  # actions:video_view, NOT video_play_actions
     assert day1.thruplay == 400
     assert day1.video_p100 == 200
     db.close()

@@ -144,6 +144,9 @@ def sync_daily_ad_metrics_for_account(
         conversions = int(_sum_actions(row.get("actions"), {"omni_purchase"}))
         revenue = _sum_actions(row.get("action_values"), {"omni_purchase"})
         leads = int(_sum_actions(row.get("actions"), _LEAD_ACTION_TYPES))
+        # video_view = Meta's 3-second video plays — the Ads Manager "Hook rate"
+        # numerator. NOT video_play_actions, which counts every autoplay start.
+        video_3s = int(_sum_actions(row.get("actions"), {"video_view"}))
 
         db.add(AdDailyMetric(
             account_id=account.id,
@@ -162,6 +165,7 @@ def sync_daily_ad_metrics_for_account(
             leads=leads,
             engagement=int(row.get("inline_post_engagement", 0) or 0),
             video_plays=_first_value(row.get("video_play_actions")) or None,
+            video_3s=video_3s or None,
             thruplay=_first_value(row.get("video_thruplay_watched_actions")) or None,
             video_p100=_first_value(row.get("video_p100_watched_actions")) or None,
         ))
