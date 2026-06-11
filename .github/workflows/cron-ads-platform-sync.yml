@@ -1,11 +1,11 @@
 # Twice-daily full sync of all Meta + Google + TikTok ad accounts.
-# 03:00 UTC = 10:00 VN / 11:00 TW / 12:00 JP (morning)
+# 00:00 UTC = 07:00 VN / 08:00 TW / 09:00 JP (morning)
 # 13:00 UTC = 20:00 VN / 21:00 TW / 22:00 JP (evening)
 name: Cron — Ads Platform sync
 
 on:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 0 * * *"
     - cron: "0 13 * * *"
   workflow_dispatch:
 
