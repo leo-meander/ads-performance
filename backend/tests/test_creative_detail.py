@@ -140,6 +140,34 @@ def test_combos_list_carries_material_format():
     assert by_id["CMB-LOSE"]["material_type"] == "image"
 
 
+def test_combos_list_strips_base64_snapshot_urls():
+    """file_url can hold a ~200KB frozen base64 snapshot; the list view never
+    renders it, so it must be NULLed in SQL — not shipped to the browser."""
+    _seed()
+    admin = _admin()
+    db = TestSession()
+    account = db.query(AdAccount).first()
+    db.add(AdMaterial(
+        branch_id=account.id, material_id="MAT-B64",
+        material_type="image", url_source="auto",
+        file_url="data:image/jpeg;base64," + "A" * 1000,
+    ))
+    db.add(AdCombo(
+        id=str(uuid.uuid4()), combo_id="CMB-B64", branch_id=account.id,
+        ad_name="Snapshot Ad", copy_id="CPY-WIN", material_id="MAT-B64",
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/api/combos?limit=50", headers=_auth(admin))
+    body = resp.json()
+    assert body["success"], body
+    by_id = {x["combo_id"]: x for x in body["data"]["items"]}
+    assert by_id["CMB-B64"]["material_url"] is None  # base64 stripped
+    assert by_id["CMB-B64"]["material_type"] == "image"
+    assert by_id["CMB-WIN"]["material_url"] == "https://x/win.mp4"  # real URL kept
+
+
 def test_detail_bundles_copy_material_tags_insight():
     _seed()
     admin = _admin()

@@ -714,11 +714,22 @@ def list_combos(
         # Bulk-fetch the linked material's format + URL so the table can show a
         # format chip and the format-insight bar can aggregate Video/Image/
         # Carousel performance without a per-row roundtrip.
+        # file_url may hold a frozen base64 snapshot (~200KB each, see
+        # CREATIVE_SNAPSHOT_ENABLED) — NULL those out IN SQL so megabytes of
+        # image data never leave the DB for a list view that doesn't render
+        # previews. The detail endpoint still serves the full snapshot.
+        from sqlalchemy import case as sqlcase
         from app.models.ad_material import AdMaterial as Mat
         mat_ids = {r.material_id for r in rows if r.material_id}
         mat_map = {}
         if mat_ids:
-            mats = db.query(Mat).filter(Mat.material_id.in_(mat_ids)).all()
+            mats = db.query(
+                Mat.material_id,
+                Mat.material_type,
+                sqlcase(
+                    (Mat.file_url.like("data:%"), None), else_=Mat.file_url
+                ).label("file_url"),
+            ).filter(Mat.material_id.in_(mat_ids)).all()
             mat_map = {m.material_id: {"type": m.material_type, "url": m.file_url} for m in mats}
 
         # Compute benchmark ROAS per account
