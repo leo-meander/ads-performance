@@ -64,8 +64,11 @@ export type CampaignInsight = {
 // /api/action-needed/apply and mutate the live Meta campaign; 'manual' hits
 // /mark-done and only records the decision to the Activity Log.
 export type ApplyAction = 'pause_campaign' | 'cut_budget' | 'raise_budget'
+// 'enroll' opts the campaign into an allowlist tactic (SURF intraday) via
+// /api/tactics/enroll-campaign — continuous automation, not a one-shot Meta hit.
 export type ApplyOption =
   | { kind: 'auto'; action: ApplyAction; label: string }
+  | { kind: 'enroll'; preset: string; label: string }
   | { kind: 'manual'; label: string }
 
 export type NextAction = { severity: Severity; text: string; campaign?: string }
@@ -274,7 +277,12 @@ function applyOptionsFor(row: CampaignRow, verdict: Verdict): ApplyOption[] {
   // inside the modal that opens on click; we no longer hardcode the percentage
   // in the label because the actual delta depends on per-branch settings.
   if (verdict === 'winner') {
-    if (isMeta) opts.push({ kind: 'auto', action: 'raise_budget', label: 'Apply SURF' })
+    if (isMeta) {
+      // One-shot manual bump (opens caps modal)...
+      opts.push({ kind: 'auto', action: 'raise_budget', label: 'Apply SURF' })
+      // ...or enroll into continuous intraday SURF (auto-rides budget all day).
+      opts.push({ kind: 'enroll', preset: 'surf_intraday_campaign', label: 'Enroll SURF auto' })
+    }
   } else if (isMeta) {
     opts.push({ kind: 'auto', action: 'pause_campaign', label: 'Pause campaign' })
     opts.push({ kind: 'auto', action: 'cut_budget', label: 'Apply SURF (cut)' })

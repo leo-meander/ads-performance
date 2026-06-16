@@ -203,6 +203,79 @@ def get_valid_preset_types() -> list[str]:
     return sorted(PRESETS.keys())
 
 
+def enroll_campaign_in_tactic(
+    db: Session,
+    *,
+    campaign_id: str,
+    account_id: str,
+    preset_type: str,
+    account_name: str | None = None,
+    created_by: str | None = None,
+) -> dict[str, Any]:
+    """Add a campaign to an allowlist-style tactic's `config.campaign_ids`.
+
+    Used by the Action Needed "Enroll" button: instead of a one-shot Meta
+    mutation, the campaign opts into a continuous tactic (e.g. SURF intraday).
+
+    If the account has no active tactic of `preset_type` yet, one is created
+    from its preset defaults (which, for SURF intraday, means dry_run=True —
+    the operator must flip it live on /tactics). This keeps a single click
+    from silently enabling live budget automation.
+
+    Idempotent: re-enrolling a campaign already in the list is a no-op.
+
+    Returns a summary dict: tactic_id, tactic_name, created, already_enrolled,
+    dry_run, campaign_count.
+    """
+    tactic = (
+        db.query(Tactic)
+        .filter(
+            Tactic.preset_type == preset_type,
+            Tactic.account_id == account_id,
+            Tactic.is_active.is_(True),
+        )
+        .order_by(Tactic.created_at.desc())
+        .first()
+    )
+
+    created = False
+    if tactic is None:
+        preset = get_preset(preset_type)
+        name = f"{preset.name} — {account_name}" if account_name else None
+        tactic = create_tactic_from_preset(
+            db,
+            preset_type=preset_type,
+            name=name,
+            platform="meta",
+            account_id=account_id,
+            created_by=created_by,
+        )
+        created = True
+
+    # Reassign a fresh dict so SQLAlchemy's dirty tracking fires (JSONType is
+    # not a MutableDict — in-place .append would not be detected).
+    cfg = dict(tactic.config or {})
+    ids = list(cfg.get("campaign_ids") or [])
+    already_enrolled = campaign_id in ids
+    if not already_enrolled:
+        ids.append(campaign_id)
+        cfg["campaign_ids"] = ids
+        tactic.config = cfg
+        db.add(tactic)
+        db.commit()
+        db.refresh(tactic)
+
+    final_cfg = tactic.config or {}
+    return {
+        "tactic_id": tactic.id,
+        "tactic_name": tactic.name,
+        "created": created,
+        "already_enrolled": already_enrolled,
+        "dry_run": bool(final_cfg.get("dry_run", True)),
+        "campaign_count": len(final_cfg.get("campaign_ids") or []),
+    }
+
+
 def migrate_standalone_rules_to_custom_tactics(db: Session) -> dict:
     """Wrap each existing standalone AutomationRule (tactic_id IS NULL) in a
     Custom tactic and re-link the rule to it.
