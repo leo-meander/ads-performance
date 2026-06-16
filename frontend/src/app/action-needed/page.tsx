@@ -149,7 +149,7 @@ export default function ActionNeededPage() {
   const [loading, setLoading] = useState(true)
   // Per-campaign apply/mark-done status, keyed by campaign_id.
   const [actionState, setActionState] = useState<
-    Record<string, { status: 'loading' | 'done' | 'error'; msg?: string }>
+    Record<string, { status: 'loading' | 'done' | 'error'; msg?: string; tail?: string }>
   >({})
 
   const branchParam = selectedBranches.length > 0 ? selectedBranches.join(',') : ''
@@ -274,6 +274,30 @@ export default function ActionNeededPage() {
         ...s,
         [cid]: res.success ? { status: 'done', msg: opt.label } : { status: 'error', msg: res.error || 'Failed' },
       }))
+    } else if (opt.kind === 'enroll') {
+      // Opt the campaign into a continuous tactic (no immediate Meta mutation).
+      setActionState((s) => ({ ...s, [cid]: { status: 'loading' } }))
+      const res = await apiFetch<{
+        tactic_name: string; created: boolean; already_enrolled: boolean
+        dry_run: boolean; campaign_count: number
+      }>('/api/tactics/enroll-campaign', {
+        method: 'POST',
+        body: JSON.stringify({ campaign_id: cid, preset_type: opt.preset }),
+      })
+      setActionState((s) => ({
+        ...s,
+        [cid]: res.success
+          ? {
+              status: 'done',
+              msg: res.data?.already_enrolled
+                ? `Already in "${res.data.tactic_name}"`
+                : `Enrolled in "${res.data?.tactic_name}"${
+                    res.data?.dry_run ? ' (dry-run)' : ''
+                  }`,
+              tail: res.data?.dry_run ? 'bật live ở /tactics' : 'managed on /tactics',
+            }
+          : { status: 'error', msg: res.error || 'Failed' },
+      }))
     } else {
       const title = insight.leakLabel ? `${insight.leakLabel} — ${insight.row.campaign_name}` : insight.row.campaign_name
       setActionState((s) => ({ ...s, [cid]: { status: 'loading' } }))
@@ -298,20 +322,22 @@ export default function ActionNeededPage() {
   const renderActions = (insight: CampaignInsight) => {
     const st = actionState[insight.row.campaign_id]
     if (st?.status === 'done') {
-      return <p className="text-xs text-green-600 mt-2">✓ {st.msg} · logged to Activity Log</p>
+      return <p className="text-xs text-green-600 mt-2">✓ {st.msg} · {st.tail ?? 'logged to Activity Log'}</p>
     }
     return (
       <div className="mt-2">
         <div className="flex flex-wrap gap-2 print:hidden">
           {insight.applyOptions.map((opt) => (
             <button
-              key={opt.kind === 'auto' ? opt.action : 'manual'}
+              key={opt.kind === 'auto' ? opt.action : opt.kind === 'enroll' ? `enroll:${opt.preset}` : 'manual'}
               onClick={() => handleApply(insight, opt)}
               disabled={st?.status === 'loading'}
               className={`text-xs px-2.5 py-1 rounded-md border disabled:opacity-50 ${
                 opt.kind === 'auto'
                   ? 'border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100'
-                  : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50'
+                  : opt.kind === 'enroll'
+                    ? 'border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100'
+                    : 'border-gray-200 text-gray-600 bg-white hover:bg-gray-50'
               }`}
             >
               {st?.status === 'loading' ? '…' : opt.label}

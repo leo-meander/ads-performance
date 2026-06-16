@@ -831,3 +831,91 @@ def test_change_log_endpoint_returns_paginated_searchable_history():
     assert len(paged["data"]["entries"]) == 2
     assert paged["data"]["total"] == 3
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# Action Needed → enroll campaign into SURF intraday allowlist
+# ---------------------------------------------------------------------------
+
+def test_enroll_creates_dry_run_tactic_then_appends_campaign():
+    ids = _seed_tree()
+    db = TestSession()
+    res = tactic_service.enroll_campaign_in_tactic(
+        db,
+        campaign_id=ids["campaign"],
+        account_id=ids["acc"],
+        preset_type="surf_intraday_campaign",
+        account_name="Saigon",
+    )
+    # First enroll creates the tactic from preset defaults...
+    assert res["created"] is True
+    assert res["already_enrolled"] is False
+    # ...which is dry_run by design — one click must not go live.
+    assert res["dry_run"] is True
+    assert res["campaign_count"] == 1
+
+    t = db.query(Tactic).filter(Tactic.id == res["tactic_id"]).first()
+    assert t.preset_type == "surf_intraday_campaign"
+    assert t.config["campaign_ids"] == [ids["campaign"]]
+    assert t.account_id == ids["acc"]
+    db.close()
+
+
+def test_enroll_is_idempotent_and_reuses_existing_tactic():
+    ids = _seed_tree()
+    db = TestSession()
+    first = tactic_service.enroll_campaign_in_tactic(
+        db, campaign_id=ids["campaign"], account_id=ids["acc"],
+        preset_type="surf_intraday_campaign", account_name="Saigon",
+    )
+    # Re-enrolling the same campaign: no new tactic, no duplicate id.
+    second = tactic_service.enroll_campaign_in_tactic(
+        db, campaign_id=ids["campaign"], account_id=ids["acc"],
+        preset_type="surf_intraday_campaign", account_name="Saigon",
+    )
+    assert second["created"] is False
+    assert second["already_enrolled"] is True
+    assert second["tactic_id"] == first["tactic_id"]
+    assert second["campaign_count"] == 1
+
+    tactics = (
+        db.query(Tactic)
+        .filter(Tactic.preset_type == "surf_intraday_campaign")
+        .all()
+    )
+    assert len(tactics) == 1
+    assert tactics[0].config["campaign_ids"] == [ids["campaign"]]
+    db.close()
+
+
+def test_enroll_second_campaign_appends_to_same_allowlist():
+    ids = _seed_tree()
+    db = TestSession()
+    # Second campaign in the same account.
+    camp2 = Campaign(
+        id=str(uuid.uuid4()),
+        account_id=ids["acc"],
+        platform="meta",
+        platform_campaign_id=f"camp_{uuid.uuid4().hex[:6]}",
+        name="Test Campaign 2",
+        objective="OUTCOME_SALES",
+        status="ACTIVE",
+        daily_budget=300000,
+    )
+    db.add(camp2)
+    db.commit()
+
+    tactic_service.enroll_campaign_in_tactic(
+        db, campaign_id=ids["campaign"], account_id=ids["acc"],
+        preset_type="surf_intraday_campaign", account_name="Saigon",
+    )
+    res2 = tactic_service.enroll_campaign_in_tactic(
+        db, campaign_id=camp2.id, account_id=ids["acc"],
+        preset_type="surf_intraday_campaign", account_name="Saigon",
+    )
+    assert res2["created"] is False
+    assert res2["campaign_count"] == 2
+
+    t = db.query(Tactic).filter(Tactic.id == res2["tactic_id"]).first()
+    assert set(t.config["campaign_ids"]) == {ids["campaign"], camp2.id}
+    db.close()

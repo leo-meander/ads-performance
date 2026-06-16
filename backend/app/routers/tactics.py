@@ -32,7 +32,7 @@ from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.rule import AutomationRule
 from app.models.surf import SurfCheckpoint, SurfRun
-from app.models.tactic import Tactic
+from app.models.tactic import PRESET_SURF_INTRADAY_CAMPAIGN, Tactic
 from app.models.user import User
 from app.services import tactic_presets, tactic_service
 
@@ -335,6 +335,62 @@ def create_tactic_endpoint(
             created_by=getattr(current_user, "email", None) or getattr(current_user, "id", None),
         )
         return _api_response(data=_tactic_to_dict(db, tactic))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+class EnrollCampaignBody(BaseModel):
+    campaign_id: str
+    preset_type: str = PRESET_SURF_INTRADAY_CAMPAIGN
+
+
+@router.post("/tactics/enroll-campaign")
+def enroll_campaign_endpoint(
+    body: EnrollCampaignBody,
+    current_user: User = Depends(require_section("automation", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Opt a single campaign into an allowlist tactic (find-or-create).
+
+    Backs the Action Needed "Enroll" button. Only SURF intraday uses the
+    per-campaign `config.campaign_ids` allowlist, so enroll is gated to it —
+    rule-engine tactics (stop-loss etc.) scope by account + conditions, not
+    by campaign id, and have no allowlist to append to.
+    """
+    try:
+        if body.preset_type != PRESET_SURF_INTRADAY_CAMPAIGN:
+            return _api_response(
+                error="Enroll currently supports SURF intraday only.",
+            )
+
+        camp = db.query(Campaign).filter(Campaign.id == body.campaign_id).first()
+        if camp is None:
+            return _api_response(error="Campaign not found")
+        if (camp.platform or "").lower() != "meta":
+            return _api_response(error="SURF intraday is Meta-only.")
+        if not camp.account_id:
+            return _api_response(
+                error="Campaign has no resolved account — re-sync the account first.",
+            )
+
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "automation",
+            requested_account_id=camp.account_id, min_level="edit",
+        )
+        if not ok:
+            return _api_response(error=err)
+
+        account = db.query(AdAccount).filter(AdAccount.id == camp.account_id).first()
+        result = tactic_service.enroll_campaign_in_tactic(
+            db,
+            campaign_id=camp.id,
+            account_id=camp.account_id,
+            preset_type=body.preset_type,
+            account_name=account.account_name if account else None,
+            created_by=getattr(current_user, "email", None) or str(getattr(current_user, "id", "")),
+        )
+        return _api_response(data=result)
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))
