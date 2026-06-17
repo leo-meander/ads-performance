@@ -25,21 +25,60 @@ interface Campaign {
   funnel_stage: string | null
 }
 
+type Health = 'action' | 'watch' | 'ok' | 'learning'
+
+interface HealthInfo {
+  health: Health
+  hint: string
+  roas: number
+}
+
+const HEALTH_CHIP: Record<Health, { label: string; cls: string; dot: string }> = {
+  action: { label: 'Action', cls: 'bg-red-50 text-red-700 border-red-200', dot: 'bg-red-500' },
+  watch: { label: 'Watch', cls: 'bg-amber-50 text-amber-700 border-amber-200', dot: 'bg-amber-500' },
+  ok: { label: 'OK', cls: 'bg-green-50 text-green-700 border-green-200', dot: 'bg-green-500' },
+  learning: { label: 'Learning', cls: 'bg-gray-100 text-gray-500 border-gray-200', dot: 'bg-gray-400' },
+}
+
+function HealthChip({ info }: { info?: HealthInfo }) {
+  if (!info) return null
+  const m = HEALTH_CHIP[info.health]
+  return (
+    <span
+      title={info.hint}
+      className={`inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full border ${m.cls}`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${m.dot}`} />
+      {m.label}
+    </span>
+  )
+}
+
 export default function PMaxPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [assetGroups, setAssetGroups] = useState<AssetGroup[]>([])
+  const [healthMap, setHealthMap] = useState<Record<string, HealthInfo>>({})
   const [loading, setLoading] = useState(true)
   const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
   const fetchData = () => {
     setLoading(true)
+    const target = Number(localStorage.getItem('google_roas_target')) || 6
     Promise.all([
       fetch(`${API_BASE}/api/google/campaigns?campaign_type=PERFORMANCE_MAX&limit=100`, { credentials: 'include' }).then(r => r.json()),
       fetch(`${API_BASE}/api/google/asset-groups?limit=200`, { credentials: 'include' }).then(r => r.json()),
-    ]).then(([campRes, agRes]) => {
+      fetch(`${API_BASE}/api/google/overview?days=30&roas_target=${target}`, { credentials: 'include' }).then(r => r.json()),
+    ]).then(([campRes, agRes, ovRes]) => {
       if (campRes.success) setCampaigns(campRes.data.campaigns)
       if (agRes.success) setAssetGroups(agRes.data.asset_groups)
+      if (ovRes.success) {
+        const map: Record<string, HealthInfo> = {}
+        for (const c of ovRes.data.campaigns) {
+          map[c.id] = { health: c.health, hint: c.hint, roas: c.roas }
+        }
+        setHealthMap(map)
+      }
     }).finally(() => setLoading(false))
   }
 
@@ -104,6 +143,7 @@ export default function PMaxPage() {
                         {c.name}
                       </Link>
                       <div className="flex items-center gap-3 mt-1">
+                        <HealthChip info={healthMap[c.id]} />
                         <span className={`text-xs ${c.status === 'ACTIVE' ? 'text-green-600' : 'text-gray-400'}`}>
                           {c.status}
                         </span>

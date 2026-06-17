@@ -45,6 +45,7 @@ const navSections: NavSection[] = [
   {
     label: 'Google Ads',
     items: [
+      { href: '/google', label: 'Overview', section: 'google_ads', page: 'google_overview' },
       { href: '/google/pmax', label: 'PMax Campaigns', section: 'google_ads', page: 'google_pmax' },
       { href: '/google/search', label: 'Search Campaigns', section: 'google_ads', page: 'google_search' },
     ],
@@ -128,8 +129,11 @@ export default function Sidebar() {
               </p>
               <div className="space-y-0.5">
                 {visibleItems.map((item) => {
+                  // '/' and '/google' are index routes with sub-pages — match
+                  // them exactly so they don't stay highlighted on child routes.
+                  const exactOnly = item.href === '/' || item.href === '/google'
                   const isActive =
-                    pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href))
+                    pathname === item.href || (!exactOnly && pathname.startsWith(item.href))
                   return (
                     <Link
                       key={item.href}

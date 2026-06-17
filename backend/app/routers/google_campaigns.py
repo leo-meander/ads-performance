@@ -501,6 +501,303 @@ def google_dashboard(
         return _err(str(e), 500)
 
 
+# ── Overview / Health Triage ───────────────────────────────
+
+# Volume gate (currency-neutral): below this many clicks we cannot judge a
+# campaign with 0 conversions — it is still "learning", not failing.
+_MIN_CLICKS_TO_JUDGE = 30
+# A campaign is "budget limited" when its average daily spend in the period
+# reaches this fraction of its configured daily budget.
+_BUDGET_CAP_FRACTION = 0.9
+
+
+def _campaign_health(
+    *,
+    spend: float,
+    impressions: int,
+    clicks: int,
+    conversions: float,
+    revenue: float,
+    daily_budget: float | None,
+    period_days: int,
+    roas_target: float,
+    campaign_status: str | None,
+) -> dict:
+    """Classify one Google campaign into a triage bucket with an action hint.
+
+    Buckets: ``action`` (needs intervention), ``watch`` (near target),
+    ``ok`` (healthy), ``learning`` (not enough data to judge / no spend).
+
+    ROAS is a ratio so it is currency-safe; the volume gate uses clicks (not
+    spend) so the same thresholds work across VND / NT$ / JPY accounts.
+    """
+    roas = (revenue / spend) if spend > 0 else 0.0
+    watch_floor = roas_target * 0.6
+    avg_daily_spend = (spend / period_days) if period_days > 0 else 0.0
+    budget_limited = bool(
+        daily_budget and daily_budget > 0
+        and avg_daily_spend >= _BUDGET_CAP_FRACTION * float(daily_budget)
+    )
+
+    # No meaningful delivery in the window.
+    if spend <= 0 and impressions <= 0:
+        return {
+            "status": "learning",
+            "roas": 0.0,
+            "budget_limited": False,
+            "reason": "no_delivery",
+            "hint": "No spend in this period — paused or not delivering."
+            if campaign_status != "ACTIVE"
+            else "Active but no spend yet — check budget / approvals.",
+        }
+
+    # Spending but zero conversions.
+    if conversions <= 0:
+        if clicks >= _MIN_CLICKS_TO_JUDGE:
+            return {
+                "status": "action",
+                "roas": 0.0,
+                "budget_limited": budget_limited,
+                "reason": "zero_conversions",
+                "hint": f"{clicks} clicks, 0 conversions — check conversion "
+                "tracking + landing page, add negative keywords.",
+            }
+        return {
+            "status": "learning",
+            "roas": 0.0,
+            "budget_limited": budget_limited,
+            "reason": "low_traffic",
+            "hint": f"Only {clicks} clicks so far — too little to judge, let "
+            "it run or raise budget.",
+        }
+
+    # Has conversions: judge by ROAS vs target.
+    if roas >= roas_target:
+        if budget_limited:
+            hint = (
+                f"ROAS {roas:.1f}x above target and hitting budget cap — "
+                "consider raising daily budget to scale."
+            )
+        else:
+            hint = f"Healthy — ROAS {roas:.1f}x at/above target {roas_target:.1f}x."
+        return {
+            "status": "ok",
+            "roas": roas,
+            "budget_limited": budget_limited,
+            "reason": "healthy",
+            "hint": hint,
+        }
+
+    if roas >= watch_floor:
+        return {
+            "status": "watch",
+            "roas": roas,
+            "budget_limited": budget_limited,
+            "reason": "below_target",
+            "hint": f"ROAS {roas:.1f}x just under target {roas_target:.1f}x — "
+            "optimize keywords/bids, trim wasteful search terms.",
+        }
+
+    return {
+        "status": "action",
+        "roas": roas,
+        "budget_limited": budget_limited,
+        "reason": "low_roas",
+        "hint": f"ROAS {roas:.1f}x well below target {roas_target:.1f}x — add "
+        "negatives, tighten geo/schedule, pause weak assets.",
+    }
+
+
+_STATUS_RANK = {"action": 0, "watch": 1, "ok": 2, "learning": 3}
+
+
+@router.get("/google/overview")
+def google_overview(
+    days: int = Query(30, ge=1, le=365, description="Trailing window length"),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    roas_target: float = Query(6.0, gt=0, description="ROAS goal for OK status"),
+    account_id: str | None = Query(None),
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
+    """Portfolio triage for Google Ads.
+
+    Returns per-campaign health (OK / watch / action / learning) plus
+    per-branch KPI rollups. Spend/revenue totals are grouped per account so
+    different currencies are never summed together (ROAS, a ratio, is safe).
+    """
+    try:
+        from sqlalchemy import func
+
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "google_ads", requested_account_id=account_id
+        )
+        if not ok:
+            return _err(err, 403)
+
+        # Resolve the window. Explicit date_from/date_to win over `days`.
+        today = datetime.now(timezone.utc).date()
+        if date_to:
+            d_to = date.fromisoformat(date_to)
+        else:
+            d_to = today
+        if date_from:
+            d_from = date.fromisoformat(date_from)
+        else:
+            d_from = d_to - timedelta(days=days - 1)
+        period_days = max((d_to - d_from).days + 1, 1)
+
+        # Scoped Google campaigns.
+        cq = db.query(Campaign).filter(Campaign.platform == "google")
+        if account_id:
+            cq = cq.filter(Campaign.account_id == account_id)
+        elif scoped_ids is not None:
+            cq = cq.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
+        campaigns = cq.all()
+        camp_ids = [c.id for c in campaigns]
+
+        # Per-campaign metric rollup over the window (campaign-level rows only).
+        metrics_by_camp: dict[str, dict] = {}
+        if camp_ids:
+            rows = (
+                db.query(
+                    MetricsCache.campaign_id,
+                    func.sum(MetricsCache.spend).label("spend"),
+                    func.sum(MetricsCache.impressions).label("impressions"),
+                    func.sum(MetricsCache.clicks).label("clicks"),
+                    func.sum(MetricsCache.conversions).label("conversions"),
+                    func.sum(MetricsCache.revenue).label("revenue"),
+                )
+                .filter(
+                    MetricsCache.platform == "google",
+                    MetricsCache.ad_set_id.is_(None),
+                    MetricsCache.ad_id.is_(None),
+                    MetricsCache.campaign_id.in_(camp_ids),
+                    MetricsCache.date >= d_from,
+                    MetricsCache.date <= d_to,
+                )
+                .group_by(MetricsCache.campaign_id)
+                .all()
+            )
+            for r in rows:
+                metrics_by_camp[r.campaign_id] = {
+                    "spend": float(r.spend or 0),
+                    "impressions": int(r.impressions or 0),
+                    "clicks": int(r.clicks or 0),
+                    "conversions": float(r.conversions or 0),
+                    "revenue": float(r.revenue or 0),
+                }
+
+        # Account/branch lookup (name + currency).
+        accounts = {
+            a.id: a
+            for a in db.query(AdAccount).filter(AdAccount.platform == "google").all()
+        }
+
+        campaign_rows = []
+        summary = {"action": 0, "watch": 0, "ok": 0, "learning": 0, "total": 0}
+        branches: dict[str, dict] = {}
+
+        for c in campaigns:
+            m = metrics_by_camp.get(
+                c.id,
+                {"spend": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0, "revenue": 0.0},
+            )
+            daily_budget = float(c.daily_budget) if c.daily_budget else None
+            health = _campaign_health(
+                spend=m["spend"],
+                impressions=m["impressions"],
+                clicks=m["clicks"],
+                conversions=m["conversions"],
+                revenue=m["revenue"],
+                daily_budget=daily_budget,
+                period_days=period_days,
+                roas_target=roas_target,
+                campaign_status=c.status,
+            )
+            acct = accounts.get(c.account_id)
+            currency = acct.currency if acct else "USD"
+            branch_name = acct.account_name if acct else "Unknown"
+            cpa = (m["spend"] / m["conversions"]) if m["conversions"] > 0 else None
+            ctr = (m["clicks"] / m["impressions"] * 100) if m["impressions"] > 0 else 0.0
+
+            campaign_rows.append({
+                "id": c.id,
+                "name": c.name,
+                "account_id": c.account_id,
+                "branch": branch_name,
+                "currency": currency,
+                "campaign_type": c.objective,
+                "campaign_status": c.status,
+                "ta": c.ta,
+                "funnel_stage": c.funnel_stage,
+                "daily_budget": daily_budget,
+                "spend": m["spend"],
+                "impressions": m["impressions"],
+                "clicks": m["clicks"],
+                "conversions": m["conversions"],
+                "revenue": m["revenue"],
+                "roas": health["roas"],
+                "cpa": cpa,
+                "ctr": ctr,
+                "health": health["status"],
+                "budget_limited": health["budget_limited"],
+                "hint": health["hint"],
+            })
+
+            summary[health["status"]] += 1
+            summary["total"] += 1
+
+            # Per-branch rollup (same currency, safe to sum).
+            b = branches.setdefault(c.account_id, {
+                "account_id": c.account_id,
+                "branch": branch_name,
+                "currency": currency,
+                "spend": 0.0,
+                "impressions": 0,
+                "clicks": 0,
+                "conversions": 0.0,
+                "revenue": 0.0,
+                "active_campaigns": 0,
+                "needs_action": 0,
+            })
+            b["spend"] += m["spend"]
+            b["impressions"] += m["impressions"]
+            b["clicks"] += m["clicks"]
+            b["conversions"] += m["conversions"]
+            b["revenue"] += m["revenue"]
+            if c.status == "ACTIVE":
+                b["active_campaigns"] += 1
+            if health["status"] == "action":
+                b["needs_action"] += 1
+
+        # Sort worst-first, then by spend desc within a bucket.
+        campaign_rows.sort(key=lambda r: (_STATUS_RANK.get(r["health"], 9), -r["spend"]))
+
+        branch_list = []
+        for b in branches.values():
+            b["roas"] = (b["revenue"] / b["spend"]) if b["spend"] > 0 else 0.0
+            b["cpa"] = (b["spend"] / b["conversions"]) if b["conversions"] > 0 else None
+            b["ctr"] = (b["clicks"] / b["impressions"] * 100) if b["impressions"] > 0 else 0.0
+            branch_list.append(b)
+        branch_list.sort(key=lambda x: -x["spend"])
+
+        return _ok({
+            "period": {
+                "date_from": d_from.isoformat(),
+                "date_to": d_to.isoformat(),
+                "days": period_days,
+            },
+            "roas_target": roas_target,
+            "summary": summary,
+            "branches": branch_list,
+            "campaigns": campaign_rows,
+        })
+    except Exception as e:
+        return _err(str(e), 500)
+
+
 # ── Ad Group Ads ───────────────────────────────────────────
 
 

@@ -49,6 +49,7 @@ PAGES: dict[str, dict[str, str]] = {
     "ad_research": {"section": "meta_ads", "label": "Spy Ads"},
     "ad_performance": {"section": "meta_ads", "label": "Ad Name Performance"},
     # google_ads
+    "google_overview": {"section": "google_ads", "label": "Overview"},
     "google_pmax": {"section": "google_ads", "label": "PMax Campaigns"},
     "google_search": {"section": "google_ads", "label": "Search Campaigns"},
     "google_recommendations": {"section": "google_ads", "label": "Recommendations"},

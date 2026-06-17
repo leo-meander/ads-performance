@@ -15,8 +15,38 @@ interface Campaign {
   funnel_stage: string | null
 }
 
+type Health = 'action' | 'watch' | 'ok' | 'learning'
+
+interface HealthInfo {
+  health: Health
+  hint: string
+  roas: number
+}
+
+const HEALTH_CHIP: Record<Health, { label: string; cls: string; dot: string }> = {
+  action: { label: 'Action', cls: 'bg-red-50 text-red-700 border-red-200', dot: 'bg-red-500' },
+  watch: { label: 'Watch', cls: 'bg-amber-50 text-amber-700 border-amber-200', dot: 'bg-amber-500' },
+  ok: { label: 'OK', cls: 'bg-green-50 text-green-700 border-green-200', dot: 'bg-green-500' },
+  learning: { label: 'Learning', cls: 'bg-gray-100 text-gray-500 border-gray-200', dot: 'bg-gray-400' },
+}
+
+function HealthChip({ info }: { info?: HealthInfo }) {
+  if (!info) return <span className="text-gray-300">—</span>
+  const m = HEALTH_CHIP[info.health]
+  return (
+    <span
+      title={info.hint}
+      className={`inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-full border ${m.cls}`}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${m.dot}`} />
+      {m.label}
+    </span>
+  )
+}
+
 export default function SearchCampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
+  const [healthMap, setHealthMap] = useState<Record<string, HealthInfo>>({})
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
@@ -27,6 +57,20 @@ export default function SearchCampaignsPage() {
         if (data.success) setCampaigns(data.data.campaigns)
       })
       .finally(() => setLoading(false))
+
+    // Health is graded by the overview endpoint; map it onto each row.
+    const target = Number(localStorage.getItem('google_roas_target')) || 6
+    fetch(`${API_BASE}/api/google/overview?days=30&roas_target=${target}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(res => {
+        if (!res.success) return
+        const map: Record<string, HealthInfo> = {}
+        for (const c of res.data.campaigns) {
+          map[c.id] = { health: c.health, hint: c.hint, roas: c.roas }
+        }
+        setHealthMap(map)
+      })
+      .catch(() => {})
   }, [])
 
   const toggleCampaignStatus = async (c: Campaign) => {
@@ -68,6 +112,7 @@ export default function SearchCampaignsPage() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="text-left px-5 py-3 text-gray-500 font-medium">Campaign Name</th>
+                <th className="text-left px-5 py-3 text-gray-500 font-medium">Health</th>
                 <th className="text-left px-5 py-3 text-gray-500 font-medium">Status</th>
                 <th className="text-left px-5 py-3 text-gray-500 font-medium">Budget</th>
                 <th className="text-left px-5 py-3 text-gray-500 font-medium">TA</th>
@@ -78,7 +123,7 @@ export default function SearchCampaignsPage() {
             <tbody className="divide-y divide-gray-100">
               {campaigns.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-5 py-10 text-center text-gray-400">
+                  <td colSpan={7} className="px-5 py-10 text-center text-gray-400">
                     No Search campaigns found
                   </td>
                 </tr>
@@ -90,6 +135,7 @@ export default function SearchCampaignsPage() {
                         {c.name}
                       </Link>
                     </td>
+                    <td className="px-5 py-3"><HealthChip info={healthMap[c.id]} /></td>
                     <td className="px-5 py-3">
                       <span className={`text-xs font-medium ${c.status === 'ACTIVE' ? 'text-green-600' : 'text-gray-400'}`}>
                         {c.status}

@@ -32,6 +32,7 @@ export const PAGE_SECTION: Record<string, string> = {
   keypoints: 'meta_ads',
   ad_research: 'meta_ads',
   ad_performance: 'meta_ads',
+  google_overview: 'google_ads',
   google_pmax: 'google_ads',
   google_search: 'google_ads',
   google_recommendations: 'google_ads',

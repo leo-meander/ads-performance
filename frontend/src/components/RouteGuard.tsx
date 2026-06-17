@@ -59,6 +59,7 @@ const ROUTE_PAGE_MAP: Array<[string, string]> = [
   ['/google/pmax', 'google_pmax'],
   ['/google/search', 'google_search'],
   ['/google/recommendations', 'google_recommendations'],
+  ['/google', 'google_overview'],
   ['/budget', 'budget_planner'],
   ['/landing-pages', 'landing_pages_all'],
   ['/tactics', 'tactics'],
