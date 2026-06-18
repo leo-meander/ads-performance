@@ -263,9 +263,14 @@ def fetch_location_metrics(
     date_from, date_to = _default_range(date_from, date_to)
     client = _get_client()
 
+    # user_location_view = where the user PHYSICALLY is (geo quality), not the
+    # targeted country. It is INCOMPATIBLE with segments.geo_target_country
+    # (that segment only works on geographic_view). The country here comes from
+    # user_location_view.country_criterion_id — a bare numeric ID, NOT a
+    # "geoTargetConstants/<id>" resource name, so there is no path to split off.
     query = f"""
         SELECT
-            segments.geo_target_country,
+            user_location_view.country_criterion_id,
             metrics.cost_micros,
             metrics.impressions,
             metrics.clicks,
@@ -283,8 +288,7 @@ def fetch_location_metrics(
 
     bucket: dict[str, dict] = {}
     for row in rows:
-        geo_resource = row.segments.geo_target_country or ""
-        criterion_id = geo_resource.split("/")[-1] if geo_resource else ""
+        criterion_id = str(row.user_location_view.country_criterion_id or "")
         country = _GEO_TARGET_TO_ISO2.get(criterion_id, criterion_id or "Unknown")
         m = _row_to_metrics(row.metrics)
         cur = bucket.setdefault(country, {
