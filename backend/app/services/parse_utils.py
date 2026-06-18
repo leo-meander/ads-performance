@@ -65,12 +65,20 @@ def parse_google_country(name: str) -> str:
 
     Google campaigns at MEANDER follow the convention `..._XX` where XX is the
     ISO 3166-1 alpha-2 code. A trailing "All" token (after space or underscore)
-    means the campaign targets multiple countries → return the "ALL" marker so
-    downstream filters keep these rows. Returns "Unknown" otherwise.
+    means the campaign targets multiple countries → return the "ALL" marker.
+
+    When a campaign name carries no recognisable country suffix (the suffix was
+    simply forgotten), we treat it as multi-country and return "ALL" rather than
+    "Unknown". This keeps its spend/revenue in the dashboard totals — the
+    country KPI summary (routers/country.py) drops "Unknown"/NULL rows but keeps
+    "ALL", so an un-suffixed campaign would otherwise silently vanish from the
+    branch totals. Only a truly empty/missing name stays "Unknown".
     """
     if not name:
         return "Unknown"
     stripped = name.strip()
+    if not stripped:
+        return "Unknown"
 
     last_token = re.split(r"[\s_]+", stripped)[-1] if stripped else ""
     if last_token.upper() == "ALL":
@@ -79,8 +87,10 @@ def parse_google_country(name: str) -> str:
     tail = stripped[-2:].upper()
     if tail in _GOOGLE_VALID_ISO:
         return tail
-    logger.warning("Could not parse Google country from name: %s", name)
-    return "Unknown"
+    # No ISO suffix → assume the campaign targets all countries. Still log so we
+    # can spot names that drifted from the `..._XX` convention.
+    logger.warning("No Google country suffix in name, defaulting to ALL: %s", name)
+    return "ALL"
 
 
 def parse_adset_metadata(name: str) -> dict:

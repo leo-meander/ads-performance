@@ -152,8 +152,11 @@ class TestParseGoogleCountry:
     def test_all_lowercase(self):
         assert parse_google_country("Mason_SGN_[TOF] Direct Booking all") == "ALL"
 
-    def test_unknown_suffix(self):
-        assert parse_google_country("Random campaign name 123") == "Unknown"
+    def test_no_suffix_defaults_to_all(self):
+        # Forgot the `_XX` country suffix → treat as multi-country "ALL" so the
+        # campaign's spend stays in the dashboard totals (not dropped as Unknown).
+        assert parse_google_country("Random campaign name 123") == "ALL"
+        assert parse_google_country("Meander Osaka PMax Hotel") == "ALL"
 
     def test_empty_name(self):
         assert parse_google_country("") == "Unknown"
