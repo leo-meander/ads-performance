@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import RecBadge from '@/components/RecBadge'
 import GoogleInsightsSection from '@/components/GoogleInsightsSection'
+import GoogleDailyChart from '@/components/GoogleDailyChart'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -300,41 +301,7 @@ export default function PMaxDetail() {
       <GoogleInsightsSection campaignId={campaign.id} campaignType="PERFORMANCE_MAX" />
 
       {/* Daily Metrics */}
-      {metrics.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200">
-          <div className="p-5 border-b border-gray-100">
-            <h2 className="font-semibold text-gray-900">Daily Metrics</h2>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="text-left px-5 py-3 text-gray-500 font-medium">Date</th>
-                  <th className="text-right px-5 py-3 text-gray-500 font-medium">Spend</th>
-                  <th className="text-right px-5 py-3 text-gray-500 font-medium">Impressions</th>
-                  <th className="text-right px-5 py-3 text-gray-500 font-medium">Clicks</th>
-                  <th className="text-right px-5 py-3 text-gray-500 font-medium">Conv.</th>
-                  <th className="text-right px-5 py-3 text-gray-500 font-medium">Revenue</th>
-                  <th className="text-right px-5 py-3 text-gray-500 font-medium">ROAS</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {metrics.map(m => (
-                  <tr key={m.date} className="hover:bg-gray-50">
-                    <td className="px-5 py-3 text-gray-700">{m.date}</td>
-                    <td className="px-5 py-3 text-right">${fmt(m.spend)}</td>
-                    <td className="px-5 py-3 text-right">{fmt(m.impressions)}</td>
-                    <td className="px-5 py-3 text-right">{fmt(m.clicks)}</td>
-                    <td className="px-5 py-3 text-right">{m.conversions}</td>
-                    <td className="px-5 py-3 text-right">${fmt(m.revenue)}</td>
-                    <td className="px-5 py-3 text-right font-medium">{m.roas.toFixed(2)}x</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      {metrics.length > 0 && <GoogleDailyChart metrics={metrics} />}
     </div>
   )
 }
