@@ -36,7 +36,12 @@ class MetricsCache(TimestampMixin, Base):
     # — we mirror `clicks` into this column during sync so reads are uniform.
     link_clicks = Column(Integer, nullable=False, default=0)
     ctr = Column(Numeric(8, 6), nullable=True)  # clicks / impressions
-    conversions = Column(Integer, nullable=False, default=0)
+    # Numeric, not Integer: Google attributes FRACTIONAL conversions (e.g. 0.33,
+    # 6.33). An Integer column rounded every daily row toward zero and wiped out
+    # low-volume accounts' conversions. Meta/TikTok still write whole numbers
+    # here (stored as x.00). Read paths that int()/round the SUMMED total are
+    # fine — only the per-row storage needed the extra precision.
+    conversions = Column(Numeric(15, 2), nullable=False, default=0)
     revenue = Column(Numeric(15, 2), nullable=False, default=0)
     revenue_website = Column(Numeric(15, 2), nullable=False, default=0)
     revenue_offline = Column(Numeric(15, 2), nullable=False, default=0)

@@ -611,8 +611,13 @@ def _fetch_purchase_metrics(
             key = (entity_id, date_str)
 
         m = row.metrics
-        bucket = out.setdefault(key, {"conversions": 0, "revenue": 0.0})
-        bucket["conversions"] += int(m.conversions or 0)
+        bucket = out.setdefault(key, {"conversions": 0.0, "revenue": 0.0})
+        # Google conversions are FRACTIONAL (e.g. 0.33, 6.33) — Google attributes
+        # partial conversions across touchpoints. int() here truncated every
+        # per-entity-date row toward zero (0.5 -> 0), which silently wiped out
+        # most conversions for low-volume accounts (Taipei: 6.33 -> 2). Keep them
+        # as float; metrics_cache.conversions is Numeric so the fraction survives.
+        bucket["conversions"] += float(m.conversions or 0)
         bucket["revenue"] += float(m.conversions_value or 0)
     return out
 

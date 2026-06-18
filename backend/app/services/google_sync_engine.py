@@ -253,7 +253,14 @@ def sync_google_metrics_window(
         if not campaign:
             continue
         country = parse_google_country(campaign.name or "")
-        if country in ("Unknown", "ALL", ""):
+        # Keep "ALL" (un-suffixed / multi-country campaigns): skipping it dropped
+        # every campaign without an `_XX` suffix from the country breakdown and
+        # the Booking-from-Ads matcher (same class of bug as the Osaka country
+        # drop). The matcher already treats "ALL" as a non-country preference
+        # (booking_match_service._normalize_ads_iso -> None), so it just falls
+        # back to date+revenue matching instead of vanishing. Only truly
+        # unparseable names ("Unknown"/empty) are still skipped.
+        if country in ("Unknown", ""):
             continue
         insight_date = (
             date.fromisoformat(insight["date"]) if isinstance(insight["date"], str) else insight["date"]
@@ -274,7 +281,10 @@ def sync_google_metrics_window(
             "clicks": insight.get("clicks") or 0,
             "revenue_website": insight.get("revenue_website") or 0,
             "revenue_offline": insight.get("revenue_offline") or 0,
-            "conversions_website": insight.get("conversions") or 0,
+            # conversions is now fractional (see google_client._fetch_purchase_metrics);
+            # ad_country_metrics.conversions_website is Integer and the booking
+            # matcher uses it as an integer booking count, so round here.
+            "conversions_website": round(insight.get("conversions") or 0),
             "conversions_offline": 0,
         }
         if existing:
