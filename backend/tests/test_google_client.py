@@ -257,6 +257,96 @@ class TestFetchConversionActionMetrics:
         assert len(out) == 2
 
 
+class TestFetchAdsFinalUrls:
+    """fetch_ads must surface the RSA destination URLs into raw_data.final_urls
+    so the landing-page importer can discover Google Search landing pages."""
+
+    def _make_ad_row(self, ad_id="777", final_urls=None):
+        row = MagicMock()
+        ad = row.ad_group_ad.ad
+        ad.id = ad_id
+        ad.name = "RSA Ad"
+        ad.final_urls = final_urls if final_urls is not None else []
+        ad.responsive_search_ad.headlines = []
+        ad.responsive_search_ad.descriptions = []
+        row.ad_group_ad.status = "ENABLED"
+        row.ad_group.id = "456"
+        row.campaign.id = "123"
+        return row
+
+    def test_final_urls_captured(self, mock_google_ads):
+        mock_ga_service = MagicMock()
+        mock_google_ads.get_service.return_value = mock_ga_service
+
+        url = "https://1948.staymeander.com/taipei-heritage-hotel?utm_source=google"
+        mock_batch = MagicMock()
+        mock_batch.results = [self._make_ad_row(final_urls=[url])]
+        mock_ga_service.search_stream.return_value = [mock_batch]
+
+        from app.services.google_client import fetch_ads
+        results = fetch_ads("1234567890")
+        assert results[0]["raw_data"]["final_urls"] == [url]
+
+    def test_empty_final_urls(self, mock_google_ads):
+        mock_ga_service = MagicMock()
+        mock_google_ads.get_service.return_value = mock_ga_service
+
+        mock_batch = MagicMock()
+        mock_batch.results = [self._make_ad_row(final_urls=[])]
+        mock_ga_service.search_stream.return_value = [mock_batch]
+
+        from app.services.google_client import fetch_ads
+        results = fetch_ads("1234567890")
+        assert results[0]["raw_data"]["final_urls"] == []
+
+
+class TestFetchAssetGroupsFinalUrls:
+    """fetch_asset_groups must parse asset_group.final_urls (PMax landing
+    pages) rather than hardcoding an empty list."""
+
+    def _make_ag_row(self, ag_id="555", final_urls=None):
+        row = MagicMock()
+        row.asset_group.id = ag_id
+        row.asset_group.name = "PMax AG"
+        row.asset_group.status = "ENABLED"
+        row.asset_group.final_urls = final_urls if final_urls is not None else []
+        row.campaign.id = "123"
+        return row
+
+    def test_final_urls_parsed(self, mock_google_ads):
+        mock_ga_service = MagicMock()
+        mock_google_ads.get_service.return_value = mock_ga_service
+
+        url = "https://1948.staymeander.com/taipei-heritage-hotel"
+        mock_batch = MagicMock()
+        mock_batch.results = [self._make_ag_row(final_urls=[url])]
+        mock_ga_service.search_stream.return_value = [mock_batch]
+
+        # Signals come from a second query — stub it out so the shared
+        # search_stream mock isn't reinterpreted as signal rows.
+        with patch("app.services.google_client._fetch_asset_group_signals", return_value={}):
+            from app.services.google_client import fetch_asset_groups
+            results = fetch_asset_groups("1234567890")
+
+        assert len(results) == 1
+        assert results[0]["platform_asset_group_id"] == "555"
+        assert results[0]["final_urls"] == [url]
+
+    def test_empty_final_urls(self, mock_google_ads):
+        mock_ga_service = MagicMock()
+        mock_google_ads.get_service.return_value = mock_ga_service
+
+        mock_batch = MagicMock()
+        mock_batch.results = [self._make_ag_row(final_urls=[])]
+        mock_ga_service.search_stream.return_value = [mock_batch]
+
+        with patch("app.services.google_client._fetch_asset_group_signals", return_value={}):
+            from app.services.google_client import fetch_asset_groups
+            results = fetch_asset_groups("1234567890")
+
+        assert results[0]["final_urls"] == []
+
+
 class TestFieldTypeMapping:
     def test_asset_type_map(self):
         from app.services.google_client import _FIELD_TYPE_MAP

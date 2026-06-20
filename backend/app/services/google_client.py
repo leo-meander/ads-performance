@@ -217,6 +217,7 @@ def fetch_ads(customer_id: str) -> list[dict]:
             ad_group_ad.ad.id,
             ad_group_ad.ad.name,
             ad_group_ad.ad.type,
+            ad_group_ad.ad.final_urls,
             ad_group_ad.status,
             ad_group_ad.ad.responsive_search_ad.headlines,
             ad_group_ad.ad.responsive_search_ad.descriptions,
@@ -238,6 +239,11 @@ def fetch_ads(customer_id: str) -> list[dict]:
 
             ad_type = _enum_name(ad.type_) if ad.type_ else "UNKNOWN"
 
+            # final_urls = the ad's landing-page destinations. Search ads
+            # carry them on the ad itself (unlike PMax, where they live on the
+            # asset group). The landing-page importer reads this list.
+            final_urls = [u for u in (ad.final_urls or []) if u]
+
             results.append({
                 "platform_ad_id": str(ad.id),
                 "platform_adset_id": str(row.ad_group.id),
@@ -250,6 +256,7 @@ def fetch_ads(customer_id: str) -> list[dict]:
                     "ad_type": ad_type,
                     "headlines": headlines,
                     "descriptions": descriptions,
+                    "final_urls": final_urls,
                 },
             })
         logger.info("Fetched %d ads from Google account %s", len(results), customer_id)
@@ -316,6 +323,7 @@ def fetch_asset_groups(customer_id: str) -> list[dict]:
             asset_group.id,
             asset_group.name,
             asset_group.status,
+            asset_group.final_urls,
             asset_group.campaign,
             campaign.id
         FROM asset_group
@@ -335,7 +343,7 @@ def fetch_asset_groups(customer_id: str) -> list[dict]:
                 "campaign_id": str(row.campaign.id),
                 "name": ag.name,
                 "status": _normalize_status(ag.status),
-                "final_urls": [],
+                "final_urls": [u for u in (ag.final_urls or []) if u],
                 "raw_data": {
                     "asset_group_id": ag_id,
                     "audience_signals": signals,
