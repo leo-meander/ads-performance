@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { API_BASE } from '@/lib/api'
-import type { LandingPage, MetricsResponse } from '@/lib/landingPage'
+import type { AdRollup, LandingPage, MetricsResponse } from '@/lib/landingPage'
 
 type UtmRow = {
   utm_source: string | null
@@ -97,6 +97,17 @@ export default function LandingPagePerformance() {
   const g = metrics?.ga4
   const d = metrics?.derived
 
+  // Per-platform split for the ad-sourced reconciliation rows. The totals
+  // (a.clicks etc.) sum across Meta + Google + TikTok — so when more than one
+  // ad platform is linked we break the count down so it's clear how much each
+  // source contributes (and that Google reports no landing-page-views).
+  const byPlat: Record<string, AdRollup> = metrics?.ads.by_platform ?? {}
+  const adPlatforms = Object.keys(byPlat)
+  const showPlatSplit = adPlatforms.length > 1
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+  const platSplit = (field: 'clicks' | 'link_clicks' | 'landing_page_views' | 'conversions') =>
+    adPlatforms.map((p) => `${cap(p)} ${fmtNum(byPlat[p][field])}`).join(' · ')
+
   return (
     <div className="max-w-7xl mx-auto">
       <div className="flex items-start justify-between mb-4">
@@ -158,12 +169,12 @@ export default function LandingPagePerformance() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              <tr className="text-gray-400"><td className="py-2">Meta <strong>all clicks</strong></td><td className="text-right font-mono">{fmtNum(a?.clicks)}</td><td className="pl-4 text-gray-400">—</td><td className="text-xs italic">Includes likes, video plays, profile taps — not used for landing page analysis</td></tr>
-              <tr><td className="py-2">Meta <strong>link clicks</strong></td><td className="text-right font-mono">{fmtNum(a?.link_clicks)}</td><td className="pl-4 font-mono">{(a?.clicks || 0) > 0 ? fmtPct((a?.link_clicks || 0) / (a?.clicks || 1), 1) : '—'}</td><td className="text-gray-500 text-xs">Clicks that went to the landing page — the right denominator</td></tr>
-              <tr><td className="py-2">Meta <strong>landing page views</strong></td><td className="text-right font-mono">{fmtNum(a?.landing_page_views)}</td><td className="pl-4 font-mono">{(a?.link_clicks || 0) > 0 ? fmtPct((a?.landing_page_views || 0) / (a?.link_clicks || 1), 1) : '—'}</td><td className="text-gray-500 text-xs">Meta's own page-load count — 60-80% of link clicks is normal</td></tr>
-              <tr className="bg-amber-50/50"><td className="py-2">GA4 <strong>sessions</strong></td><td className="text-right font-mono">{fmtNum(g?.sessions)}</td><td className="pl-4 font-mono">{fmtPct(d?.reconciliation?.ga4_vs_meta_lpv, 1)}</td><td className="text-gray-500 text-xs">Independent count — if &lt;60% of Meta LPV → Meta over-reports</td></tr>
+              <tr className="text-gray-400"><td className="py-2">Ad <strong>all clicks</strong></td><td className="text-right font-mono">{fmtNum(a?.clicks)}{showPlatSplit && <div className="text-[10px] font-sans text-gray-400">{platSplit('clicks')}</div>}</td><td className="pl-4 text-gray-400">—</td><td className="text-xs italic">Meta all-clicks include likes, video plays, profile taps; Google clicks already go to the page — not the LP denominator</td></tr>
+              <tr><td className="py-2">Ad <strong>link clicks</strong></td><td className="text-right font-mono">{fmtNum(a?.link_clicks)}{showPlatSplit && <div className="text-[10px] font-sans text-gray-500">{platSplit('link_clicks')}</div>}</td><td className="pl-4 font-mono">{(a?.clicks || 0) > 0 ? fmtPct((a?.link_clicks || 0) / (a?.clicks || 1), 1) : '—'}</td><td className="text-gray-500 text-xs">Clicks that went to the landing page — the right denominator (Google mirrors clicks here)</td></tr>
+              <tr><td className="py-2">Meta <strong>landing page views</strong></td><td className="text-right font-mono">{fmtNum(a?.landing_page_views)}{showPlatSplit && <div className="text-[10px] font-sans text-gray-500">{platSplit('landing_page_views')}</div>}</td><td className="pl-4 font-mono">{(a?.link_clicks || 0) > 0 ? fmtPct((a?.landing_page_views || 0) / (a?.link_clicks || 1), 1) : '—'}</td><td className="text-gray-500 text-xs">Meta's own page-load count — 60-80% of link clicks is normal. Google reports no LPV (shows 0)</td></tr>
+              <tr className="bg-amber-50/50"><td className="py-2">GA4 <strong>sessions</strong></td><td className="text-right font-mono">{fmtNum(g?.sessions)}</td><td className="pl-4 font-mono">{fmtPct(d?.reconciliation?.ga4_vs_meta_lpv, 1)}</td><td className="text-gray-500 text-xs">Independent count — covers all sources (Meta + Google). If &lt;60% of Meta LPV → Meta over-reports</td></tr>
               <tr><td className="py-2">Clarity <strong>sessions</strong></td><td className="text-right font-mono">{fmtNum(c?.sessions)}</td><td className="pl-4 font-mono">{fmtPct(d?.reconciliation?.clarity_vs_ga4, 1)}</td><td className="text-gray-500 text-xs">vs GA4 — 60-80% normal (ad-blockers, slow loads)</td></tr>
-              <tr><td className="py-2">Ad <strong>conversions</strong></td><td className="text-right font-mono">{fmtNum(a?.conversions)}</td><td className="pl-4 text-gray-400">—</td><td className="text-gray-500 text-xs">Pixel-attributed purchases</td></tr>
+              <tr><td className="py-2">Ad <strong>conversions</strong></td><td className="text-right font-mono">{fmtNum(a?.conversions)}{showPlatSplit && <div className="text-[10px] font-sans text-gray-400">{platSplit('conversions')}</div>}</td><td className="pl-4 text-gray-400">—</td><td className="text-gray-500 text-xs">Pixel-attributed purchases</td></tr>
             </tbody>
           </table>
         </div>

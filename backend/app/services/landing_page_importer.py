@@ -9,8 +9,8 @@ Discovery sources:
 
     Google PMax    google_asset_groups.final_urls  (JSON array of URLs)
 
-    Google Search  (not modeled yet — safe to skip; campaigns.raw_data would
-                    be the long-tail fallback)
+    Google Search  ads.raw_data.final_urls  (RSA destination URLs, populated
+                    by google_client.fetch_ads)
 
 For each URL found:
   1. normalize_url → (host, slug, utm)
@@ -280,6 +280,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         "meta_ads_scanned": 0,
         "meta_urls_found": 0,
         "google_asset_groups_scanned": 0,
+        "google_ads_scanned": 0,
         "google_urls_found": 0,
         "pages_created": 0,
         "ad_links_created": 0,
@@ -365,6 +366,48 @@ def import_from_ads(db: Session) -> dict[str, Any]:
                     summary["ad_links_updated"] += 1
         except Exception:
             logger.exception("[lp-importer] failed on google asset group id=%s", ag.id)
+            summary["errors"] += 1
+
+    # Google Search ads (RSA) — final URLs live on the ad itself (not on an
+    # asset group), stored by google_client.fetch_ads into raw_data.final_urls.
+    google_ads = db.query(Ad).filter(Ad.platform == "google").all()
+    summary["google_ads_scanned"] = len(google_ads)
+    for ad in google_ads:
+        try:
+            raw = ad.raw_data if isinstance(ad.raw_data, dict) else {}
+            urls = _google_extract_urls(raw.get("final_urls"))
+            for url in urls:
+                summary["google_urls_found"] += 1
+                n = normalize_url(url)
+                if n is None:
+                    continue
+                page = get_or_create_external_page(
+                    db,
+                    raw_url=url,
+                    title_fallback=f"{n.host}/{n.slug}".rstrip("/"),
+                    branch_id=None,
+                )
+                if page is None:
+                    continue
+                if page.created_at == page.updated_at:
+                    summary["pages_created"] += 1
+                _, created = _upsert_ad_link(
+                    db,
+                    landing_page_id=page.id,
+                    platform="google",
+                    campaign_id=ad.campaign_id,
+                    ad_id=ad.id,
+                    asset_group_id=None,
+                    destination_url=url,
+                    utm=n.utm,
+                    now=now,
+                )
+                if created:
+                    summary["ad_links_created"] += 1
+                else:
+                    summary["ad_links_updated"] += 1
+        except Exception:
+            logger.exception("[lp-importer] failed on google ad id=%s", ad.id)
             summary["errors"] += 1
 
     # After ads-table scan, also pull in the Clarity-observed UTM→campaign mapping.
