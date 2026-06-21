@@ -194,6 +194,8 @@ export default function TacticsPage() {
 
   // Account filter (table + overview both read this).
   const [filterAccountId, setFilterAccountId] = useState<string>('')
+  // Show only active (toggled-on) tactics. Default on.
+  const [activeOnly, setActiveOnly] = useState(true)
 
   // Overview dashboard state.
   const [overview, setOverview] = useState<Overview | null>(null)
@@ -260,9 +262,11 @@ export default function TacticsPage() {
   // Client-side account filter — tactics list comes back unfiltered so we
   // don't have to re-query when the user toggles the dropdown.
   const filteredTactics = useMemo(() => {
-    if (!filterAccountId) return tactics
-    return tactics.filter(t => t.account_id === filterAccountId)
-  }, [tactics, filterAccountId])
+    return tactics.filter(t =>
+      (!filterAccountId || t.account_id === filterAccountId) &&
+      (!activeOnly || t.is_active)
+    )
+  }, [tactics, filterAccountId, activeOnly])
 
   const perTacticById = useMemo(() => {
     const map: Record<string, Overview['per_tactic'][number]> = {}
@@ -543,6 +547,15 @@ export default function TacticsPage() {
             </option>
           ))}
         </select>
+        <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={activeOnly}
+            onChange={e => setActiveOnly(e.target.checked)}
+            className="cursor-pointer"
+          />
+          Active only
+        </label>
         <span className="text-xs text-gray-500">
           {filteredTactics.length} of {tactics.length} tactics
         </span>
