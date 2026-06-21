@@ -1,9 +1,9 @@
 'use client'
 
-import { Suspense, useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { ArrowLeftRight, Trophy, AlertTriangle } from 'lucide-react'
+import { ArrowLeftRight, Trophy, AlertTriangle, ChevronDown, X } from 'lucide-react'
 import { API_BASE } from '@/lib/api'
 import type { LandingPage, MetricsResponse } from '@/lib/landingPage'
 
@@ -351,6 +351,10 @@ function ComparePageInner() {
   )
 }
 
+function pageLabel(p: LandingPage): string {
+  return `${p.title || `${p.domain}/${p.slug}`}${p.ta ? ` · ${p.ta}` : ''}`
+}
+
 function PagePicker({
   label, pages, value, exclude, onChange,
 }: {
@@ -360,22 +364,88 @@ function PagePicker({
   exclude: string
   onChange: (id: string) => void
 }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  const selected = pages.find((p) => p.id === value) || null
+
+  // Close on outside click.
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  const options = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return pages
+      .filter((p) => p.id !== exclude)
+      .filter((p) => !q || pageLabel(p).toLowerCase().includes(q) || `${p.domain}/${p.slug}`.toLowerCase().includes(q))
+      .slice(0, 50)
+  }, [pages, exclude, query])
+
+  const pick = (id: string) => {
+    onChange(id)
+    setOpen(false)
+    setQuery('')
+  }
+
   return (
-    <div>
+    <div ref={boxRef} className="relative">
       <label className="text-xs text-gray-600 block mb-1 font-medium">{label}</label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-white"
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-white flex items-center justify-between text-left gap-2"
       >
-        <option value="">— select a page —</option>
-        {pages.filter((p) => p.id !== exclude).map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.title || `${p.domain}/${p.slug}`}
-            {p.ta ? ` · ${p.ta}` : ''}
-          </option>
-        ))}
-      </select>
+        <span className={`truncate ${selected ? 'text-gray-900' : 'text-gray-400'}`}>
+          {selected ? pageLabel(selected) : '— select a page —'}
+        </span>
+        <span className="flex items-center gap-1 flex-shrink-0">
+          {selected && (
+            <X
+              className="w-4 h-4 text-gray-400 hover:text-gray-600"
+              onClick={(e) => { e.stopPropagation(); pick('') }}
+            />
+          )}
+          <ChevronDown className="w-4 h-4 text-gray-400" />
+        </span>
+      </button>
+
+      {open && (
+        <div className="absolute z-20 mt-1 w-full bg-white border border-gray-300 rounded-lg shadow-lg">
+          <div className="p-2 border-b border-gray-100">
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search title, domain, slug…"
+              className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+            />
+          </div>
+          <ul className="max-h-72 overflow-y-auto py-1">
+            {options.length === 0 ? (
+              <li className="px-3 py-2 text-sm text-gray-400">No matches</li>
+            ) : (
+              options.map((p) => (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    onClick={() => pick(p.id)}
+                    className={`w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50 ${p.id === value ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'}`}
+                  >
+                    {pageLabel(p)}
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
