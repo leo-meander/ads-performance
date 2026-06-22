@@ -547,11 +547,18 @@ def trigger_match_run_async(
 def trigger_match_run(
     date_from: str = Query(None),
     date_to: str = Query(None),
+    branch: str = Query(None, description="Legacy single-branch filter"),
+    branches: str = Query(None, description="Comma-separated branch names — scope sync+match to these only"),
     skip_sync: bool = Query(False, description="Skip PMS sync, only re-run matching"),
     current_user: User = Depends(require_section("analytics", "edit")),
     db: Session = Depends(get_db),
 ):
-    """Manual trigger: pull reservations from PMS, then run matching."""
+    """Manual trigger: pull reservations from PMS, then run matching.
+
+    When `branches` (or legacy `branch`) is set, the sync and matching are
+    scoped to those branches only — matches for other branches in the range are
+    left untouched. With no branch param, the full range is rebuilt as before.
+    """
     try:
         if not date_from or not date_to:
             df, dt = _default_date_range()
@@ -561,11 +568,19 @@ def trigger_match_run(
         df = date.fromisoformat(date_from)
         dt = date.fromisoformat(date_to)
 
+        branches_list = _parse_branches_param(branches, branch)
+        if branches_list and not is_admin(current_user):
+            allowed = accessible_branches(db, current_user, "analytics") or []
+            for b in branches_list:
+                if b not in allowed:
+                    return _api_response(error=f"No view access to branch '{b}'")
+        scope = branches_list or None
+
         sync_summary = None
         if not skip_sync:
-            sync_summary = sync_reservations(db, df, dt)
+            sync_summary = sync_reservations(db, df, dt, branch_keys=scope)
 
-        match_summary = run_matching(db, df, dt)
+        match_summary = run_matching(db, df, dt, branch_keys=scope)
 
         return _api_response(data={
             "sync": sync_summary,

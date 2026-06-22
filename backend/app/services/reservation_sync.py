@@ -118,6 +118,7 @@ def sync_reservations(
     db: Session,
     date_from: date,
     date_to: date,
+    branch_keys: list[str] | None = None,
 ) -> dict:
     """Pull reservations from PMS and upsert into DB.
 
@@ -130,10 +131,19 @@ def sync_reservations(
       - On a row-level OperationalError (e.g. statement_timeout), rolls back
         only the current batch and continues — the rest of the dataset still
         lands.
+      - When branch_keys is given (canonical keys, e.g. ["Saigon"]), only
+        reservations that normalise to one of those branches are upserted; the
+        rest are counted as skipped. Lets the dashboard sync a single branch.
 
     Returns:
         Summary dict with created, updated, skipped, errors counts.
     """
+    # Lazy import avoids a circular dependency: booking_match_service imports
+    # this module at load time.
+    from app.services.booking_match_service import normalize_branch
+
+    scope_set = {b for b in (branch_keys or []) if b} or None
+
     if not _try_advisory_lock(db):
         logger.warning("Reservation sync already running on another worker — skipping")
         return {
@@ -173,6 +183,13 @@ def sync_reservations(
                 if not _is_hotel_branch(branch):
                     skipped += 1
                     continue
+
+                # When scoped to specific branches, skip everything else.
+                if scope_set:
+                    bk = normalize_branch(branch)
+                    if not bk or bk not in scope_set:
+                        skipped += 1
+                        continue
 
                 res_number = raw.get("reservation_number")
                 if not res_number:
@@ -236,6 +253,7 @@ def sync_reservations(
         summary = {
             "date_from": date_from.isoformat(),
             "date_to": date_to.isoformat(),
+            "branches": sorted(scope_set) if scope_set else None,
             "total_fetched": len(raw_reservations),
             "created": created,
             "updated": updated,

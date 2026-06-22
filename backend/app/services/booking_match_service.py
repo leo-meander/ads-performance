@@ -295,6 +295,7 @@ def run_matching(
     db: Session,
     date_from: date,
     date_to: date,
+    branch_keys: list[str] | None = None,
 ) -> dict:
     """Run the matching algorithm for the given date range.
 
@@ -310,11 +311,21 @@ def run_matching(
          country_iso = NULL count as "unknown country" and can match any ad
          ISO with a `null_country` confidence tag.
       5. Persist one BookingMatch per successful pass.
+
+    When branch_keys is given (canonical keys, e.g. ["Saigon"]), the run is
+    scoped to those branches only: we delete and rebuild matches for just those
+    branches (other branches' matches in the range are left untouched) and skip
+    ads rows / reservations that normalise to a branch outside the scope.
     """
-    db.query(BookingMatch).filter(
+    scope_set = {b for b in (branch_keys or []) if b} or None
+
+    del_q = db.query(BookingMatch).filter(
         BookingMatch.match_date >= date_from,
         BookingMatch.match_date <= date_to,
-    ).delete(synchronize_session=False)
+    )
+    if scope_set:
+        del_q = del_q.filter(BookingMatch.branch.in_(scope_set))
+    del_q.delete(synchronize_session=False)
     db.commit()
 
     # Load ads rows with the entities we need to resolve branch + ad name.
@@ -347,6 +358,10 @@ def run_matching(
         rev_off = float(r.revenue_offline or 0)
         if rev_web <= 0 and rev_off <= 0:
             continue
+        if scope_set:
+            bk = normalize_branch(r.account_name)
+            if not bk or bk not in scope_set:
+                continue
         ads_rows.append({
             "date": r.date,
             "country": r.country,
@@ -373,14 +388,19 @@ def run_matching(
         .all()
     )
     res_by_key: dict[tuple, list[Reservation]] = {}
+    reservations_in_scope = 0
     for r in reservations:
         branch_key = normalize_branch(r.branch)
         if not branch_key:
             continue
+        if scope_set and branch_key not in scope_set:
+            continue
+        reservations_in_scope += 1
         bucket = "website" if _is_website_source(r.source) else "offline"
         res_by_key.setdefault((r.reservation_date, branch_key, bucket), []).append(r)
 
     matches_created = 0
+    matches_by_branch: dict[str, int] = {}
     ads_skipped_no_branch = 0
     ads_no_candidates = 0
     now = datetime.now(timezone.utc)
@@ -428,15 +448,18 @@ def run_matching(
                 row, revenue, bookings, kind, result_label, matched, branch_key, now,
             ))
             matches_created += 1
+            matches_by_branch[branch_key] = matches_by_branch.get(branch_key, 0) + 1
 
     db.commit()
 
     summary = {
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),
+        "branches": sorted(scope_set) if scope_set else None,
         "ads_rows_processed": len(ads_rows),
-        "reservations_loaded": len(reservations),
+        "reservations_loaded": reservations_in_scope,
         "matches_created": matches_created,
+        "matches_by_branch": matches_by_branch,
         "ads_rows_no_branch": ads_skipped_no_branch,
         "ads_rows_no_candidates": ads_no_candidates,
     }

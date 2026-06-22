@@ -265,9 +265,12 @@ export default function BookingMatchesDashboard() {
         setRunning(false)
         return
       }
-      setRunMessage(`Syncing & matching ${from} → ${to}...`)
+      const scopeLabel = selectedBranches.length > 0 ? selectedBranches.join(', ') : 'all branches'
+      setRunMessage(`Syncing & matching ${from} → ${to} · ${scopeLabel}...`)
+      const runParams = new URLSearchParams({ date_from: from, date_to: to })
+      if (branchParam) runParams.set('branches', branchParam)
       const res = await fetch(
-        `${API_BASE}/api/booking-matches/run?date_from=${from}&date_to=${to}`,
+        `${API_BASE}/api/booking-matches/run?${runParams}`,
         { method: 'POST', credentials: 'include' }
       ).then(r => r.json())
 
@@ -278,13 +281,19 @@ export default function BookingMatchesDashboard() {
           ? `Sync skipped (another run in progress)`
           : `Sync: ${sync?.created ?? 0} created, ${sync?.updated ?? 0} updated`
               + ` (fetched ${sync?.total_fetched ?? 0}, skipped non-hotel ${sync?.skipped ?? 0})`
+        const byBranch: Record<string, number> = matching?.matches_by_branch || {}
+        const branchBits = Object.entries(byBranch)
+          .sort((a, b) => b[1] - a[1])
+          .map(([b, n]) => `${b} ${n}`)
+          .join(', ')
         const matchPart =
           `Matching: ${matching?.matches_created ?? 0} matches`
+          + (branchBits ? ` (${branchBits})` : '')
           + ` · ads rows ${matching?.ads_rows_processed ?? 0}`
           + ` · reservations in window ${matching?.reservations_loaded ?? 0}`
           + ` · ads no-branch ${matching?.ads_rows_no_branch ?? 0}`
           + ` · ads no-candidate ${matching?.ads_rows_no_candidates ?? 0}`
-        setRunMessage(`${from} → ${to} · ${syncPart} · ${matchPart}`)
+        setRunMessage(`${from} → ${to} · ${scopeLabel} · ${syncPart} · ${matchPart}`)
         await fetchData()
       } else {
         setRunMessage(`Error: ${res.error}`)
@@ -310,7 +319,7 @@ export default function BookingMatchesDashboard() {
         <button
           onClick={runManualMatch}
           disabled={running}
-          title={(() => { const { from, to } = resolveRange(); return from && to ? `Will sync & match ${from} → ${to}` : 'Pick a date range first' })()}
+          title={(() => { const { from, to } = resolveRange(); const scope = selectedBranches.length > 0 ? selectedBranches.join(', ') : 'all branches'; return from && to ? `Will sync & match ${from} → ${to} · ${scope}` : 'Pick a date range first' })()}
           className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
         >
           {running ? 'Running...' : 'Sync & Run Matching'}
