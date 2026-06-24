@@ -356,6 +356,15 @@ def run_ga4_sync(
         core_shaped = _shape_core(core_rows)
         vitals_shaped = _shape_vitals(vitals_rows)
 
+        # Commit in small batches. A whole-property transaction over a long
+        # backfill is big/slow enough to trip Supabase's statement_timeout (or
+        # hold row locks long enough to stall a concurrent run) and roll back
+        # the entire branch — which left the older half of the gap unwritten
+        # even after the per-branch-commit fix. Flushing rows and committing
+        # every COMMIT_EVERY keeps each transaction tiny regardless of range.
+        COMMIT_EVERY = 50
+        pending = 0
+
         # Group by (page, date): find landing_page, upsert per-UTM rows + aggregate
         per_page_day: dict[tuple[str, date], list[dict[str, Any]]] = defaultdict(list)
 
@@ -386,9 +395,14 @@ def run_ga4_sync(
                 db.flush()
                 b_summary["rows"] += 1
                 per_page_day[(page.id, dt)].append(full)
+                pending += 1
+                if pending >= COMMIT_EVERY:
+                    db.commit()
+                    pending = 0
             except Exception:
                 logger.exception("[ga4-sync] upsert failed page=%s date=%s", page.id, dt)
                 db.rollback()
+                pending = 0
                 summary["errors"] += 1
 
         # Aggregate rows (source/medium/campaign = NULL) per (page, day)
@@ -423,9 +437,14 @@ def run_ga4_sync(
                 )
                 db.flush()
                 b_summary["pages_touched"] += 1
+                pending += 1
+                if pending >= COMMIT_EVERY:
+                    db.commit()
+                    pending = 0
             except Exception:
                 logger.exception("[ga4-sync] agg upsert failed page=%s date=%s", page_id, day)
                 db.rollback()
+                pending = 0
                 summary["errors"] += 1
 
         summary["branches"][acc.account_name] = b_summary
