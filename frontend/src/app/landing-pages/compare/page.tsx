@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { ArrowLeftRight, Trophy, AlertTriangle } from 'lucide-react'
@@ -351,6 +351,12 @@ function ComparePageInner() {
   )
 }
 
+function pickerLabel(p: LandingPage): string {
+  const base = p.title || `${p.domain}/${p.slug}`
+  return p.ta ? `${base} · ${p.ta}` : base
+}
+
+/** Searchable page picker — type to filter by title / domain / slug / TA. */
 function PagePicker({
   label, pages, value, exclude, onChange,
 }: {
@@ -360,22 +366,88 @@ function PagePicker({
   exclude: string
   onChange: (id: string) => void
 }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [hi, setHi] = useState(0)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  const selected = pages.find((p) => p.id === value) || null
+  const list = pages.filter((p) => p.id !== exclude)
+  const q = query.trim().toLowerCase()
+  const filtered = q
+    ? list.filter((p) => pickerLabel(p).toLowerCase().includes(q))
+    : list
+
+  // Close on outside click.
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [])
+
+  // Reset the highlight whenever the visible list changes.
+  useEffect(() => { setHi(0) }, [query, open])
+
+  const choose = (id: string) => { onChange(id); setOpen(false); setQuery('') }
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault(); setOpen(true); setHi((i) => Math.min(i + 1, filtered.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault(); setHi((i) => Math.max(i - 1, 0))
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); const p = filtered[hi]; if (p) choose(p.id)
+    } else if (e.key === 'Escape') {
+      setOpen(false)
+    }
+  }
+
   return (
-    <div>
+    <div ref={boxRef} className="relative">
       <label className="text-xs text-gray-600 block mb-1 font-medium">{label}</label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full px-3 py-2 border border-gray-300 rounded text-sm bg-white"
-      >
-        <option value="">— select a page —</option>
-        {pages.filter((p) => p.id !== exclude).map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.title || `${p.domain}/${p.slug}`}
-            {p.ta ? ` · ${p.ta}` : ''}
-          </option>
-        ))}
-      </select>
+      <div className="relative">
+        <input
+          type="text"
+          role="combobox"
+          aria-expanded={open}
+          value={open ? query : (selected ? pickerLabel(selected) : '')}
+          placeholder={selected ? pickerLabel(selected) : '— search a page —'}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true) }}
+          onFocus={() => { setOpen(true); setQuery('') }}
+          onKeyDown={onKeyDown}
+          className="w-full px-3 py-2 pr-8 border border-gray-300 rounded text-sm bg-white"
+        />
+        {selected && (
+          <button
+            type="button"
+            onClick={() => choose('')}
+            aria-label="Clear selection"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 leading-none text-lg"
+          >×</button>
+        )}
+      </div>
+      {open && (
+        <ul className="absolute z-50 mt-1 w-full max-h-72 overflow-auto bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+          {filtered.length === 0 ? (
+            <li className="px-3 py-2 text-sm text-gray-400">No pages match “{query}”.</li>
+          ) : (
+            filtered.map((p, i) => (
+              <li key={p.id}>
+                <button
+                  type="button"
+                  onMouseEnter={() => setHi(i)}
+                  onClick={() => choose(p.id)}
+                  className={`w-full text-left px-3 py-2 text-sm ${i === hi ? 'bg-blue-50' : ''} ${p.id === value ? 'font-semibold text-blue-700' : 'text-gray-700'}`}
+                >
+                  {pickerLabel(p)}
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      )}
     </div>
   )
 }
