@@ -654,6 +654,7 @@ def trigger_ga4_sync(
     x_internal_secret: str | None = Header(default=None),
     days_back: int = 2,
     branch_filter: str | None = None,
+    wait: bool = False,
 ):
     """Daily: pull GA4 traffic + Web Vitals for every branch with ga4_property_id set.
 
@@ -661,8 +662,24 @@ def trigger_ga4_sync(
     a fully-final day. `days_back=2` re-syncs yesterday + 2 days ago to
     self-heal missed runs. `branch_filter` (AdAccount.id) restricts to a
     single branch for ad-hoc testing.
+
+    `wait=true`: run synchronously and return the full sync summary (incl.
+    per-branch error strings) instead of firing-and-forgetting. For diagnosing
+    failures — pair with a small `days_back` (e.g. 2) to stay under the Zeabur
+    ingress timeout; the cron always uses the default async path.
     """
     _require_secret(x_internal_secret)
+    if wait:
+        from app.services.ga4_sync import run_ga4_sync
+        db = SessionLocal()
+        try:
+            summary = run_ga4_sync(db, days_back=days_back, branch_filter=branch_filter)
+        except Exception as e:
+            logger.exception("[ga4-sync] wait-mode failed")
+            return _api_response(error=f"{type(e).__name__}: {e}")
+        finally:
+            db.close()
+        return _api_response(data=summary)
     _run_in_thread(_do_ga4_sync, "ga4-sync", days_back=days_back, branch_filter=branch_filter)
     return _api_response(data={"status": "started", "days_back": days_back, "branch_filter": branch_filter})
 
