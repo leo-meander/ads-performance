@@ -188,17 +188,45 @@ def rollup_metrics(
     Clarity metrics (sessions/scroll/rage/etc.) come from
     landing_page_clarity_snapshots — aggregate row (NULL UTMs) is summed.
     """
-    # --- Ad side: sum over unique campaign_ids linked to this page ---
-    campaign_ids = [
-        row[0]
-        for row in db.query(LandingPageAdLink.campaign_id)
-        .filter(
-            LandingPageAdLink.landing_page_id == landing_page_id,
-            LandingPageAdLink.campaign_id.isnot(None),
-        )
-        .distinct()
+    # --- Ad side: attribute at the granularity the ad-link records ----------
+    # A campaign's metrics_cache holds redundant rows at three levels
+    # (campaign / ad_set / ad) that each sum to the same campaign total, so
+    # summing a whole campaign triple-counts it. And one campaign can drive
+    # several landing pages, so crediting a page with its entire campaign
+    # over-attributes. We therefore sum at the level the link pins down:
+    #   - links WITH an ad_id  → only that ad's rows (ad-level, precise)
+    #   - links WITHOUT an ad_id (Clarity-UTM match / Google asset-group /
+    #     manual campaign link) → that campaign's campaign-level row only
+    #     (ad_set_id IS NULL AND ad_id IS NULL), counted once.
+    links = (
+        db.query(LandingPageAdLink.campaign_id, LandingPageAdLink.ad_id)
+        .filter(LandingPageAdLink.landing_page_id == landing_page_id)
         .all()
-    ]
+    )
+    ad_ids = sorted({l.ad_id for l in links if l.ad_id is not None})
+    campaigns_with_ad = {
+        l.campaign_id for l in links if l.ad_id is not None and l.campaign_id is not None
+    }
+    # Campaign-only fallback excludes campaigns already covered ad-precisely,
+    # so a campaign linked both ways isn't counted twice.
+    campaign_only_ids = sorted({
+        l.campaign_id
+        for l in links
+        if l.ad_id is None and l.campaign_id is not None and l.campaign_id not in campaigns_with_ad
+    })
+    all_campaign_ids = sorted(campaigns_with_ad | set(campaign_only_ids))
+
+    attribution_terms = []
+    if ad_ids:
+        attribution_terms.append(MetricsCache.ad_id.in_(ad_ids))
+    if campaign_only_ids:
+        attribution_terms.append(
+            and_(
+                MetricsCache.campaign_id.in_(campaign_only_ids),
+                MetricsCache.ad_set_id.is_(None),
+                MetricsCache.ad_id.is_(None),
+            )
+        )
 
     ad_totals = {
         "spend": 0.0,
@@ -221,11 +249,11 @@ def rollup_metrics(
     display_currency = "VND"
     convert_to_vnd = False
 
-    if campaign_ids:
+    if attribution_terms:
         currency_rows = (
             db.query(AdAccount.currency)
             .join(Campaign, Campaign.account_id == AdAccount.id)
-            .filter(Campaign.id.in_(campaign_ids))
+            .filter(Campaign.id.in_(all_campaign_ids))
             .distinct()
             .all()
         )
@@ -261,7 +289,7 @@ def rollup_metrics(
             .join(Campaign, Campaign.id == MetricsCache.campaign_id)
             .join(AdAccount, AdAccount.id == Campaign.account_id)
             .filter(
-                MetricsCache.campaign_id.in_(campaign_ids),
+                or_(*attribution_terms),
                 MetricsCache.date >= date_from,
                 MetricsCache.date <= date_to,
             )
@@ -496,7 +524,7 @@ def rollup_metrics(
         "ads": {
             "totals": ad_totals,
             "by_platform": by_platform,
-            "campaign_count": len(campaign_ids),
+            "campaign_count": len(all_campaign_ids),
             "currency": display_currency,
             "currency_normalized": convert_to_vnd,
         },
