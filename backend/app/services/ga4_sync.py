@@ -22,6 +22,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.account import AdAccount
@@ -225,6 +226,16 @@ def run_ga4_sync(
     start_date = today - timedelta(days=days_back)
     end_date = today - timedelta(days=1)
 
+    # A backfill spans thousands of rows. With a single end-of-run commit the
+    # whole sync is one transaction that trips Supabase's statement_timeout
+    # mid-flush and rolls back every branch (silent zero-write — exactly what
+    # froze GA4 for ~2 months). Raise the timeout and commit per branch (below)
+    # so each branch is its own small, fast transaction that survives on its own.
+    try:
+        db.execute(text("SET statement_timeout = '180000'"))  # ms
+    except Exception:
+        logger.warning("[ga4-sync] could not raise statement_timeout", exc_info=True)
+
     accounts_q = db.query(AdAccount).filter(
         AdAccount.is_active.is_(True),
         AdAccount.ga4_property_id.isnot(None),
@@ -419,6 +430,14 @@ def run_ga4_sync(
 
         summary["branches"][acc.account_name] = b_summary
 
-    db.commit()
+        # Commit each branch separately so a long backfill is a series of small
+        # transactions and partial progress isn't lost if a later branch fails.
+        try:
+            db.commit()
+        except Exception:
+            logger.exception("[ga4-sync] commit failed for %s", acc.account_name)
+            db.rollback()
+            summary["errors"] += 1
+
     logger.info("[ga4-sync] done: %s", summary)
     return summary
