@@ -1,8 +1,10 @@
 """Add booking_matches.matched_revenue (real PMS grand_total of a match).
 
-Revision ID: 048_booking_match_matched_revenue
+Revision ID: 048_bm_matched_revenue
 Revises: 047_metrics_conversions_numeric
 Create Date: 2026-06-23
+
+(Revision id kept short — alembic_version.version_num is VARCHAR(32).)
 
 Booking-from-Ads switched from revenue-sum reconstruction to per-reservation
 capacity assignment (the ad platform's conversion count is the booking budget;
@@ -20,7 +22,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "048_booking_match_matched_revenue"
+revision: str = "048_bm_matched_revenue"
 down_revision: Union[str, None] = "047_metrics_conversions_numeric"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

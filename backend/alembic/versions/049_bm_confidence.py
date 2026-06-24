@@ -1,8 +1,10 @@
 """Add booking_matches.confidence (confirmed vs inferred match tier).
 
-Revision ID: 049_booking_match_confidence
-Revises: 048_booking_match_matched_revenue
+Revision ID: 049_bm_confidence
+Revises: 048_bm_matched_revenue
 Create Date: 2026-06-24
+
+(Revision id kept short — alembic_version.version_num is VARCHAR(32).)
 
 The matcher now runs two tiers per ads row:
   - "confirmed": a subset (size 1..capacity) of the candidate reservations whose
@@ -21,8 +23,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "049_booking_match_confidence"
-down_revision: Union[str, None] = "048_booking_match_matched_revenue"
+revision: str = "049_bm_confidence"
+down_revision: Union[str, None] = "048_bm_matched_revenue"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
