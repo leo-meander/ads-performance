@@ -9,6 +9,7 @@ type BookingMatch = {
   id: string
   match_date: string | null
   ads_revenue: number
+  matched_revenue: number
   ads_bookings: number
   ads_country: string | null
   ads_channel: string | null
@@ -27,12 +28,14 @@ type BookingMatch = {
   matched_country: string | null
   branch: string | null
   match_result: string
+  confidence: string | null
   matched_at: string | null
 }
 
 type ChannelKpi = { channel: string; matches: number; revenue: number; bookings: number }
 type BranchKpi = { branch: string; matches: number; revenue: number; bookings: number }
 type ResultKpi = { result: string; count: number }
+type ConfidenceKpi = { confidence: string; matches: number; bookings: number; revenue: number }
 
 type Summary = {
   total_matches: number
@@ -42,6 +45,7 @@ type Summary = {
   by_channel: ChannelKpi[]
   by_branch: BranchKpi[]
   by_result: ResultKpi[]
+  by_confidence: ConfidenceKpi[]
   period: { from: string; to: string }
 }
 
@@ -157,6 +161,23 @@ function ResultBadge({ result }: { result: string }) {
   )
 }
 
+function ConfidenceBadge({ confidence }: { confidence: string | null }) {
+  if (confidence === 'confirmed') {
+    return (
+      <span
+        title="Revenue summed to the ads value — value + count both agree"
+        className="inline-block px-1.5 py-0.5 rounded text-[11px] font-medium bg-emerald-100 text-emerald-800"
+      >✓ confirmed</span>
+    )
+  }
+  return (
+    <span
+      title="Matched by capacity/count only — revenue did not line up"
+      className="inline-block px-1.5 py-0.5 rounded text-[11px] font-medium bg-amber-100 text-amber-800"
+    >~ inferred</span>
+  )
+}
+
 export default function BookingMatchesDashboard() {
   const [datePreset, setDatePreset] = useState('30d')
   const [customFrom, setCustomFrom] = useState('')
@@ -167,6 +188,7 @@ export default function BookingMatchesDashboard() {
   const [channel, setChannel] = useState('')
   const [matchResult, setMatchResult] = useState('')
   const [purchaseKind, setPurchaseKind] = useState('')
+  const [confidenceFilter, setConfidenceFilter] = useState('')
 
   const resolveRange = useCallback(() => {
     if (datePreset === 'custom' && customFrom && customTo) {
@@ -212,6 +234,7 @@ export default function BookingMatchesDashboard() {
       if (channel) params.set('channel', channel)
       if (matchResult) params.set('match_result', matchResult)
       if (purchaseKind) params.set('purchase_kind', purchaseKind)
+      if (confidenceFilter) params.set('confidence', confidenceFilter)
 
       const summaryParams = new URLSearchParams({ date_from: from, date_to: to })
       if (branchParam) summaryParams.set('branches', branchParam)
@@ -235,7 +258,7 @@ export default function BookingMatchesDashboard() {
     } finally {
       setLoading(false)
     }
-  }, [resolveRange, branchParam, channel, matchResult, purchaseKind])
+  }, [resolveRange, branchParam, channel, matchResult, purchaseKind, confidenceFilter])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -289,6 +312,7 @@ export default function BookingMatchesDashboard() {
         const matchPart =
           `Matching: ${matching?.matches_created ?? 0} matches`
           + (branchBits ? ` (${branchBits})` : '')
+          + ` · ✓${matching?.matches_confirmed ?? 0} confirmed / ~${matching?.matches_inferred ?? 0} inferred`
           + ` · ads rows ${matching?.ads_rows_processed ?? 0}`
           + ` · reservations in window ${matching?.reservations_loaded ?? 0}`
           + ` · ads no-branch ${matching?.ads_rows_no_branch ?? 0}`
@@ -313,7 +337,7 @@ export default function BookingMatchesDashboard() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Booking from Ads</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Match real PMS reservations with ads campaign metrics by date + revenue + country.
+            Match real PMS reservations to ad campaigns by date + branch + country. Each campaign claims up to its reported conversion count; revenue shown is the real PMS total.
           </p>
         </div>
         <button
@@ -435,6 +459,16 @@ export default function BookingMatchesDashboard() {
           <option value="">All results</option>
           {MATCH_RESULTS.map(r => <option key={r} value={r}>{r}</option>)}
         </select>
+
+        <select
+          value={confidenceFilter}
+          onChange={(e) => setConfidenceFilter(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+        >
+          <option value="">All confidence</option>
+          <option value="confirmed">✓ Confirmed</option>
+          <option value="inferred">~ Inferred</option>
+        </select>
       </div>
 
       {/* KPI Cards */}
@@ -449,14 +483,32 @@ export default function BookingMatchesDashboard() {
           <p className="text-2xl font-bold mt-1">{summary ? fmtMoney(summary.total_revenue, summaryCurrency) : '--'}</p>
         </div>
         <div className="bg-white border border-gray-200 rounded-lg p-4">
-          <p className="text-sm text-gray-500">By Result</p>
-          <div className="mt-1 space-y-0.5">
-            {summary?.by_result.map(r => (
-              <div key={r.result} className="flex justify-between text-xs">
-                <span className="text-gray-600">{r.result}</span>
-                <span className="font-semibold">{r.count}</span>
-              </div>
-            ))}
+          <p className="text-sm text-gray-500">Match Confidence</p>
+          <div className="mt-1 space-y-1">
+            {(() => {
+              const conf = summary?.by_confidence?.find(c => c.confidence === 'confirmed')
+              const inf = summary?.by_confidence?.find(c => c.confidence === 'inferred')
+              const cb = conf?.bookings ?? 0
+              const ib = inf?.bookings ?? 0
+              const total = cb + ib
+              const pct = total > 0 ? Math.round((cb / total) * 100) : 0
+              return (
+                <>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-emerald-700">✓ Confirmed (value)</span>
+                    <span className="font-semibold">{cb} · {fmtMoney(conf?.revenue ?? 0, summaryCurrency)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-amber-700">~ Inferred (count)</span>
+                    <span className="font-semibold">{ib} · {fmtMoney(inf?.revenue ?? 0, summaryCurrency)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs border-t pt-1 mt-1 text-gray-500">
+                    <span>Confirmed share</span>
+                    <span className="font-semibold">{pct}%</span>
+                  </div>
+                </>
+              )
+            })()}
           </div>
         </div>
       </div>
@@ -630,7 +682,7 @@ export default function BookingMatchesDashboard() {
               {matches.map(m => (
                 <tr key={m.id} className={`border-t border-gray-100 ${rowBgColor(m.match_result)}`}>
                   <td className="px-3 py-2 whitespace-nowrap">{m.match_date}</td>
-                  <td className="px-3 py-2 text-right whitespace-nowrap">{fmtMoney(m.ads_revenue, listCurrency)}</td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap" title={`Ads-reported: ${fmtMoney(m.ads_revenue, listCurrency)}`}>{fmtMoney(m.matched_revenue, listCurrency)}</td>
                   <td className="px-3 py-2 text-right">{m.ads_bookings}</td>
                   <td className="px-3 py-2">{m.branch}</td>
                   <td className="px-3 py-2 capitalize">{m.ads_channel}</td>
@@ -652,7 +704,12 @@ export default function BookingMatchesDashboard() {
                   <td className="px-3 py-2 max-w-[160px] truncate" title={m.rate_plans || ''}>{m.rate_plans}</td>
                   <td className="px-3 py-2">{m.reservation_sources}</td>
                   <td className="px-3 py-2 max-w-[120px] truncate" title={m.matched_country || ''}>{m.matched_country}</td>
-                  <td className="px-3 py-2"><ResultBadge result={m.match_result} /></td>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-col gap-1 items-start">
+                      <ResultBadge result={m.match_result} />
+                      <ConfidenceBadge confidence={m.confidence} />
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

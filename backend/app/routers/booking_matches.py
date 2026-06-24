@@ -147,6 +147,7 @@ def _serialize_match(m: BookingMatch) -> dict:
         "id": m.id,
         "match_date": m.match_date.isoformat() if m.match_date else None,
         "ads_revenue": float(m.ads_revenue or 0),
+        "matched_revenue": float(m.matched_revenue or 0),
         "ads_bookings": m.ads_bookings,
         "ads_country": m.ads_country,
         "ads_channel": m.ads_channel,
@@ -166,6 +167,7 @@ def _serialize_match(m: BookingMatch) -> dict:
         "country_match_method": m.country_match_method,
         "branch": m.branch,
         "match_result": m.match_result,
+        "confidence": m.confidence,
         "matched_at": m.matched_at.isoformat() if m.matched_at else None,
     }
 
@@ -179,6 +181,7 @@ def list_booking_matches(
     channel: str = Query(None),
     match_result: str = Query(None),
     purchase_kind: str = Query(None, description="website | offline"),
+    confidence: str = Query(None, description="confirmed | inferred"),
     limit: int = Query(200, le=1000),
     offset: int = Query(0),
     current_user: User = Depends(require_section("analytics")),
@@ -215,6 +218,8 @@ def list_booking_matches(
             q = q.filter(BookingMatch.match_result == match_result)
         if purchase_kind:
             q = q.filter(BookingMatch.purchase_kind == purchase_kind)
+        if confidence:
+            q = q.filter(BookingMatch.confidence == confidence)
 
         total = q.count()
         rows = q.order_by(BookingMatch.match_date.desc()).offset(offset).limit(limit).all()
@@ -223,6 +228,7 @@ def list_booking_matches(
         for m in rows:
             payload = _serialize_match(m)
             payload["ads_revenue"] = _convert_revenue(m.branch, payload["ads_revenue"], convert)
+            payload["matched_revenue"] = _convert_revenue(m.branch, payload["matched_revenue"], convert)
             items.append(payload)
 
         return _api_response(data={
@@ -282,7 +288,7 @@ def booking_matches_summary(
             base.with_entities(
                 BookingMatch.branch,
                 func.count(BookingMatch.id).label("matches"),
-                func.sum(BookingMatch.ads_revenue).label("revenue"),
+                func.sum(BookingMatch.matched_revenue).label("revenue"),
                 func.sum(BookingMatch.ads_bookings).label("bookings"),
             )
             .group_by(BookingMatch.branch)
@@ -309,7 +315,7 @@ def booking_matches_summary(
                 BookingMatch.branch,
                 BookingMatch.ads_channel,
                 func.count(BookingMatch.id).label("matches"),
-                func.sum(BookingMatch.ads_revenue).label("revenue"),
+                func.sum(BookingMatch.matched_revenue).label("revenue"),
                 func.sum(BookingMatch.ads_bookings).label("bookings"),
             )
             .group_by(BookingMatch.branch, BookingMatch.ads_channel)
@@ -340,6 +346,31 @@ def booking_matches_summary(
             for r in by_result_rows
         ]
 
+        # By confidence — confirmed (revenue summed to ads value) vs inferred
+        # (capacity/count only). Counts match rows AND bookings AND PMS revenue
+        # per tier so the dashboard can show how much of the match is trustworthy.
+        by_confidence_rows = (
+            base.with_entities(
+                BookingMatch.branch,
+                BookingMatch.confidence,
+                func.count(BookingMatch.id).label("matches"),
+                func.sum(BookingMatch.ads_bookings).label("bookings"),
+                func.sum(BookingMatch.matched_revenue).label("revenue"),
+            )
+            .group_by(BookingMatch.branch, BookingMatch.confidence)
+            .all()
+        )
+        by_confidence_agg: dict[str, dict] = {}
+        for r in by_confidence_rows:
+            key = r.confidence or "inferred"
+            cur = by_confidence_agg.setdefault(
+                key, {"confidence": key, "matches": 0, "bookings": 0, "revenue": 0.0}
+            )
+            cur["matches"] += int(r.matches or 0)
+            cur["bookings"] += int(r.bookings or 0)
+            cur["revenue"] += _convert_revenue(r.branch, float(r.revenue or 0), convert)
+        by_confidence = list(by_confidence_agg.values())
+
         return _api_response(data={
             "total_matches": total_matches,
             "total_revenue": total_revenue,
@@ -348,6 +379,7 @@ def booking_matches_summary(
             "by_channel": by_channel,
             "by_branch": by_branch,
             "by_result": by_result,
+            "by_confidence": by_confidence,
             "period": {"from": date_from, "to": date_to},
         })
     except Exception as e:
@@ -700,6 +732,7 @@ def diagnose_reservation(
             patterns = BRANCH_ACCOUNT_MAP.get(branch_key, [branch_key])
             rows = (
                 db.query(
+                    AdCountryMetric.date.label("date"),
                     AdCountryMetric.platform.label("platform"),
                     AdCountryMetric.country.label("country"),
                     AdCountryMetric.revenue_website.label("revenue_website"),
@@ -714,7 +747,9 @@ def diagnose_reservation(
                 .join(AdAccount, AdAccount.id == Campaign.account_id)
                 .outerjoin(Ad, Ad.id == AdCountryMetric.ad_id)
                 .filter(
-                    AdCountryMetric.date == r.reservation_date,
+                    # Matching uses a ±1-day window, so diagnose the same span.
+                    AdCountryMetric.date >= r.reservation_date - timedelta(days=1),
+                    AdCountryMetric.date <= r.reservation_date + timedelta(days=1),
                     or_(*[AdAccount.account_name.ilike(f"%{p}%") for p in patterns]),
                 )
                 .all()
@@ -733,6 +768,7 @@ def diagnose_reservation(
                 for kind, rev, bk in entries:
                     delta = (rev - grand_total) if grand_total is not None else None
                     ads_candidates.append({
+                        "date": row.date.isoformat() if row.date else None,
                         "platform": row.platform,
                         "country": row.country,
                         "country_matches_reservation": country_match,
@@ -760,27 +796,28 @@ def diagnose_reservation(
         same_kind = [c for c in ads_candidates if c["purchase_kind"] == reservation_kind]
         if not ads_candidates and branch_key and r.reservation_date:
             reasons.append(
-                f"no ad×country rows for branch {branch_key} on {r.reservation_date}"
+                f"no ad×country rows for branch {branch_key} within ±1 day of "
+                f"{r.reservation_date}"
             )
         elif ads_candidates and not same_kind:
             reasons.append(
-                f"no ads revenue of kind '{reservation_kind}' on this date/branch — "
-                f"candidates only have {sorted({c['purchase_kind'] for c in ads_candidates})}"
+                f"no ads revenue of kind '{reservation_kind}' within ±1 day on this branch — "
+                f"candidates only have {sorted({c['purchase_kind'] for c in ads_candidates})}. "
+                f"Google reports website conversions only, so offline (OTA/walk-in) bookings "
+                f"never match Google rows."
             )
-        elif same_kind:
-            matching_country = [c for c in same_kind if c["country_matches_reservation"]]
-            if grand_total is not None and matching_country and not any(
-                c["within_tolerance"] for c in matching_country
-            ):
-                reasons.append(
-                    f"ads revenue does not equal grand_total within ±{AMOUNT_TOLERANCE_PCT:.0%} "
-                    f"on any same-kind + same-country row"
-                )
-            if not matching_country:
-                reasons.append(
-                    f"no same-kind row where ads country matches reservation.country "
-                    f"({r.country!r})"
-                )
+        elif same_kind and not existing_match:
+            # New model: matching is presence + capacity based, NOT revenue-sum.
+            # A same-kind ads row exists, so the only way this booking is unmatched
+            # is that every eligible campaign's capacity (= its conversion count)
+            # was already filled by other reservations ranked ahead of it
+            # (same-country first, then same-day, then closest value).
+            reasons.append(
+                "same-kind ads row(s) exist within ±1 day — matching is capacity-based "
+                "(each campaign claims up to its reported conversion count, best "
+                "country/date first), so this booking lost the slot to other "
+                "reservations or the campaign's capacity was exhausted."
+            )
 
         return _api_response(data={
             "reservation": {

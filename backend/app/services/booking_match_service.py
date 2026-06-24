@@ -1,17 +1,32 @@
 """Booking match service — matches PMS reservations to ads performance.
 
-Matching methodology (as used in the team's manual Sheet):
-  - Breakdown ads by (date, ad_name, user-country).
-  - Two passes per ads row:
-      website purchase value  → search reservations with source = Website/Booking Engine
-      offline purchase value  → search reservations with other sources (OTA, Walk-in, ...)
-  - Candidates share the same branch and purchase kind. The real match key is
-    date + branch + kind + revenue (single or combo). Date is matched same-day
-    first (reservation_date == ad date); if nothing matches, the candidate pool
-    expands to ±1 day to absorb the short lag between an ad and the booking it
-    drives. Country is a *ranking preference*, not a hard restriction (below).
-  - A match occurs when the sum of grand_totals equals the ads revenue within
-    the amount tolerance (±2%, see amount_tolerance()).
+Matching methodology — per-reservation capacity assignment:
+  The ad platforms attribute conversions FRACTIONALLY across touchpoints
+  (Google reports 0.33, 6.33, ... conversions and a correspondingly partial
+  conversion value). So the platform's reported revenue is NOT the sum of the
+  real PMS grand_totals, and its conversion count is NOT a count of distinct
+  bookings. The old approach — require a subset of exactly N reservations whose
+  grand_totals reconstruct the ads revenue within ±2% — was therefore
+  structurally lossy: one campaign-day row that failed to decompose dropped ALL
+  its conversions, so 45 attributed conversions collapsed to a handful of
+  matches.
+
+  Instead we treat the platform's conversion count as a *booking budget* and
+  hand each ads row that many of the most plausible real PMS reservations:
+    - Candidate pool: same branch + same purchase kind (website vs offline),
+      reservation_date within ±1 day of the ads date (short ad→booking lag).
+    - We do NOT require the reservation revenue to reconstruct the ads revenue.
+    - capacity = max(round(conversions), 1) for a kind that reported revenue.
+    - Each reservation is assigned to at most one ads row (global, greedy).
+    - Country-specific campaigns are processed before catch-all ("ALL") ones so
+      they claim their same-country reservations first.
+  matched_revenue on the resulting match is the real PMS grand_total of the
+  assigned reservations (ground truth); ads_revenue keeps the platform figure
+  for reference.
+
+Two passes per ads row:
+    website revenue  → reservations with source = Website/Booking Engine
+    offline revenue  → reservations with other sources (OTA, Walk-in, ...)
 
 Country is a preference, NOT a filter. The ads-side country is the campaign's
 targeting geo (Meta's adset ISO-2 prefix / Google's campaign ISO-2 suffix) —
@@ -19,16 +34,14 @@ i.e. *who the ad was aimed at*, which is NOT the same as the guest's PMS
 nationality. An "HK"-targeted campaign legitimately drives bookings from TW,
 KR, US, ... guests. So we never exclude a same-date/branch/kind reservation
 just because its nationality differs from the campaign geo. Country only ranks
-the candidate pools we try, best-confidence first:
-  1. same-country (campaign geo reconciled to guest ISO via
+candidates within a pool, best-confidence first (see _country_rank):
+  0. same-country (campaign geo reconciled to guest ISO via
      normalize_country_to_iso, so Google "UK" lines up with reservation "GB"),
-  2. + country-unknown reservations (country_iso = NULL: junk PMS value
+  1. country-unknown reservations (country_iso = NULL: junk PMS value
      "Unknown"/"00"/missing — common for OTA bookings),
-  3. the full same-date/branch/kind pool, any nationality.
-Tier 3 restores the pre-039 fallback that an over-strict ISO rewrite removed;
-that rewrite collapsed matches to ~0 because guest nationality rarely equals
-campaign targeting geo. The campaign geo is still recorded on the match
-(ads_country) so the dashboard can break results down by campaign country.
+  2. populated nationality that differs from the campaign geo (cross-country).
+The campaign geo is still recorded on the match (ads_country) so the dashboard
+can break results down by campaign country.
 
 Data source:
   - Meta: ad_country_metrics rows at ad_id × date × country level (pulled via
@@ -71,6 +84,24 @@ AMOUNT_TOLERANCE_FLOOR = 0.5
 def amount_tolerance(target: float) -> float:
     """Max allowed |grand_total - ads_revenue| for a match: ±2% (floor ±0.5)."""
     return max(AMOUNT_TOLERANCE_FLOOR, abs(float(target)) * AMOUNT_TOLERANCE_PCT)
+
+
+# Tier-1 (value-confirmed) tolerance. A match is "confirmed" when a subset of
+# the candidate reservations sums to the ads revenue within ±5% — looser than
+# amount_tolerance because confirmation tolerates the currency/fee/tax drift the
+# old strict matcher choked on, while still being tight enough that a coincidental
+# sum is unlikely. Bounded subset search keeps it cheap.
+CONFIRM_TOLERANCE_PCT = 0.05
+CONFIRM_MAX_SUBSET = 5      # largest reservation combo we try to sum-confirm
+CONFIRM_POOL_CAP = 20       # only the top-ranked N candidates enter the combo search
+
+CONFIDENCE_CONFIRMED = "confirmed"
+CONFIDENCE_INFERRED = "inferred"
+
+
+def confirm_tolerance(target: float) -> float:
+    """Max allowed |sum(grand_total) - ads_revenue| to call a match confirmed."""
+    return max(AMOUNT_TOLERANCE_FLOOR, abs(float(target)) * CONFIRM_TOLERANCE_PCT)
 
 # country_match_method records how a match's country comparison resolved. It is
 # bookkeeping only (the UI does not filter on it); the field exists so a future
@@ -153,102 +184,156 @@ def _classify_match_method(reservations: list[Reservation], ads_iso: str | None)
     return METHOD_NULL
 
 
-def _find_combination(
-    candidates: list[Reservation], n: int, target: float
+def _res_key(r: Reservation) -> str:
+    """Stable identity for the global 'already assigned' set."""
+    return r.reservation_number or str(r.id)
+
+
+def _country_rank(ads_country: str | None, reservation: Reservation) -> int:
+    """Confidence rank of a reservation for an ads row's targeting country.
+
+    Lower is more confident; country never excludes, only orders:
+      0 = same country (campaign geo reconciled to guest ISO, e.g. "UK"->"GB"),
+      1 = reservation country unknown (country_iso = NULL),
+      2 = populated nationality that differs from the campaign geo.
+    """
+    ads = _normalize_ads_iso(ads_country)
+    if not reservation.country_iso:
+        return 1
+    if ads and reservation.country_iso.upper() == ads:
+        return 0
+    return 2
+
+
+def _ranked_candidates(
+    *,
+    ads_date: date,
+    country: str | None,
+    branch_key: str,
+    kinds: list[str],
+    per_booking: float,
+    res_by_key: dict[tuple, list["Reservation"]],
+    used: set[str],
+) -> list[Reservation]:
+    """Candidate reservations for one ads row, best-first (no side effects).
+
+    Pool = same branch, reservation source in one of `kinds`, reservation_date
+    within ±1 day of the ads date, not already taken by another row. Ranked by:
+    same-country first, then same-day before ±1, then closest single-booking
+    value (|grand_total - per_booking|) as a soft tiebreak.
+
+    `kinds` is usually a single purchase kind, but Google reports one combined
+    PURCHASE total (website + offline upload lumped together; we don't split it),
+    so a Google row is handed BOTH ["website", "offline"] pools — otherwise its
+    offline/OTA-driven bookings could never match.
+    """
+    candidates: list[tuple[int, Reservation]] = []
+    for delta in (0, -1, 1):
+        for kind in kinds:
+            bucket = res_by_key.get((ads_date + timedelta(days=delta), branch_key, kind), [])
+            for r in bucket:
+                if _res_key(r) in used:
+                    continue
+                candidates.append((0 if delta == 0 else 1, r))
+
+    candidates.sort(
+        key=lambda item: (
+            _country_rank(country, item[1]),
+            item[0],
+            abs(float(item[1].grand_total or 0) - per_booking),
+        )
+    )
+    return [r for _, r in candidates]
+
+
+def _find_value_subset(
+    candidates: list[Reservation], revenue: float, max_size: int
 ) -> list[Reservation] | None:
-    """Find the first combination of exactly n reservations whose grand_totals
-    sum to target within the amount tolerance (±2%)."""
-    result: list[list[Reservation]] = []
-    tol = amount_tolerance(target)
+    """Smallest, best-ranked subset of `candidates` whose grand_totals sum to
+    `revenue` within ±5% (confirm_tolerance), or None.
 
-    def search(start: int, current: list[Reservation], current_sum: float):
-        if result:
-            return
-        if len(current) == n:
-            if abs(current_sum - target) < tol:
-                result.append(list(current))
-            return
-        for i in range(start, len(candidates)):
-            amount = float(candidates[i].grand_total or 0)
-            current.append(candidates[i])
-            search(i + 1, current, current_sum + amount)
-            current.pop()
-            if result:
-                return
-
-    search(0, [], 0.0)
-    return result[0] if result else None
-
-
-def _dedupe(reservations: list[Reservation]) -> list[Reservation]:
-    seen = set()
-    out = []
-    for r in reservations:
-        if r.reservation_number and r.reservation_number not in seen:
-            seen.add(r.reservation_number)
-            out.append(r)
-    return out
-
-
-def _try_match(
-    candidates: list[Reservation],
-    bookings: int,
-    revenue: float,
-) -> tuple[list[Reservation], str] | None:
-    tol = amount_tolerance(revenue)
-    exact = _dedupe([
-        r for r in candidates
-        if r.grand_total is not None and abs(float(r.grand_total) - revenue) < tol
-    ])
-
-    bookings = max(bookings, 1)
-
-    if bookings == 1:
-        if len(exact) == 1:
-            return exact, "Matched"
-        if len(exact) > 1:
-            return exact, "Multiple"
+    Sizes are tried ascending (1 first): the fewest bookings that explain the
+    campaign's revenue are the most likely to be the real distinct bookings, and
+    a smaller confirmed size also corrects the platform's fractional-conversion
+    overcount. `candidates` is pre-ranked, so within a size we return the first
+    (best-ranked) combination found. Bounded by CONFIRM_POOL_CAP / max_size so
+    the combinatorial search stays cheap.
+    """
+    tol = confirm_tolerance(revenue)
+    pool = candidates[:CONFIRM_POOL_CAP]
+    upper = min(max_size, CONFIRM_MAX_SUBSET, len(pool))
+    if upper < 1:
         return None
+    totals = [float(r.grand_total or 0) for r in pool]
 
-    combo = _find_combination(candidates, bookings, revenue)
-    if combo:
-        return _dedupe(combo), "Matched (combo)"
+    for size in range(1, upper + 1):
+        found: list[int] | None = None
+
+        def search(start: int, depth: int, acc: float, picks: list[int]) -> bool:
+            nonlocal found
+            if depth == size:
+                if abs(acc - revenue) <= tol:
+                    found = list(picks)
+                    return True
+                return False
+            for i in range(start, len(pool)):
+                # Prune: even taking the largest remaining can't be needed —
+                # keep it simple and correct, just recurse with early exit.
+                picks.append(i)
+                if search(i + 1, depth + 1, acc + totals[i], picks):
+                    return True
+                picks.pop()
+            return False
+
+        search(0, 0, 0.0, [])
+        if found is not None:
+            return [pool[i] for i in found]
     return None
+
+
+def _assign_row(
+    *,
+    ads_date: date,
+    country: str | None,
+    branch_key: str,
+    kinds: list[str],
+    revenue: float,
+    capacity: int,
+    res_by_key: dict[tuple, list["Reservation"]],
+    used: set[str],
+) -> tuple[list[Reservation], str]:
+    """Match one ads row to real reservations; return (chosen, confidence).
+
+    Two tiers:
+      1. confirmed — a subset (size 1..capacity) of the ranked candidates sums
+         to the ads revenue within ±5%. Value AND count agree, so we trust it
+         (and the subset size corrects a fractional conversion overcount).
+      2. inferred — no subset reconstructs the revenue, so fall back to capacity
+         assignment: hand the row its top-`capacity` candidates by rank.
+    Chosen reservations are marked in `used` so each booking is attributed once.
+    Returns ([], "") when there are no candidates at all.
+    """
+    per_booking = (revenue / capacity) if capacity else revenue
+    ranked = _ranked_candidates(
+        ads_date=ads_date, country=country, branch_key=branch_key, kinds=kinds,
+        per_booking=per_booking, res_by_key=res_by_key, used=used,
+    )
+    if not ranked:
+        return [], ""
+
+    subset = _find_value_subset(ranked, revenue, min(capacity, len(ranked)))
+    if subset is not None:
+        chosen, confidence = subset, CONFIDENCE_CONFIRMED
+    else:
+        chosen, confidence = ranked[:capacity], CONFIDENCE_INFERRED
+
+    for r in chosen:
+        used.add(_res_key(r))
+    return chosen, confidence
 
 
 def _is_website_source(source: str | None) -> bool:
     return (source or "").strip().lower() == WEBSITE_SOURCE
-
-
-def _match_country_tiers(
-    candidates: list[Reservation],
-    ads_country: str | None,
-    bookings: int,
-    revenue: float,
-) -> tuple[list[Reservation], str] | None:
-    """Match within a candidate pool, ranking by country confidence.
-
-    Country never excludes a candidate — it only orders the pools we try:
-      1. same-country (campaign geo reconciled to guest ISO, e.g. ad "UK"->"GB"),
-      2. + country-unknown reservations (country_iso = NULL),
-      3. the full pool, any nationality (tier-3 fallback).
-    The real key is revenue; country only decides *which* booking when several
-    amounts match. Tier-3 restores the pre-039 behaviour the strict-ISO rewrite
-    dropped — without it, matches collapse whenever guest nationality differs
-    from the campaign targeting geo.
-    """
-    if not candidates:
-        return None
-    exact_pool = [
-        r for r in candidates if country_iso_matches_reservation(ads_country, r)
-    ]
-    null_pool = [r for r in candidates if not r.country_iso]
-    match = _try_match(exact_pool, bookings, revenue) if exact_pool else None
-    if not match and null_pool:
-        match = _try_match(exact_pool + null_pool, bookings, revenue)
-    if not match:
-        match = _try_match(candidates, bookings, revenue)
-    return match
 
 
 def _build_booking_match(
@@ -260,11 +345,15 @@ def _build_booking_match(
     matched: list[Reservation],
     branch_key: str,
     now: datetime,
+    matched_revenue: float,
+    confidence: str,
 ) -> BookingMatch:
     return BookingMatch(
         match_date=row["date"],
         ads_revenue=Decimal(str(revenue)),
+        matched_revenue=Decimal(str(matched_revenue)),
         ads_bookings=bookings,
+        confidence=confidence,
         ads_country=row.get("country"),
         ads_channel=row.get("platform"),
         campaign_name=row.get("campaign_name"),
@@ -400,55 +489,66 @@ def run_matching(
         res_by_key.setdefault((r.reservation_date, branch_key, bucket), []).append(r)
 
     matches_created = 0
+    matches_confirmed = 0
     matches_by_branch: dict[str, int] = {}
     ads_skipped_no_branch = 0
     ads_no_candidates = 0
     now = datetime.now(timezone.utc)
 
+    # Build the ads "slots": one per (ads row × purchase kind) that reported
+    # revenue. capacity = how many real bookings the platform says it drove.
+    slots: list[tuple[dict, str, str, float, int]] = []
     for row in ads_rows:
         branch_key = normalize_branch(row["account_name"])
         if not branch_key:
             ads_skipped_no_branch += 1
             continue
-
-        for kind, revenue, bookings_hint in (
+        for kind, revenue, conv in (
             ("website", row["revenue_website"], row["conversions_website"]),
             ("offline", row["revenue_offline"], row["conversions_offline"]),
         ):
             if revenue <= 0:
                 continue
+            capacity = max(int(conv or 0), 1)
+            slots.append((row, branch_key, kind, revenue, capacity))
 
-            bookings = bookings_hint or 1
+    # Process country-specific campaigns before catch-all ("ALL"/unparseable)
+    # ones so they claim their same-country reservations first; bigger campaigns
+    # (more revenue) before smaller within each group. `used` enforces that each
+    # reservation is attributed to at most one ads row across the whole run.
+    slots.sort(key=lambda s: (0 if _normalize_ads_iso(s[0].get("country")) else 1, -s[3]))
 
-            # Date: same-day first (reservation_date == ad date). If nothing
-            # matches, expand the candidate pool to ±1 day — a guest commonly
-            # books a day either side of the ad-attributed date. We do NOT widen
-            # further: a bigger window mostly pulls in unrelated bookings that
-            # happen to share an amount. Country only ranks within each pool
-            # (never filters) — see _match_country_tiers.
-            sameday = res_by_key.get((row["date"], branch_key, kind), [])
-            match = _match_country_tiers(sameday, row.get("country"), bookings, revenue)
+    used: set[str] = set()
+    for row, branch_key, kind, revenue, capacity in slots:
+        # Meta splits website (fb_pixel_purchase) vs offline (offline upload)
+        # purchases, so each kind matches its own reservation pool. Google
+        # reports one combined PURCHASE total we don't split, so a Google row
+        # may match either a website or an OTA/offline reservation.
+        match_kinds = ["website", "offline"] if row.get("platform") == "google" else [kind]
+        chosen, confidence = _assign_row(
+            ads_date=row["date"],
+            country=row.get("country"),
+            branch_key=branch_key,
+            kinds=match_kinds,
+            revenue=revenue,
+            capacity=capacity,
+            res_by_key=res_by_key,
+            used=used,
+        )
+        if not chosen:
+            ads_no_candidates += 1
+            continue
 
-            window = sameday
-            if not match:
-                window = list(sameday)
-                for delta in (-1, 1):
-                    window += res_by_key.get(
-                        (row["date"] + timedelta(days=delta), branch_key, kind), []
-                    )
-                match = _match_country_tiers(window, row.get("country"), bookings, revenue)
-
-            if not match:
-                if not window:
-                    ads_no_candidates += 1
-                continue
-
-            matched, result_label = match
-            db.add(_build_booking_match(
-                row, revenue, bookings, kind, result_label, matched, branch_key, now,
-            ))
-            matches_created += 1
-            matches_by_branch[branch_key] = matches_by_branch.get(branch_key, 0) + 1
+        matched_revenue = sum(float(r.grand_total or 0) for r in chosen)
+        result_label = "Matched (combo)" if len(chosen) > 1 else "Matched"
+        db.add(_build_booking_match(
+            row, revenue, len(chosen), kind, result_label, chosen,
+            branch_key, now, matched_revenue, confidence,
+        ))
+        matches_created += 1
+        matches_by_branch[branch_key] = matches_by_branch.get(branch_key, 0) + 1
+        if confidence == CONFIDENCE_CONFIRMED:
+            matches_confirmed += 1
 
     db.commit()
 
@@ -459,6 +559,8 @@ def run_matching(
         "ads_rows_processed": len(ads_rows),
         "reservations_loaded": reservations_in_scope,
         "matches_created": matches_created,
+        "matches_confirmed": matches_confirmed,
+        "matches_inferred": matches_created - matches_confirmed,
         "matches_by_branch": matches_by_branch,
         "ads_rows_no_branch": ads_skipped_no_branch,
         "ads_rows_no_candidates": ads_no_candidates,
