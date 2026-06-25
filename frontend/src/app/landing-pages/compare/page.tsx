@@ -71,20 +71,20 @@ const DIMENSIONS: Dim[] = [
   {
     key: 'engagement',
     label: 'Engagement rate',
-    hint: 'GA4 engaged sessions ÷ sessions.',
+    hint: 'GA4 engaged sessions ÷ sessions. Info only — a fast click-through to the booking engine reads as not-engaged, so it is not scored.',
     get: (m) => m.ga4.engagement_rate,
     fmt: (v) => fmtPct(v, 1),
     higherBetter: true,
-    weight: 1,
+    weight: 0,
   },
   {
     key: 'bounce',
     label: 'Bounce rate',
-    hint: 'GA4 bounce rate — lower is better.',
+    hint: 'GA4 bounce rate. Info only — a fast hop to the booking engine looks like a bounce, which is the goal here, so it is not scored.',
     get: (m) => m.ga4.bounce_rate,
     fmt: (v) => fmtPct(v, 1),
     higherBetter: false,
-    weight: 1,
+    weight: 0,
   },
   {
     key: 'lpv_session',
@@ -98,11 +98,11 @@ const DIMENSIONS: Dim[] = [
   {
     key: 'scroll',
     label: 'Avg scroll depth',
-    hint: 'Clarity — how far visitors scroll.',
+    hint: 'Clarity — how far visitors scroll. Info only — a visitor convinced quickly scrolls little, so it is not scored.',
     get: (m) => m.clarity.avg_scroll_depth,
     fmt: fmtScroll,
     higherBetter: true,
-    weight: 1,
+    weight: 0,
   },
   {
     key: 'rage',
@@ -243,8 +243,9 @@ function ComparePageInner() {
             <ArrowLeftRight className="w-6 h-6 text-blue-600" /> Compare Landing Pages
           </h1>
           <p className="text-sm text-gray-500 mt-1">
-            Pick two pages — the winner is decided by DBCR and ROAS, with engagement, bounce, scroll
-            and rage-clicks as tie-breakers.
+            Pick two pages — decided by DBCR and ROAS, with LPV→session and rage-clicks as tie-breakers.
+            On-page engagement (bounce, engagement, scroll) is shown for context but not scored: a fast
+            click-through to the booking engine can look like disengagement.
           </p>
         </div>
         <div className="flex gap-1">
