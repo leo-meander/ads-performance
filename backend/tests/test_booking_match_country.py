@@ -138,6 +138,22 @@ class TestAssignRow:
         chosen = _assign(pool, capacity=2, kinds=("website", "offline"))
         assert sorted(r.reservation_number for r in chosen) == ["OFF", "WEB"]
 
+    def test_google_prefers_website_over_offline(self):
+        # ~90% of bookings come from the website, so a Google row must exhaust
+        # its website candidates before falling back to offline/OTA ones — even
+        # when an offline booking is an equally good same-day/same-value match.
+        web = _booking(1000, "WEB")
+        off = _booking(1000, "OFF")
+        pool = {(DAY, "Saigon", "website"): [web], (DAY, "Saigon", "offline"): [off]}
+        chosen = _assign(pool, capacity=1, kinds=("website", "offline"))
+        assert [r.reservation_number for r in chosen] == ["WEB"]
+
+    def test_google_falls_back_to_offline_when_no_website(self):
+        off = _booking(1000, "OFF")
+        pool = {(DAY, "Saigon", "offline"): [off]}
+        chosen = _assign(pool, capacity=1, kinds=("website", "offline"))
+        assert [r.reservation_number for r in chosen] == ["OFF"]
+
     def test_single_kind_ignores_other_pool(self):
         # A Meta website row only sees website reservations.
         web = _booking(1000, "WEB")
