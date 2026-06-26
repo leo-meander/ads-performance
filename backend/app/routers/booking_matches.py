@@ -31,6 +31,7 @@ from app.services.reservation_sync import (
     extract_rate_plan_from_room_type,
     sync_reservations,
 )
+from app.utils.country_normalize import normalize_country_to_iso
 
 router = APIRouter()
 
@@ -525,6 +526,284 @@ def booking_matches_insights(
             "adr": _stats(adr_values),
             "currency": display_currency,
             "total_reservations": len(reservations),
+            "period": {"from": date_from, "to": date_to},
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+# Lead-time histogram buckets (days from booking to check-in). Order matters —
+# the frontend renders them left-to-right.
+LEAD_BUCKETS = ["0", "1-3", "4-7", "8-14", "15+"]
+
+
+def _lead_bucket(days: int) -> str:
+    if days <= 0:
+        return "0"
+    if days <= 3:
+        return "1-3"
+    if days <= 7:
+        return "4-7"
+    if days <= 14:
+        return "8-14"
+    return "15+"
+
+
+def _is_canceled(status: str | None) -> bool:
+    """True for any cancelled-type PMS status (canceled / cancelled / no-show)."""
+    s = (status or "").strip().lower()
+    return "cancel" in s or "no_show" in s or "no-show" in s
+
+
+def _res_is_website(source: str | None) -> bool:
+    return (source or "").strip().lower() == "website/booking engine"
+
+
+@router.get("/booking-matches/campaign-insights")
+def booking_matches_campaign_insights(
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    branch: str = Query(None, description="Legacy single-branch filter"),
+    branches: str = Query(None, description="Comma-separated branch names"),
+    channel: str = Query(None),
+    match_result: str = Query(None),
+    purchase_kind: str = Query(None, description="website | offline"),
+    confidence: str = Query(None, description="confirmed | inferred"),
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Campaign-segmented intelligence for the Booking-from-Ads page.
+
+    Joins matched BookingMatch rows back to their Reservations and aggregates
+    per campaign so each campaign answers, in one row: how many bookings, real
+    PMS revenue vs the platform's claimed figure, confirmed share, cancellation
+    rate, average lead time, the room types it actually drove, and the actual
+    guest countries vs the campaign's targeting country. A separate country-flow
+    matrix surfaces the gap between *who the ad targeted* (ads_country) and *who
+    actually booked* (reservation country_iso), tagged exact / cross / unknown.
+
+    Honours the same filters as the list/insights endpoints so the panels stay
+    in sync with the table. Revenue follows the dashboard display-currency rule.
+    """
+    try:
+        if not date_from or not date_to:
+            df, dt = _default_date_range()
+            date_from = date_from or df.isoformat()
+            date_to = date_to or dt.isoformat()
+
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+
+        branches_list = _parse_branches_param(branches, branch)
+        display_currency, convert = _resolve_currency(branches_list)
+
+        q = db.query(BookingMatch).filter(
+            BookingMatch.match_date >= df,
+            BookingMatch.match_date <= dt,
+        )
+        ok, q, err = _apply_branch_scope(q, BookingMatch.branch, current_user, db, branches_list, exact_match=True)
+        if not ok:
+            return _api_response(error=err)
+        if channel:
+            q = q.filter(BookingMatch.ads_channel == channel)
+        if match_result:
+            q = q.filter(BookingMatch.match_result == match_result)
+        if purchase_kind:
+            q = q.filter(BookingMatch.purchase_kind == purchase_kind)
+        if confidence:
+            q = q.filter(BookingMatch.confidence == confidence)
+
+        matches = q.all()
+
+        # Map each matched reservation_number -> its owning match (1:1: the
+        # matcher assigns every reservation to at most one ads row).
+        res_to_match: dict[str, BookingMatch] = {}
+        res_numbers: set[str] = set()
+        for m in matches:
+            if not m.reservation_numbers:
+                continue
+            for n in m.reservation_numbers.split(","):
+                n = n.strip()
+                if n:
+                    res_to_match[n] = m
+                    res_numbers.add(n)
+
+        res_by_num: dict[str, Reservation] = {}
+        if res_numbers:
+            for r in (
+                db.query(Reservation)
+                .filter(Reservation.reservation_number.in_(list(res_numbers)))
+                .all()
+            ):
+                if r.reservation_number:
+                    res_by_num[r.reservation_number] = r
+
+        def _camp_key(m: BookingMatch) -> str:
+            return str(m.campaign_id) if m.campaign_id else (m.campaign_name or "(unknown)")
+
+        def _new_campaign(m: BookingMatch) -> dict:
+            return {
+                "campaign_id": str(m.campaign_id) if m.campaign_id else None,
+                "campaign_name": m.campaign_name or "(unknown)",
+                "channel": m.ads_channel,
+                "branch": m.branch,
+                "matches": 0,
+                "bookings": 0,
+                "matched_revenue": 0.0,
+                "ads_revenue": 0.0,
+                "confirmed_bookings": 0,
+                "total_ads_bookings": 0,
+                "cancel_count": 0,
+                "website_bookings": 0,
+                "offline_bookings": 0,
+                "lead_buckets": {b: 0 for b in LEAD_BUCKETS},
+                "_lead_times": [],
+                "_nights": [],
+                "_adr": [],
+                "_rooms": {},
+                "_target_counter": {},
+                "_actual_counter": {},
+            }
+
+        campaigns: dict[str, dict] = {}
+
+        # Pass 1 — match-level: revenue, confirmed share, targeting country.
+        for m in matches:
+            key = _camp_key(m)
+            c = campaigns.setdefault(key, _new_campaign(m))
+            c["matches"] += 1
+            c["matched_revenue"] += _convert_revenue(m.branch, float(m.matched_revenue or 0), convert)
+            c["ads_revenue"] += _convert_revenue(m.branch, float(m.ads_revenue or 0), convert)
+            c["total_ads_bookings"] += int(m.ads_bookings or 0)
+            if (m.confidence or "") == "confirmed":
+                c["confirmed_bookings"] += int(m.ads_bookings or 0)
+            tgt = m.ads_country or "ALL"
+            c["_target_counter"][tgt] = c["_target_counter"].get(tgt, 0) + 1
+
+        # Pass 2 — reservation-level: cancel, lead time, rooms, actual country.
+        country_flow: dict[tuple, dict] = {}
+        for num, m in res_to_match.items():
+            r = res_by_num.get(num)
+            if not r:
+                continue
+            c = campaigns[_camp_key(m)]
+            gt = float(r.grand_total or 0)
+            gt_disp = _convert_revenue(m.branch, gt, convert)
+
+            c["bookings"] += 1
+            if _is_canceled(r.status):
+                c["cancel_count"] += 1
+            if r.reservation_date and r.check_in_date:
+                d = (r.check_in_date - r.reservation_date).days
+                if d >= 0:
+                    c["_lead_times"].append(d)
+                    c["lead_buckets"][_lead_bucket(d)] += 1
+            if r.nights and r.nights > 0:
+                c["_nights"].append(int(r.nights))
+                if gt > 0:
+                    c["_adr"].append(gt_disp / r.nights)
+            if _res_is_website(r.source):
+                c["website_bookings"] += 1
+            else:
+                c["offline_bookings"] += 1
+
+            rt = (r.room_type or "Unknown").strip() or "Unknown"
+            rb = c["_rooms"].setdefault(rt, {"room_type": rt, "bookings": 0, "revenue": 0.0})
+            rb["bookings"] += 1
+            rb["revenue"] += gt_disp
+
+            actual = (r.country_iso or "").upper() or "Unknown"
+            c["_actual_counter"][actual] = c["_actual_counter"].get(actual, 0) + 1
+
+            # Country flow: targeting geo (normalised) vs actual guest ISO.
+            target = normalize_country_to_iso(m.ads_country) or (m.ads_country or "ALL")
+            if not r.country_iso:
+                method = "null_count"
+            elif r.country_iso.upper() == (normalize_country_to_iso(m.ads_country) or "\0"):
+                method = "exact"
+            else:
+                method = "cross"
+            fk = (target, actual)
+            f = country_flow.setdefault(fk, {
+                "target": target, "actual": actual,
+                "bookings": 0, "revenue": 0.0,
+                "exact": 0, "cross": 0, "null_count": 0,
+            })
+            f["bookings"] += 1
+            f["revenue"] += gt_disp
+            f[method] += 1
+
+        # Finalise campaigns.
+        out_campaigns = []
+        tot_bookings = tot_cancel = tot_confirmed = tot_ads_bookings = 0
+        for c in campaigns.values():
+            bk = c["bookings"]
+            leads = c["_lead_times"]
+            nights = c["_nights"]
+            adrs = c["_adr"]
+            tot_bookings += bk
+            tot_cancel += c["cancel_count"]
+            tot_confirmed += c["confirmed_bookings"]
+            tot_ads_bookings += c["total_ads_bookings"]
+            target_country = (
+                max(c["_target_counter"].items(), key=lambda x: x[1])[0]
+                if c["_target_counter"] else None
+            )
+            out_campaigns.append({
+                "campaign_id": c["campaign_id"],
+                "campaign_name": c["campaign_name"],
+                "channel": c["channel"],
+                "branch": c["branch"],
+                "target_country": target_country,
+                "matches": c["matches"],
+                "bookings": bk,
+                "matched_revenue": c["matched_revenue"],
+                "ads_revenue": c["ads_revenue"],
+                "confirmed_share": (c["confirmed_bookings"] / c["total_ads_bookings"] * 100) if c["total_ads_bookings"] else 0,
+                "cancel_count": c["cancel_count"],
+                "cancel_rate": (c["cancel_count"] / bk * 100) if bk else 0,
+                "avg_lead_time": (sum(leads) / len(leads)) if leads else 0,
+                "avg_nights": (sum(nights) / len(nights)) if nights else 0,
+                "adr": (sum(adrs) / len(adrs)) if adrs else 0,
+                "website_bookings": c["website_bookings"],
+                "offline_bookings": c["offline_bookings"],
+                "lead_buckets": c["lead_buckets"],
+                "top_rooms": sorted(
+                    c["_rooms"].values(), key=lambda x: (-x["revenue"], -x["bookings"])
+                )[:5],
+                "top_actual_countries": [
+                    {"country": k, "bookings": v}
+                    for k, v in sorted(c["_actual_counter"].items(), key=lambda x: -x[1])[:5]
+                ],
+            })
+
+        out_campaigns.sort(key=lambda x: -x["matched_revenue"])
+
+        flow_rows = sorted(country_flow.values(), key=lambda x: -x["bookings"])
+        # Leakage = bookings whose guest country differs from the target, over
+        # bookings with a *known* guest country (null/unknown excluded — we can't
+        # tell if those leaked). exact + cross only.
+        flow_exact = sum(f["exact"] for f in flow_rows)
+        flow_cross = sum(f["cross"] for f in flow_rows)
+        flow_null = sum(f["null_count"] for f in flow_rows)
+        known = flow_exact + flow_cross
+        leakage_rate = (flow_cross / known * 100) if known else 0
+
+        return _api_response(data={
+            "currency": display_currency,
+            "campaigns": out_campaigns,
+            "country_flow": flow_rows,
+            "totals": {
+                "bookings": tot_bookings,
+                "cancel_count": tot_cancel,
+                "cancel_rate": (tot_cancel / tot_bookings * 100) if tot_bookings else 0,
+                "confirmed_share": (tot_confirmed / tot_ads_bookings * 100) if tot_ads_bookings else 0,
+                "leakage_rate": leakage_rate,
+                "country_known": known,
+                "country_exact": flow_exact,
+                "country_cross": flow_cross,
+                "country_unknown": flow_null,
+            },
             "period": {"from": date_from, "to": date_to},
         })
     except Exception as e:
