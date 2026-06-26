@@ -219,31 +219,37 @@ def _ranked_candidates(
 
     Pool = same branch, reservation source in one of `kinds`, reservation_date
     within ±1 day of the ads date, not already taken by another row. Ranked by:
-    same-country first, then same-day before ±1, then closest single-booking
-    value (|grand_total - per_booking|) as a soft tiebreak.
+    source-kind priority (the order of `kinds`), then same-country first, then
+    same-day before ±1, then closest single-booking value
+    (|grand_total - per_booking|) as a soft tiebreak.
 
     `kinds` is usually a single purchase kind, but Google reports one combined
     PURCHASE total (website + offline upload lumped together; we don't split it),
     so a Google row is handed BOTH ["website", "offline"] pools — otherwise its
-    offline/OTA-driven bookings could never match.
+    offline/OTA-driven bookings could never match. ~90% of bookings come from the
+    website, so `kinds` is ordered website-first: a Google row exhausts its
+    website candidates before falling back to OTA/offline ones, instead of letting
+    a same-country/same-day offline booking outrank an equally-plausible website
+    one. (Meta passes a single kind, so this ordering is a no-op for Meta rows.)
     """
-    candidates: list[tuple[int, Reservation]] = []
+    candidates: list[tuple[int, int, Reservation]] = []
     for delta in (0, -1, 1):
-        for kind in kinds:
+        for kind_rank, kind in enumerate(kinds):
             bucket = res_by_key.get((ads_date + timedelta(days=delta), branch_key, kind), [])
             for r in bucket:
                 if _res_key(r) in used:
                     continue
-                candidates.append((0 if delta == 0 else 1, r))
+                candidates.append((kind_rank, 0 if delta == 0 else 1, r))
 
     candidates.sort(
         key=lambda item: (
-            _country_rank(country, item[1]),
             item[0],
-            abs(float(item[1].grand_total or 0) - per_booking),
+            _country_rank(country, item[2]),
+            item[1],
+            abs(float(item[2].grand_total or 0) - per_booking),
         )
     )
-    return [r for _, r in candidates]
+    return [r for _, _, r in candidates]
 
 
 def _find_value_subset(
