@@ -1,6 +1,7 @@
 'use client'
 
-import { Fragment, useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { Fragment, useEffect, useState, useCallback, useMemo, useRef, type ReactNode } from 'react'
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { API_BASE } from '@/lib/api'
 import { formatLocalDate } from '@/lib/dates'
 import { fmtMoney } from '@/components/dashboard/dashboardUtils'
@@ -268,6 +269,64 @@ function LeadHistogram({ buckets }: { buckets: Record<string, number> }) {
   )
 }
 
+// Shared palette (matches the dashboard so colours stay consistent).
+const CHART_COLORS = ['#a68a64', '#b8a7d9', '#a3c982', '#7dc4c2', '#eb7373', '#f4b971']
+const CHANNEL_COLOR: Record<string, string> = { google: '#7dc4c2', meta: '#b8a7d9' }
+
+// A labelled horizontal bar — the building block for the visual "bar list"
+// breakdowns that replace the old dense tables.
+function HBar({
+  label, sublabel, value, max, color, right, onClick, active,
+}: {
+  label: string
+  sublabel?: string
+  value: number
+  max: number
+  color: string
+  right?: ReactNode
+  onClick?: () => void
+  active?: boolean
+}) {
+  const pct = max > 0 ? Math.max(1.5, (value / max) * 100) : 0
+  const Wrapper: any = onClick ? 'button' : 'div'
+  return (
+    <Wrapper
+      onClick={onClick}
+      className={`w-full text-left block ${onClick ? 'hover:bg-gray-50 cursor-pointer' : ''} rounded px-1 py-1 transition-colors ${active ? 'bg-gray-50' : ''}`}
+    >
+      <div className="flex items-baseline justify-between gap-2 mb-1">
+        <span className="text-sm text-gray-700 truncate" title={label}>
+          {label}
+          {sublabel && <span className="text-gray-400 text-xs ml-1.5">{sublabel}</span>}
+        </span>
+        <span className="text-xs text-gray-600 whitespace-nowrap flex items-center gap-2">{right}</span>
+      </div>
+      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
+      </div>
+    </Wrapper>
+  )
+}
+
+// Stacked bar showing exact / cross / unknown split for one target country.
+function FlowStack({ exact, cross, nul, max, leakage }: { exact: number; cross: number; nul: number; max: number; leakage: number }) {
+  const total = exact + cross + nul
+  const scale = max > 0 ? (total / max) * 100 : 0
+  const seg = (n: number) => (total > 0 ? (n / total) * 100 : 0)
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-3.5 bg-gray-100 rounded-full overflow-hidden flex-1" style={{ maxWidth: `${Math.max(8, scale)}%` }}>
+        <div className="h-full flex">
+          {exact > 0 && <div style={{ width: `${seg(exact)}%`, backgroundColor: '#34d399' }} title={`exact ${exact}`} />}
+          {cross > 0 && <div style={{ width: `${seg(cross)}%`, backgroundColor: '#fb923c' }} title={`cross ${cross}`} />}
+          {nul > 0 && <div style={{ width: `${seg(nul)}%`, backgroundColor: '#d1d5db' }} title={`unknown ${nul}`} />}
+        </div>
+      </div>
+      {cross > 0 && <span className="text-[11px] text-orange-600 font-medium whitespace-nowrap">{leakage.toFixed(0)}% leak</span>}
+    </div>
+  )
+}
+
 export default function BookingMatchesDashboard() {
   const [datePreset, setDatePreset] = useState('30d')
   const [customFrom, setCustomFrom] = useState('')
@@ -290,6 +349,7 @@ export default function BookingMatchesDashboard() {
   const [insights, setInsights] = useState<Insights | null>(null)
   const [campaignInsights, setCampaignInsights] = useState<CampaignInsights | null>(null)
   const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null)
+  const [showRawTable, setShowRawTable] = useState(false)
   const [matches, setMatches] = useState<BookingMatch[]>([])
   const [listCurrency, setListCurrency] = useState<string>('VND')
   const [loading, setLoading] = useState(false)
@@ -607,56 +667,64 @@ export default function BookingMatchesDashboard() {
         </div>
       </div>
 
-      {/* Channel + Branch breakdown */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white border border-gray-200 rounded-lg p-4">
-          <h3 className="text-sm font-semibold text-gray-900 mb-3">By Channel</h3>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs text-gray-500 border-b">
-                <th className="text-left py-2">Channel</th>
-                <th className="text-right py-2">Matches</th>
-                <th className="text-right py-2">Bookings</th>
-                <th className="text-right py-2">Revenue ({summaryCurrency})</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary?.by_channel.map(c => (
-                <tr key={c.channel} className="border-b last:border-0">
-                  <td className="py-2 capitalize">{c.channel}</td>
-                  <td className="text-right py-2">{c.matches}</td>
-                  <td className="text-right py-2">{c.bookings}</td>
-                  <td className="text-right py-2">{fmtMoney(c.revenue, summaryCurrency)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {/* Channel + Branch breakdown — visual */}
+      {summary && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Channel revenue donut */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">Revenue by Channel</h3>
+            {summary.by_channel.length > 0 ? (
+              <div className="flex items-center">
+                <ResponsiveContainer width="55%" height={170}>
+                  <PieChart>
+                    <Pie
+                      data={summary.by_channel.map(c => ({ name: c.channel, value: c.revenue }))}
+                      dataKey="value" nameKey="name" cx="50%" cy="50%"
+                      innerRadius={42} outerRadius={70} paddingAngle={2}
+                    >
+                      {summary.by_channel.map(c => (
+                        <Cell key={c.channel} fill={CHANNEL_COLOR[c.channel] || '#a68a64'} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(v: number, n: string) => [fmtMoney(v, summaryCurrency), n]} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="flex-1 space-y-2">
+                  {summary.by_channel.map(c => (
+                    <div key={c.channel} className="flex items-center gap-2 text-sm">
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: CHANNEL_COLOR[c.channel] || '#a68a64' }} />
+                      <span className="capitalize flex-1">{c.channel}</span>
+                      <span className="text-gray-400 text-xs">{c.bookings} bk</span>
+                      <span className="font-medium">{fmtMoney(c.revenue, summaryCurrency)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : <p className="text-gray-400 text-sm text-center py-12">No data</p>}
+          </div>
 
-        <div className="bg-white border border-gray-200 rounded-lg p-4">
-          <h3 className="text-sm font-semibold text-gray-900 mb-3">By Branch</h3>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs text-gray-500 border-b">
-                <th className="text-left py-2">Branch</th>
-                <th className="text-right py-2">Matches</th>
-                <th className="text-right py-2">Bookings</th>
-                <th className="text-right py-2">Revenue ({summaryCurrency})</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary?.by_branch.map(b => (
-                <tr key={b.branch} className="border-b last:border-0">
-                  <td className="py-2">{b.branch}</td>
-                  <td className="text-right py-2">{b.matches}</td>
-                  <td className="text-right py-2">{b.bookings}</td>
-                  <td className="text-right py-2">{fmtMoney(b.revenue, summaryCurrency)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {/* Branch revenue bar list */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">Revenue by Branch</h3>
+            <div className="space-y-1.5">
+              {(() => {
+                const rows = [...summary.by_branch].sort((a, b) => b.revenue - a.revenue)
+                const max = Math.max(1, ...rows.map(r => r.revenue))
+                return rows.map((b, i) => (
+                  <HBar
+                    key={b.branch} label={b.branch} value={b.revenue} max={max}
+                    color={CHART_COLORS[i % CHART_COLORS.length]}
+                    right={<>
+                      <span className="text-gray-400">{b.bookings} bk</span>
+                      <span className="font-medium text-gray-700">{fmtMoney(b.revenue, summaryCurrency)}</span>
+                    </>}
+                  />
+                ))
+              })()}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Reservation Insights */}
       {insights && insights.total_reservations > 0 && (
@@ -703,48 +771,37 @@ export default function BookingMatchesDashboard() {
 
           <div className="bg-white border border-gray-200 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-gray-900">By Room Type</h3>
+              <h3 className="text-sm font-semibold text-gray-900">Top Rooms Booked</h3>
               <span className="text-xs text-gray-400">{insights.total_reservations} reservations</span>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs text-gray-500 border-b">
-                    <th className="text-left py-2">Room Type</th>
-                    <th className="text-right py-2">Bookings</th>
-                    <th className="text-right py-2">Nights</th>
-                    <th className="text-right py-2">Revenue ({insights.currency})</th>
-                    <th className="text-right py-2">ADR ({insights.currency})</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {insights.room_types.map(rt => {
-                    const adr = rt.nights > 0 ? rt.revenue / rt.nights : 0
-                    return (
-                      <tr key={rt.room_type} className="border-b last:border-0">
-                        <td className="py-2 max-w-md truncate" title={rt.room_type}>{rt.room_type}</td>
-                        <td className="text-right py-2">{rt.count}</td>
-                        <td className="text-right py-2">{rt.nights}</td>
-                        <td className="text-right py-2">{fmtMoney(rt.revenue, insights.currency)}</td>
-                        <td className="text-right py-2">{adr > 0 ? fmtMoney(adr, insights.currency) : '--'}</td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+            <div className="space-y-1.5">
+              {(() => {
+                const rows = [...insights.room_types].sort((a, b) => b.revenue - a.revenue).slice(0, 8)
+                const max = Math.max(1, ...rows.map(r => r.revenue))
+                return rows.map((rt, i) => (
+                  <HBar
+                    key={rt.room_type} label={rt.room_type} value={rt.revenue} max={max}
+                    color={CHART_COLORS[i % CHART_COLORS.length]}
+                    right={<>
+                      <span className="text-gray-400">{rt.count} bk</span>
+                      <span className="font-medium text-gray-700">{fmtMoney(rt.revenue, insights.currency)}</span>
+                    </>}
+                  />
+                ))
+              })()}
             </div>
           </div>
         </div>
       )}
 
-      {/* Campaign Intelligence */}
+      {/* Campaign Performance — visual bar list, click to drill in */}
       {campaignInsights && campaignInsights.campaigns.length > 0 && (
         <div className="bg-white border border-gray-200 rounded-lg p-4">
           <div className="flex items-center justify-between mb-1">
-            <h3 className="text-sm font-semibold text-gray-900">Campaign Breakdown</h3>
+            <h3 className="text-sm font-semibold text-gray-900">Campaign Performance</h3>
             <div className="flex items-center gap-3 text-xs">
               <span className="text-gray-500">
-                Cancel rate <span className={cancelColor(campaignInsights.totals.cancel_rate)}>{fmtPct(campaignInsights.totals.cancel_rate)}</span>
+                Cancel <span className={cancelColor(campaignInsights.totals.cancel_rate)}>{fmtPct(campaignInsights.totals.cancel_rate)}</span>
               </span>
               <span className="text-gray-500">
                 Confirmed <span className="text-emerald-700 font-medium">{fmtPct(campaignInsights.totals.confirmed_share)}</span>
@@ -752,115 +809,102 @@ export default function BookingMatchesDashboard() {
             </div>
           </div>
           <p className="text-xs text-gray-400 mb-3">
-            Per-campaign bookings, cancellation, lead time and rooms. Click a row to expand the lead-time histogram + room mix.
+            Bar length = matched revenue. Click a campaign to see its lead-time, rooms and guest countries.
           </p>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-gray-500 border-b">
-                  <th className="text-left py-2 w-6"></th>
-                  <th className="text-left py-2">Campaign</th>
-                  <th className="text-left py-2">Chan</th>
-                  <th className="text-right py-2">Bookings</th>
-                  <th className="text-right py-2">Revenue ({campaignInsights.currency})</th>
-                  <th className="text-right py-2" title="Share of bookings whose revenue confirmed the match">Conf%</th>
-                  <th className="text-right py-2">Cancel%</th>
-                  <th className="text-right py-2">Avg lead</th>
-                  <th className="text-right py-2" title="Website / offline bookings">Web/Off</th>
-                  <th className="text-left py-2 pl-3">Target → Actual</th>
-                  <th className="text-right py-2">ADR</th>
-                </tr>
-              </thead>
-              <tbody>
-                {campaignInsights.campaigns.map((c, i) => {
-                  const key = c.campaign_id || `${c.campaign_name}-${i}`
-                  const open = expandedCampaign === key
-                  const topActual = c.top_actual_countries[0]
-                  return (
-                    <Fragment key={key}>
-                      <tr
-                        className="border-b last:border-0 hover:bg-gray-50 cursor-pointer"
-                        onClick={() => setExpandedCampaign(open ? null : key)}
-                      >
-                        <td className="py-2 text-gray-400">
-                          <svg className={`w-4 h-4 transition-transform ${open ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                        </td>
-                        <td className="py-2 max-w-[260px] truncate" title={c.campaign_name}>{c.campaign_name}</td>
-                        <td className="py-2 capitalize text-gray-500 text-xs">{c.channel}</td>
-                        <td className="py-2 text-right">{c.bookings}</td>
-                        <td
-                          className="py-2 text-right"
+          <div className="space-y-0.5">
+            {(() => {
+              const max = Math.max(1, ...campaignInsights.campaigns.map(c => c.matched_revenue))
+              return campaignInsights.campaigns.map((c, i) => {
+                const key = c.campaign_id || `${c.campaign_name}-${i}`
+                const open = expandedCampaign === key
+                const topActual = c.top_actual_countries[0]
+                const leaked = topActual && topActual.country !== c.target_country && topActual.country !== 'Unknown'
+                const barColor = CHANNEL_COLOR[c.channel || ''] || CHART_COLORS[i % CHART_COLORS.length]
+                const pct = Math.max(1.5, (c.matched_revenue / max) * 100)
+                const roomMax = Math.max(1, ...c.top_rooms.map(r => r.revenue))
+                return (
+                  <div key={key} className="border-b last:border-0 border-gray-100">
+                    <button
+                      onClick={() => setExpandedCampaign(open ? null : key)}
+                      className="w-full text-left py-2 px-1 hover:bg-gray-50 rounded transition-colors"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <svg className={`w-3.5 h-3.5 text-gray-400 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: barColor }} />
+                          <span className="text-sm text-gray-800 truncate" title={c.campaign_name}>{c.campaign_name}</span>
+                        </div>
+                        <span
+                          className="text-sm font-medium text-gray-800 whitespace-nowrap"
                           title={`PMS real: ${fmtMoney(c.matched_revenue, campaignInsights.currency)} · Platform-reported: ${fmtMoney(c.ads_revenue, campaignInsights.currency)}`}
-                        >{fmtMoney(c.matched_revenue, campaignInsights.currency)}</td>
-                        <td className="py-2 text-right text-emerald-700">{fmtPct(c.confirmed_share)}</td>
-                        <td className={`py-2 text-right ${cancelColor(c.cancel_rate)}`}>{fmtPct(c.cancel_rate)}</td>
-                        <td className="py-2 text-right">{fmtNum(c.avg_lead_time, 1)}d</td>
-                        <td className="py-2 text-right text-xs text-gray-500">{c.website_bookings}/{c.offline_bookings}</td>
-                        <td className="py-2 pl-3 whitespace-nowrap">
-                          <span className="text-gray-700">{c.target_country || '—'}</span>
-                          <span className="text-gray-400 mx-1">→</span>
+                        >{fmtMoney(c.matched_revenue, campaignInsights.currency)}</span>
+                      </div>
+                      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden ml-6 mt-1.5">
+                        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: barColor }} />
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1.5 ml-6 text-[11px] text-gray-500">
+                        <span>{c.bookings} bookings</span>
+                        <span className={cancelColor(c.cancel_rate)}>cancel {fmtPct(c.cancel_rate)}</span>
+                        <span>lead {fmtNum(c.avg_lead_time, 1)}d</span>
+                        <span className="text-emerald-700">conf {fmtPct(c.confirmed_share)}</span>
+                        <span>
+                          {c.target_country || '—'}<span className="text-gray-300 mx-0.5">→</span>
                           {topActual
-                            ? <span className={topActual.country === c.target_country ? 'text-gray-700' : 'text-orange-600 font-medium'}>{topActual.country} ({topActual.bookings})</span>
-                            : <span className="text-gray-400">—</span>}
-                        </td>
-                        <td className="py-2 text-right">{c.adr > 0 ? fmtMoney(c.adr, campaignInsights.currency) : '--'}</td>
-                      </tr>
-                      {open && (
-                        <tr className="bg-gray-50/60">
-                          <td colSpan={11} className="py-4 px-6">
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                              <div>
-                                <p className="text-xs font-semibold text-gray-600 mb-2">Lead time (days to check-in)</p>
-                                <LeadHistogram buckets={c.lead_buckets} />
-                              </div>
-                              <div>
-                                <p className="text-xs font-semibold text-gray-600 mb-2">Top rooms booked</p>
-                                <table className="w-full text-xs">
-                                  <tbody>
-                                    {c.top_rooms.map(rt => (
-                                      <tr key={rt.room_type} className="border-b last:border-0 border-gray-100">
-                                        <td className="py-1 max-w-[180px] truncate" title={rt.room_type}>{rt.room_type}</td>
-                                        <td className="py-1 text-right text-gray-500">{rt.bookings}</td>
-                                        <td className="py-1 text-right">{fmtMoney(rt.revenue, campaignInsights.currency)}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                              <div>
-                                <p className="text-xs font-semibold text-gray-600 mb-2">Actual guest countries</p>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {c.top_actual_countries.map(a => (
-                                    <span
-                                      key={a.country}
-                                      className={`inline-block px-2 py-0.5 rounded text-xs ${
-                                        a.country === c.target_country
-                                          ? 'bg-emerald-100 text-emerald-800'
-                                          : a.country === 'Unknown'
-                                            ? 'bg-gray-100 text-gray-600'
-                                            : 'bg-orange-100 text-orange-800'
-                                      }`}
-                                    >{a.country} · {a.bookings}</span>
-                                  ))}
-                                </div>
-                                <p className="text-[11px] text-gray-400 mt-2">
-                                  Green = matched target · Orange = different country (spillover) · Grey = PMS had no nationality
-                                </p>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  )
-                })}
-              </tbody>
-            </table>
+                            ? <span className={leaked ? 'text-orange-600 font-medium' : 'text-gray-500'}>{topActual.country}</span>
+                            : '—'}
+                        </span>
+                        {c.adr > 0 && <span>ADR {fmtMoney(c.adr, campaignInsights.currency)}</span>}
+                      </div>
+                    </button>
+                    {open && (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 px-6 pb-4 pt-2 bg-gray-50/60 rounded-b">
+                        <div>
+                          <p className="text-xs font-semibold text-gray-600 mb-2">Lead time (days to check-in)</p>
+                          <LeadHistogram buckets={c.lead_buckets} />
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold text-gray-600 mb-2">Top rooms booked</p>
+                          <div className="space-y-1.5">
+                            {c.top_rooms.map((rt, ri) => (
+                              <HBar
+                                key={rt.room_type} label={rt.room_type} value={rt.revenue} max={roomMax}
+                                color={CHART_COLORS[ri % CHART_COLORS.length]}
+                                right={<><span className="text-gray-400">{rt.bookings}</span><span className="text-gray-600">{fmtMoney(rt.revenue, campaignInsights.currency)}</span></>}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold text-gray-600 mb-2">Actual guest countries</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {c.top_actual_countries.map(a => (
+                              <span
+                                key={a.country}
+                                className={`inline-block px-2 py-0.5 rounded text-xs ${
+                                  a.country === c.target_country
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : a.country === 'Unknown'
+                                      ? 'bg-gray-100 text-gray-600'
+                                      : 'bg-orange-100 text-orange-800'
+                                }`}
+                              >{a.country} · {a.bookings}</span>
+                            ))}
+                          </div>
+                          <p className="text-[11px] text-gray-400 mt-2">
+                            Green = matched target · Orange = different country (spillover) · Grey = no nationality in PMS
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })
+            })()}
           </div>
         </div>
       )}
 
-      {/* Target → Actual country flow */}
+      {/* Target → Actual country flow — stacked bars per target geo */}
       {campaignInsights && campaignInsights.country_flow.length > 0 && (
         <div className="bg-white border border-gray-200 rounded-lg p-4">
           <div className="flex items-center justify-between mb-1">
@@ -870,40 +914,36 @@ export default function BookingMatchesDashboard() {
               <span className="text-gray-400"> · of {campaignInsights.totals.country_known} known-country bookings</span>
             </span>
           </div>
-          <p className="text-xs text-gray-400 mb-3">
-            Where the ad was aimed (campaign geo) vs where the guest actually came from. High leakage = budget targeting one country but converting another — consider shifting targets to where guests actually book.
+          <p className="text-xs text-gray-400 mb-2">
+            Each bar is one targeting geo, split by where guests actually came from. Orange = booked from a different country than targeted — high leak means shifting targets to where guests really book.
           </p>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-gray-500 border-b">
-                  <th className="text-left py-2">Target geo</th>
-                  <th className="text-left py-2">Actual guest</th>
-                  <th className="text-right py-2">Bookings</th>
-                  <th className="text-right py-2">Revenue ({campaignInsights.currency})</th>
-                  <th className="text-left py-2 pl-4">Match</th>
-                </tr>
-              </thead>
-              <tbody>
-                {campaignInsights.country_flow.map((f, i) => {
-                  const isExact = f.exact > 0
-                  const isNull = f.null_count > 0 && f.exact === 0 && f.cross === 0
-                  return (
-                    <tr key={`${f.target}-${f.actual}-${i}`} className="border-b last:border-0">
-                      <td className="py-2 font-medium text-gray-700">{f.target}</td>
-                      <td className="py-2">{f.actual}</td>
-                      <td className="py-2 text-right">{f.bookings}</td>
-                      <td className="py-2 text-right">{fmtMoney(f.revenue, campaignInsights.currency)}</td>
-                      <td className="py-2 pl-4">
-                        {isExact && <span className="inline-block px-2 py-0.5 rounded text-[11px] bg-emerald-100 text-emerald-800">exact</span>}
-                        {!isExact && !isNull && <span className="inline-block px-2 py-0.5 rounded text-[11px] bg-orange-100 text-orange-800">cross-country</span>}
-                        {isNull && <span className="inline-block px-2 py-0.5 rounded text-[11px] bg-gray-100 text-gray-600">unknown</span>}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+          <div className="flex items-center gap-3 mb-3 text-[11px] text-gray-500">
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#34d399' }} /> matched target</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#fb923c' }} /> different country</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#d1d5db' }} /> unknown</span>
+          </div>
+          <div className="space-y-2.5">
+            {(() => {
+              // Roll the (target,actual) rows up to one stacked bar per target geo.
+              const byTarget: Record<string, { target: string; exact: number; cross: number; nul: number; bookings: number }> = {}
+              for (const f of campaignInsights.country_flow) {
+                const t = byTarget[f.target] || (byTarget[f.target] = { target: f.target, exact: 0, cross: 0, nul: 0, bookings: 0 })
+                t.exact += f.exact; t.cross += f.cross; t.nul += f.null_count; t.bookings += f.bookings
+              }
+              const rows = Object.values(byTarget).sort((a, b) => b.bookings - a.bookings)
+              const max = Math.max(1, ...rows.map(r => r.bookings))
+              return rows.map(r => {
+                const known = r.exact + r.cross
+                const leak = known > 0 ? (r.cross / known) * 100 : 0
+                return (
+                  <div key={r.target} className="flex items-center gap-3">
+                    <span className="text-sm font-medium text-gray-700 w-16 shrink-0">{r.target}</span>
+                    <div className="flex-1"><FlowStack exact={r.exact} cross={r.cross} nul={r.nul} max={max} leakage={leak} /></div>
+                    <span className="text-xs text-gray-400 w-16 text-right shrink-0">{r.bookings} bk</span>
+                  </div>
+                )
+              })
+            })()}
           </div>
         </div>
       )}
@@ -911,9 +951,18 @@ export default function BookingMatchesDashboard() {
       {/* Matches Table */}
       <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-900">Matched Bookings</h3>
-          <span className="text-xs text-gray-400">Revenue in {listCurrency}</span>
+          <div className="flex items-center gap-3">
+            <h3 className="text-sm font-semibold text-gray-900">Matched Bookings</h3>
+            <span className="text-xs text-gray-400">{matches.length} rows · {listCurrency}</span>
+          </div>
+          <button
+            onClick={() => setShowRawTable(v => !v)}
+            className="text-xs font-medium text-blue-600 hover:text-blue-700"
+          >
+            {showRawTable ? 'Hide details ▲' : 'Show raw rows ▼'}
+          </button>
         </div>
+        {showRawTable && (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
@@ -980,6 +1029,7 @@ export default function BookingMatchesDashboard() {
             </tbody>
           </table>
         </div>
+        )}
       </div>
     </div>
   )
