@@ -43,7 +43,6 @@ def override_get_db():
         db.close()
 
 
-app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
 
 D = date(2026, 6, 10)
@@ -52,9 +51,18 @@ WEBSITE = "Website/Booking Engine"
 
 @pytest.fixture(autouse=True)
 def setup_db():
+    # Install our engine override per-test and restore afterwards, so this
+    # module's TestClient engine isn't clobbered by another test file that also
+    # overrides get_db at import time (and vice-versa).
+    prev = app.dependency_overrides.get(get_db)
+    app.dependency_overrides[get_db] = override_get_db
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
+    if prev is not None:
+        app.dependency_overrides[get_db] = prev
+    else:
+        app.dependency_overrides.pop(get_db, None)
 
 
 def _admin_headers() -> dict:
