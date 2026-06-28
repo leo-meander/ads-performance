@@ -7,7 +7,7 @@ and the target-vs-actual country flow (exact / cross / unknown) with leakage.
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +20,7 @@ from app.database import get_db
 from app.main import app
 from app.models.account import AdAccount
 from app.models.base import Base
+from app.models.booking_match import BookingMatch
 from app.models.campaign import Campaign
 from app.models.ad_country_metric import AdCountryMetric
 from app.models.reservation import Reservation
@@ -195,3 +196,38 @@ def test_campaign_insights_empty_window_is_clean():
     assert data["country_flow"] == []
     assert data["totals"]["bookings"] == 0
     assert data["totals"]["leakage_rate"] == 0
+
+
+def _raw_match(db, *, confidence, revenue, bookings):
+    db.add(BookingMatch(
+        id=str(uuid.uuid4()), match_date=D,
+        ads_revenue=revenue, matched_revenue=revenue, ads_bookings=bookings,
+        ads_channel="google", branch="Taipei", match_result="Matched",
+        confidence=confidence, matched_at=datetime.now(timezone.utc),
+    ))
+
+
+def test_summary_confidence_filter_scopes_kpi_cards():
+    # 2 confirmed bookings + 3 inferred. The summary KPI cards must reflect the
+    # confidence filter (regression: /summary ignored it, so the cards stayed
+    # at the unfiltered totals while the table filtered).
+    db = TestSession()
+    _raw_match(db, confidence="confirmed", revenue=1000.0, bookings=2)
+    _raw_match(db, confidence="inferred", revenue=9000.0, bookings=3)
+    db.commit()
+    db.close()
+    headers = _admin_headers()
+
+    unfiltered = client.get(
+        f"/api/booking-matches/summary?date_from={D}&date_to={D}", headers=headers,
+    ).json()["data"]
+    assert unfiltered["total_bookings"] == 5
+
+    confirmed = client.get(
+        f"/api/booking-matches/summary?date_from={D}&date_to={D}&confidence=confirmed",
+        headers=headers,
+    ).json()["data"]
+    assert confirmed["total_matches"] == 1
+    assert confirmed["total_bookings"] == 2
+    conf_tiers = {c["confidence"] for c in confirmed["by_confidence"]}
+    assert conf_tiers == {"confirmed"}

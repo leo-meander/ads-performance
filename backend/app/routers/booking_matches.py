@@ -250,6 +250,10 @@ def booking_matches_summary(
     date_to: str = Query(None),
     branch: str = Query(None, description="Legacy single-branch filter"),
     branches: str = Query(None, description="Comma-separated branch names"),
+    channel: str = Query(None),
+    match_result: str = Query(None),
+    purchase_kind: str = Query(None, description="website | offline"),
+    confidence: str = Query(None, description="confirmed | inferred"),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -258,6 +262,9 @@ def booking_matches_summary(
     Revenue follows the dashboard rule: native currency when the scope is one
     branch (or several branches that share a currency), VND otherwise. Counts
     (matches, bookings) are currency-independent.
+
+    Honours the same channel/result/kind/confidence filters as the list so the
+    KPI cards reflect exactly what the filtered table shows.
     """
     try:
         if not date_from or not date_to:
@@ -278,6 +285,14 @@ def booking_matches_summary(
         ok, base, err = _apply_branch_scope(base, BookingMatch.branch, current_user, db, branches_list, exact_match=True)
         if not ok:
             return _api_response(error=err)
+        if channel:
+            base = base.filter(BookingMatch.ads_channel == channel)
+        if match_result:
+            base = base.filter(BookingMatch.match_result == match_result)
+        if purchase_kind:
+            base = base.filter(BookingMatch.purchase_kind == purchase_kind)
+        if confidence:
+            base = base.filter(BookingMatch.confidence == confidence)
 
         # Counts don't depend on currency.
         total_matches = base.count()

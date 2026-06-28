@@ -388,11 +388,10 @@ export default function BookingMatchesDashboard() {
       if (purchaseKind) params.set('purchase_kind', purchaseKind)
       if (confidenceFilter) params.set('confidence', confidenceFilter)
 
-      const summaryParams = new URLSearchParams({ date_from: from, date_to: to })
-      if (branchParam) summaryParams.set('branches', branchParam)
-
-      // Insights honour the same filters as the list (channel/result/kind),
-      // so the lead-time / ADR cards reflect what's shown in the table.
+      // Summary + insights honour the same filters as the list (channel /
+      // result / kind / confidence) so every KPI card and chart reflects
+      // exactly what the filtered table shows.
+      const summaryParams = new URLSearchParams(params)
       const insightsParams = new URLSearchParams(params)
 
       const [summaryRes, listRes, insightsRes, campaignRes] = await Promise.all([
