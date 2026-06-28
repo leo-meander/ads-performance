@@ -1038,6 +1038,7 @@ def export_booking_matches(
     channel: str = Query(None, description="Ads channel: meta|google"),
     match_result: str = Query(None),
     purchase_kind: str = Query(None, description="website | offline"),
+    confidence: str = Query("confirmed", description="confirmed (default) | inferred | all"),
     limit: int = Query(500, le=2000),
     offset: int = Query(0, ge=0),
     api_key: ApiKey = Depends(validate_api_key),
@@ -1052,6 +1053,12 @@ def export_booking_matches(
         ``booking_date`` field. Filter by ``match_date`` for date windows.
       - Channel/bookings fields use the ``ads_`` prefix
         (``ads_channel``, ``ads_bookings``) — no aliases without the prefix.
+      - ``confidence`` defaults to ``confirmed`` (value-verified matches only).
+        The KOL Engine pulls this to exclude paid-ads revenue from organic KOL
+        revenue, and MUST use confirmed only — ``inferred`` matches are
+        capacity/count guesses whose revenue did not line up, so excluding on
+        them would wrongly subtract real KOL revenue. Pass ``confidence=all``
+        (or ``inferred``) only for analysis, never for revenue exclusion.
     """
     try:
         df, dt = _resolve_booking_date_range(date_from, date_to)
@@ -1068,6 +1075,8 @@ def export_booking_matches(
             q = q.filter(BookingMatch.match_result == match_result)
         if purchase_kind:
             q = q.filter(BookingMatch.purchase_kind == purchase_kind)
+        if confidence and confidence != "all":
+            q = q.filter(BookingMatch.confidence == confidence)
 
         total = q.count()
         rows = (
@@ -1103,6 +1112,7 @@ def export_booking_matches(
                 "country_match_method": m.country_match_method,
                 "branch": m.branch,
                 "match_result": m.match_result,
+                "confidence": m.confidence,
                 "matched_at": m.matched_at.isoformat() if m.matched_at else None,
             }
             for m in rows
@@ -1113,6 +1123,7 @@ def export_booking_matches(
             "total": total,
             "limit": limit,
             "offset": offset,
+            "confidence": confidence,
             "period": {"from": df.isoformat(), "to": dt.isoformat()},
         })
     except Exception as e:
@@ -1124,6 +1135,7 @@ def export_booking_matches_summary(
     date_from: str = Query(None),
     date_to: str = Query(None),
     branch: str = Query(None),
+    confidence: str = Query("confirmed", description="confirmed (default) | inferred | all"),
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
@@ -1136,6 +1148,10 @@ def export_booking_matches_summary(
     Per-branch rows keep both ``revenue_native`` (in the branch's currency)
     and ``revenue_vnd`` so consumers can choose which to use without their
     own FX map.
+
+    ``confidence`` defaults to ``confirmed`` — the KOL Engine excludes paid-ads
+    revenue using these totals and must only subtract value-verified matches
+    (see /export/booking-matches). Pass ``confidence=all`` to include inferred.
     """
     try:
         df, dt = _resolve_booking_date_range(date_from, date_to)
@@ -1146,6 +1162,8 @@ def export_booking_matches_summary(
         )
         if branch:
             base = base.filter(BookingMatch.branch == branch)
+        if confidence and confidence != "all":
+            base = base.filter(BookingMatch.confidence == confidence)
 
         total_matches = base.count()
         total_bookings = int(base.with_entities(func.sum(BookingMatch.ads_bookings)).scalar() or 0)
@@ -1198,6 +1216,7 @@ def export_booking_matches_summary(
             "total_revenue_vnd": total_revenue_vnd,
             "total_bookings": total_bookings,
             "currency": "VND",
+            "confidence": confidence,
             "by_channel": list(by_channel_agg.values()),
             "by_branch": list(by_branch_agg.values()),
             "period": {"from": df.isoformat(), "to": dt.isoformat()},

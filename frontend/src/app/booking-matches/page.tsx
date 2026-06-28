@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { Fragment, useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { API_BASE } from '@/lib/api'
 import { formatLocalDate } from '@/lib/dates'
 import { fmtMoney } from '@/components/dashboard/dashboardUtils'
@@ -61,6 +61,59 @@ type Insights = {
   total_reservations: number
   period: { from: string; to: string }
 }
+
+type RoomMini = { room_type: string; bookings: number; revenue: number }
+type ActualCountry = { country: string; bookings: number }
+type CampaignInsight = {
+  campaign_id: string | null
+  campaign_name: string
+  channel: string | null
+  branch: string | null
+  target_country: string | null
+  matches: number
+  bookings: number
+  matched_revenue: number
+  ads_revenue: number
+  confirmed_share: number
+  cancel_count: number
+  cancel_rate: number
+  avg_lead_time: number
+  avg_nights: number
+  adr: number
+  website_bookings: number
+  offline_bookings: number
+  lead_buckets: Record<string, number>
+  top_rooms: RoomMini[]
+  top_actual_countries: ActualCountry[]
+}
+type CountryFlow = {
+  target: string
+  actual: string
+  bookings: number
+  revenue: number
+  exact: number
+  cross: number
+  null_count: number
+}
+type CampaignInsights = {
+  currency: string
+  campaigns: CampaignInsight[]
+  country_flow: CountryFlow[]
+  totals: {
+    bookings: number
+    cancel_count: number
+    cancel_rate: number
+    confirmed_share: number
+    leakage_rate: number
+    country_known: number
+    country_exact: number
+    country_cross: number
+    country_unknown: number
+  }
+  period: { from: string; to: string }
+}
+
+const LEAD_BUCKET_ORDER = ['0', '1-3', '4-7', '8-14', '15+']
 
 type Branch = { name: string; currency: string }
 
@@ -178,6 +231,43 @@ function ConfidenceBadge({ confidence }: { confidence: string | null }) {
   )
 }
 
+function fmtPct(v: number): string {
+  if (!isFinite(v)) return '--'
+  return `${v.toFixed(0)}%`
+}
+
+// Colour a cancellation rate: green low, amber mid, red high — quick scan for
+// campaigns driving junk bookings.
+function cancelColor(rate: number): string {
+  if (rate >= 30) return 'text-red-600 font-semibold'
+  if (rate >= 15) return 'text-amber-600 font-medium'
+  return 'text-gray-700'
+}
+
+function LeadHistogram({ buckets }: { buckets: Record<string, number> }) {
+  const max = Math.max(1, ...LEAD_BUCKET_ORDER.map(b => buckets[b] || 0))
+  return (
+    <div className="flex items-end gap-2 h-20">
+      {LEAD_BUCKET_ORDER.map(b => {
+        const n = buckets[b] || 0
+        const h = Math.round((n / max) * 100)
+        return (
+          <div key={b} className="flex flex-col items-center gap-1 flex-1">
+            <span className="text-[10px] text-gray-500">{n}</span>
+            <div className="w-full bg-blue-100 rounded-sm relative" style={{ height: '64px' }}>
+              <div
+                className="absolute bottom-0 w-full bg-blue-500 rounded-sm"
+                style={{ height: `${h}%` }}
+              />
+            </div>
+            <span className="text-[10px] text-gray-400">{b}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function BookingMatchesDashboard() {
   const [datePreset, setDatePreset] = useState('30d')
   const [customFrom, setCustomFrom] = useState('')
@@ -198,6 +288,8 @@ export default function BookingMatchesDashboard() {
   }, [datePreset, customFrom, customTo])
   const [summary, setSummary] = useState<Summary | null>(null)
   const [insights, setInsights] = useState<Insights | null>(null)
+  const [campaignInsights, setCampaignInsights] = useState<CampaignInsights | null>(null)
+  const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null)
   const [matches, setMatches] = useState<BookingMatch[]>([])
   const [listCurrency, setListCurrency] = useState<string>('VND')
   const [loading, setLoading] = useState(false)
@@ -243,10 +335,11 @@ export default function BookingMatchesDashboard() {
       // so the lead-time / ADR cards reflect what's shown in the table.
       const insightsParams = new URLSearchParams(params)
 
-      const [summaryRes, listRes, insightsRes] = await Promise.all([
+      const [summaryRes, listRes, insightsRes, campaignRes] = await Promise.all([
         fetch(`${API_BASE}/api/booking-matches/summary?${summaryParams}`, { credentials: 'include' }).then(r => r.json()),
         fetch(`${API_BASE}/api/booking-matches?${params}`, { credentials: 'include' }).then(r => r.json()),
         fetch(`${API_BASE}/api/booking-matches/insights?${insightsParams}`, { credentials: 'include' }).then(r => r.json()),
+        fetch(`${API_BASE}/api/booking-matches/campaign-insights?${insightsParams}`, { credentials: 'include' }).then(r => r.json()),
       ])
 
       if (summaryRes.success) setSummary(summaryRes.data)
@@ -255,6 +348,7 @@ export default function BookingMatchesDashboard() {
         setListCurrency(listRes.data.currency || 'VND')
       }
       if (insightsRes.success) setInsights(insightsRes.data)
+      if (campaignRes.success) setCampaignInsights(campaignRes.data)
     } finally {
       setLoading(false)
     }
@@ -639,6 +733,177 @@ export default function BookingMatchesDashboard() {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Campaign Intelligence */}
+      {campaignInsights && campaignInsights.campaigns.length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="text-sm font-semibold text-gray-900">Campaign Breakdown</h3>
+            <div className="flex items-center gap-3 text-xs">
+              <span className="text-gray-500">
+                Cancel rate <span className={cancelColor(campaignInsights.totals.cancel_rate)}>{fmtPct(campaignInsights.totals.cancel_rate)}</span>
+              </span>
+              <span className="text-gray-500">
+                Confirmed <span className="text-emerald-700 font-medium">{fmtPct(campaignInsights.totals.confirmed_share)}</span>
+              </span>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mb-3">
+            Per-campaign bookings, cancellation, lead time and rooms. Click a row to expand the lead-time histogram + room mix.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-gray-500 border-b">
+                  <th className="text-left py-2 w-6"></th>
+                  <th className="text-left py-2">Campaign</th>
+                  <th className="text-left py-2">Chan</th>
+                  <th className="text-right py-2">Bookings</th>
+                  <th className="text-right py-2">Revenue ({campaignInsights.currency})</th>
+                  <th className="text-right py-2" title="Share of bookings whose revenue confirmed the match">Conf%</th>
+                  <th className="text-right py-2">Cancel%</th>
+                  <th className="text-right py-2">Avg lead</th>
+                  <th className="text-right py-2" title="Website / offline bookings">Web/Off</th>
+                  <th className="text-left py-2 pl-3">Target → Actual</th>
+                  <th className="text-right py-2">ADR</th>
+                </tr>
+              </thead>
+              <tbody>
+                {campaignInsights.campaigns.map((c, i) => {
+                  const key = c.campaign_id || `${c.campaign_name}-${i}`
+                  const open = expandedCampaign === key
+                  const topActual = c.top_actual_countries[0]
+                  return (
+                    <Fragment key={key}>
+                      <tr
+                        className="border-b last:border-0 hover:bg-gray-50 cursor-pointer"
+                        onClick={() => setExpandedCampaign(open ? null : key)}
+                      >
+                        <td className="py-2 text-gray-400">
+                          <svg className={`w-4 h-4 transition-transform ${open ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                        </td>
+                        <td className="py-2 max-w-[260px] truncate" title={c.campaign_name}>{c.campaign_name}</td>
+                        <td className="py-2 capitalize text-gray-500 text-xs">{c.channel}</td>
+                        <td className="py-2 text-right">{c.bookings}</td>
+                        <td
+                          className="py-2 text-right"
+                          title={`PMS real: ${fmtMoney(c.matched_revenue, campaignInsights.currency)} · Platform-reported: ${fmtMoney(c.ads_revenue, campaignInsights.currency)}`}
+                        >{fmtMoney(c.matched_revenue, campaignInsights.currency)}</td>
+                        <td className="py-2 text-right text-emerald-700">{fmtPct(c.confirmed_share)}</td>
+                        <td className={`py-2 text-right ${cancelColor(c.cancel_rate)}`}>{fmtPct(c.cancel_rate)}</td>
+                        <td className="py-2 text-right">{fmtNum(c.avg_lead_time, 1)}d</td>
+                        <td className="py-2 text-right text-xs text-gray-500">{c.website_bookings}/{c.offline_bookings}</td>
+                        <td className="py-2 pl-3 whitespace-nowrap">
+                          <span className="text-gray-700">{c.target_country || '—'}</span>
+                          <span className="text-gray-400 mx-1">→</span>
+                          {topActual
+                            ? <span className={topActual.country === c.target_country ? 'text-gray-700' : 'text-orange-600 font-medium'}>{topActual.country} ({topActual.bookings})</span>
+                            : <span className="text-gray-400">—</span>}
+                        </td>
+                        <td className="py-2 text-right">{c.adr > 0 ? fmtMoney(c.adr, campaignInsights.currency) : '--'}</td>
+                      </tr>
+                      {open && (
+                        <tr className="bg-gray-50/60">
+                          <td colSpan={11} className="py-4 px-6">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                              <div>
+                                <p className="text-xs font-semibold text-gray-600 mb-2">Lead time (days to check-in)</p>
+                                <LeadHistogram buckets={c.lead_buckets} />
+                              </div>
+                              <div>
+                                <p className="text-xs font-semibold text-gray-600 mb-2">Top rooms booked</p>
+                                <table className="w-full text-xs">
+                                  <tbody>
+                                    {c.top_rooms.map(rt => (
+                                      <tr key={rt.room_type} className="border-b last:border-0 border-gray-100">
+                                        <td className="py-1 max-w-[180px] truncate" title={rt.room_type}>{rt.room_type}</td>
+                                        <td className="py-1 text-right text-gray-500">{rt.bookings}</td>
+                                        <td className="py-1 text-right">{fmtMoney(rt.revenue, campaignInsights.currency)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                              <div>
+                                <p className="text-xs font-semibold text-gray-600 mb-2">Actual guest countries</p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {c.top_actual_countries.map(a => (
+                                    <span
+                                      key={a.country}
+                                      className={`inline-block px-2 py-0.5 rounded text-xs ${
+                                        a.country === c.target_country
+                                          ? 'bg-emerald-100 text-emerald-800'
+                                          : a.country === 'Unknown'
+                                            ? 'bg-gray-100 text-gray-600'
+                                            : 'bg-orange-100 text-orange-800'
+                                      }`}
+                                    >{a.country} · {a.bookings}</span>
+                                  ))}
+                                </div>
+                                <p className="text-[11px] text-gray-400 mt-2">
+                                  Green = matched target · Orange = different country (spillover) · Grey = PMS had no nationality
+                                </p>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Target → Actual country flow */}
+      {campaignInsights && campaignInsights.country_flow.length > 0 && (
+        <div className="bg-white border border-gray-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="text-sm font-semibold text-gray-900">Target → Actual Country</h3>
+            <span className="text-xs text-gray-500">
+              Leakage <span className="text-orange-600 font-semibold">{fmtPct(campaignInsights.totals.leakage_rate)}</span>
+              <span className="text-gray-400"> · of {campaignInsights.totals.country_known} known-country bookings</span>
+            </span>
+          </div>
+          <p className="text-xs text-gray-400 mb-3">
+            Where the ad was aimed (campaign geo) vs where the guest actually came from. High leakage = budget targeting one country but converting another — consider shifting targets to where guests actually book.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-gray-500 border-b">
+                  <th className="text-left py-2">Target geo</th>
+                  <th className="text-left py-2">Actual guest</th>
+                  <th className="text-right py-2">Bookings</th>
+                  <th className="text-right py-2">Revenue ({campaignInsights.currency})</th>
+                  <th className="text-left py-2 pl-4">Match</th>
+                </tr>
+              </thead>
+              <tbody>
+                {campaignInsights.country_flow.map((f, i) => {
+                  const isExact = f.exact > 0
+                  const isNull = f.null_count > 0 && f.exact === 0 && f.cross === 0
+                  return (
+                    <tr key={`${f.target}-${f.actual}-${i}`} className="border-b last:border-0">
+                      <td className="py-2 font-medium text-gray-700">{f.target}</td>
+                      <td className="py-2">{f.actual}</td>
+                      <td className="py-2 text-right">{f.bookings}</td>
+                      <td className="py-2 text-right">{fmtMoney(f.revenue, campaignInsights.currency)}</td>
+                      <td className="py-2 pl-4">
+                        {isExact && <span className="inline-block px-2 py-0.5 rounded text-[11px] bg-emerald-100 text-emerald-800">exact</span>}
+                        {!isExact && !isNull && <span className="inline-block px-2 py-0.5 rounded text-[11px] bg-orange-100 text-orange-800">cross-country</span>}
+                        {isNull && <span className="inline-block px-2 py-0.5 rounded text-[11px] bg-gray-100 text-gray-600">unknown</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
