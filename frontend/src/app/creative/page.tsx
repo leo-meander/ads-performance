@@ -142,9 +142,18 @@ function CreativePageInner() {
   // Get unique countries from combos for filter
   const countries = Array.from(new Set(combos.map(c => c.country).filter(Boolean))) as string[]
 
+  // Derive format from ad name: [Image] → image, [Carousel] → carousel, else → video
+  const inferFormat = (adName: string | null): string => {
+    if (!adName) return 'video'
+    const lower = adName.toLowerCase()
+    if (lower.includes('[image]')) return 'image'
+    if (lower.includes('[carousel]')) return 'carousel'
+    return 'video'
+  }
+
   // Client-side format filter (format isn't a server param yet)
   const visibleCombos = useMemo(
-    () => combos.filter(c => !fFormat || c.material_type === fFormat),
+    () => combos.filter(c => !fFormat || inferFormat(c.ad_name) === fFormat),
     [combos, fFormat],
   )
 
@@ -152,7 +161,7 @@ function CreativePageInner() {
   const formatStats = useMemo(() => {
     const acc: Record<string, { count: number; spend: number; revenue: number; wins: number; bookings: number }> = {}
     for (const c of combos) {
-      const f = c.material_type
+      const f = inferFormat(c.ad_name)
       if (!f) continue
       const a = acc[f] || (acc[f] = { count: 0, spend: 0, revenue: 0, wins: 0, bookings: 0 })
       a.count += 1
@@ -318,7 +327,7 @@ function CreativePageInner() {
                     <p className="text-sm font-medium text-gray-900 max-w-[180px] truncate" title={c.ad_name || ''}>{c.ad_name || '—'}</p>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="text-[10px] text-gray-400 font-mono">{c.combo_id}</span>
-                      <FormatChip type={c.material_type} />
+                      <FormatChip type={inferFormat(c.ad_name)} />
                     </div>
                   </td>
                   <td className="py-2 px-2 text-xs text-gray-600">{accName(c.branch_id)}</td>
