@@ -1130,6 +1130,117 @@ def export_booking_matches(
         return _api_response(error=str(e))
 
 
+@router.get("/export/kpi/paid-ads-monthly")
+def export_kpi_paid_ads_monthly(
+    year: int = Query(..., description="4-digit year, e.g. 2026"),
+    branch: str = Query(
+        None,
+        description="Optional canonical branch (case-insensitive): saigon|taipei|1948|oani|osaka|bread. Omit for all branches.",
+    ),
+    platform: str = Query(None, description="meta | google | tiktok (omit = all)"),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Per (branch × month) Spend / Revenue / ROAS — EXACT mirror of the
+    /dashboard/country headline aggregate, built for the Growth Team KPI sheet.
+
+    Matches the dashboard numbers because it applies the same rules:
+      - MetricsCache CAMPAIGN-LEVEL rows only (ad_id IS NULL AND ad_set_id IS
+        NULL) — Meta attributes conversions/revenue most completely there;
+        ad-set / ad grain under-count (see country.py:_no_double_count_filter).
+      - Valid country only (ISO-2 code or the 'ALL' marker; NULL / 'Unknown'
+        excluded), mirroring country.py:_apply_common_filters.
+
+    ``roas`` is the native ROAS (revenue_native / spend_native) — identical to
+    the per-branch dashboard ROAS since FX cancels. ``*_vnd`` fields apply the
+    same FX_TO_VND map the dashboard uses for its VND view. Months with no data
+    are returned as zeros so the sheet can fill all 12 columns.
+    """
+    try:
+        canonical = None
+        if branch:
+            canonical = canonical_branch(branch)
+            if canonical is None:
+                return _api_response(error=f"Unknown branch: {branch}")
+        branches = [canonical] if canonical else list(BRANCH_CURRENCY.keys())
+
+        start = date(year, 1, 1)
+        end = date(year, 12, 31)
+        cc = func.coalesce(AdSet.country, Campaign.country)
+
+        out_branches = []
+        for b in branches:
+            account_ids = get_account_ids_for_branches(db, [b])
+            months = {
+                m: {"spend_native": 0.0, "revenue_native": 0.0, "conversions": 0,
+                    "spend_vnd": 0.0, "revenue_vnd": 0.0}
+                for m in range(1, 13)
+            }
+            if account_ids:
+                q = (
+                    db.query(
+                        func.extract("month", MetricsCache.date).label("m"),
+                        AdAccount.currency.label("currency"),
+                        func.sum(MetricsCache.spend).label("spend"),
+                        func.sum(MetricsCache.revenue).label("revenue"),
+                        func.sum(MetricsCache.conversions).label("conversions"),
+                    )
+                    .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+                    .join(AdAccount, AdAccount.id == Campaign.account_id)
+                    .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
+                    .filter(
+                        MetricsCache.date >= start,
+                        MetricsCache.date <= end,
+                        MetricsCache.ad_id.is_(None),
+                        MetricsCache.ad_set_id.is_(None),
+                        Campaign.account_id.in_(account_ids),
+                        cc.isnot(None),
+                        cc != "Unknown",
+                        (func.length(cc) == 2) | (cc == "ALL"),
+                    )
+                )
+                if platform:
+                    q = q.filter(MetricsCache.platform == platform)
+                q = q.group_by(func.extract("month", MetricsCache.date), AdAccount.currency)
+
+                for r in q.all():
+                    m = int(r.m)
+                    fx = _FX_TO_VND.get(r.currency or "VND", 1)
+                    spend_n = float(r.spend or 0)
+                    rev_n = float(r.revenue or 0)
+                    bucket = months[m]
+                    bucket["spend_native"] += spend_n
+                    bucket["revenue_native"] += rev_n
+                    bucket["conversions"] += int(r.conversions or 0)
+                    bucket["spend_vnd"] += spend_n * fx
+                    bucket["revenue_vnd"] += rev_n * fx
+
+            month_rows = []
+            for m in range(1, 13):
+                bk = months[m]
+                spend_n = bk["spend_native"]
+                rev_n = bk["revenue_native"]
+                month_rows.append({
+                    "month": m,
+                    "spend_native": round(spend_n, 2),
+                    "revenue_native": round(rev_n, 2),
+                    "spend_vnd": round(bk["spend_vnd"]),
+                    "revenue_vnd": round(bk["revenue_vnd"]),
+                    "conversions": bk["conversions"],
+                    "roas": round(rev_n / spend_n, 4) if spend_n > 0 else None,
+                })
+
+            out_branches.append({
+                "branch": b,
+                "currency": BRANCH_CURRENCY.get(b, "VND"),
+                "months": month_rows,
+            })
+
+        return _api_response(data={"year": year, "branches": out_branches})
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.get("/export/booking-matches/summary")
 def export_booking_matches_summary(
     date_from: str = Query(None),
