@@ -37,14 +37,11 @@ interface Row {
   members: Approval[]
 }
 
-// any REJECTED → REJECTED; any NEEDS_REVISION → NEEDS_REVISION;
-// all APPROVED → APPROVED; all LAUNCHED → LAUNCHED; else PENDING_APPROVAL
+// all APPROVED → APPROVED; all LAUNCHED → LAUNCHED; else ONGOING
 function rollupStatus(statuses: string[]): string {
-  if (statuses.some(s => s === 'REJECTED')) return 'REJECTED'
-  if (statuses.some(s => s === 'NEEDS_REVISION')) return 'NEEDS_REVISION'
   if (statuses.length > 0 && statuses.every(s => s === 'LAUNCHED')) return 'LAUNCHED'
   if (statuses.length > 0 && statuses.every(s => s === 'APPROVED' || s === 'LAUNCHED')) return 'APPROVED'
-  return 'PENDING_APPROVAL'
+  return 'ONGOING'
 }
 
 function groupRows(approvals: Approval[]): Row[] {
@@ -92,14 +89,14 @@ function deadlineMeta(deadline: string | null, status: string) {
   if (!deadline) return { date: null as Date | null, overdue: false, label: '', tone: 'muted' as const }
   const d = new Date(deadline)
   const days = Math.round((startOfDay(d) - startOfDay(new Date())) / 86400000)
-  const pending = status === 'PENDING_APPROVAL'
-  const overdue = pending && days < 0
+  const ongoing = status === 'ONGOING'
+  const overdue = ongoing && days < 0
   let label: string
   let tone: 'red' | 'amber' | 'muted'
   if (overdue) { label = `${-days}d overdue`; tone = 'red' }
-  else if (pending && days === 0) { label = 'Due today'; tone = 'amber' }
-  else if (pending && days === 1) { label = 'Due tomorrow'; tone = 'amber' }
-  else if (pending && days > 0 && days <= 3) { label = `Due in ${days}d`; tone = 'amber' }
+  else if (ongoing && days === 0) { label = 'Due today'; tone = 'amber' }
+  else if (ongoing && days === 1) { label = 'Due tomorrow'; tone = 'amber' }
+  else if (ongoing && days > 0 && days <= 3) { label = `Due in ${days}d`; tone = 'amber' }
   else { label = d.toLocaleDateString(); tone = 'muted' }
   return { date: d, overdue, label, tone }
 }
@@ -108,10 +105,9 @@ function deadlineMeta(deadline: string | null, status: string) {
 // pending by nearest deadline, then everything else by recency.
 function urgencyRank(status: string, overdue: boolean): number {
   if (overdue) return 0
-  if (status === 'PENDING_APPROVAL') return 1
-  if (status === 'NEEDS_REVISION') return 2
-  if (status === 'APPROVED') return 3
-  return 4
+  if (status === 'ONGOING') return 1
+  if (status === 'APPROVED') return 2
+  return 3
 }
 
 export default function ApprovalsPage() {
@@ -190,11 +186,10 @@ export default function ApprovalsPage() {
   }, [approvals])
 
   const counts = useMemo(() => {
-    const c = { all: rows.length, OVERDUE: 0, PENDING_APPROVAL: 0, NEEDS_REVISION: 0, APPROVED: 0 }
+    const c = { all: rows.length, OVERDUE: 0, ONGOING: 0, APPROVED: 0 }
     for (const r of rows) {
       if (r.dl.overdue) c.OVERDUE++
-      if (r.status === 'PENDING_APPROVAL') c.PENDING_APPROVAL++
-      else if (r.status === 'NEEDS_REVISION') c.NEEDS_REVISION++
+      if (r.status === 'ONGOING') c.ONGOING++
       else if (r.status === 'APPROVED') c.APPROVED++
     }
     return c
@@ -230,8 +225,7 @@ export default function ApprovalsPage() {
   const chips: { key: string; label: string; count: number; activeClass: string }[] = [
     { key: '', label: 'All', count: counts.all, activeClass: 'bg-gray-900 text-white' },
     { key: 'OVERDUE', label: 'Overdue', count: counts.OVERDUE, activeClass: 'bg-red-600 text-white' },
-    { key: 'PENDING_APPROVAL', label: 'Pending', count: counts.PENDING_APPROVAL, activeClass: 'bg-amber-500 text-white' },
-    { key: 'NEEDS_REVISION', label: 'Needs Revision', count: counts.NEEDS_REVISION, activeClass: 'bg-orange-500 text-white' },
+    { key: 'ONGOING', label: 'Ongoing', count: counts.ONGOING, activeClass: 'bg-amber-500 text-white' },
     { key: 'APPROVED', label: 'Approved', count: counts.APPROVED, activeClass: 'bg-green-600 text-white' },
   ]
 
@@ -243,7 +237,7 @@ export default function ApprovalsPage() {
           {!loading && counts.OVERDUE > 0 && (
             <p className="mt-1 inline-flex items-center gap-1 text-sm text-red-600 font-medium">
               <AlertTriangle className="w-3.5 h-3.5" />
-              {counts.OVERDUE} overdue · {counts.PENDING_APPROVAL} awaiting review
+              {counts.OVERDUE} overdue · {counts.ONGOING} awaiting review
             </p>
           )}
         </div>
@@ -375,8 +369,6 @@ export default function ApprovalsPage() {
                               key={i}
                               className={`w-2 h-2 rounded-full ${
                                 rv.status === 'APPROVED' ? 'bg-green-500'
-                                : rv.status === 'REJECTED' ? 'bg-red-500'
-                                : rv.status === 'NEEDS_REVISION' ? 'bg-orange-400'
                                 : 'bg-gray-300'
                               }`}
                             />
@@ -407,7 +399,7 @@ export default function ApprovalsPage() {
                     <td className="px-4 py-3 text-xs">
                       {(() => {
                         const canAct = user?.id === head.submitted_by || user?.roles?.includes('admin')
-                        const isOpen = status === 'PENDING_APPROVAL' || status === 'NEEDS_REVISION'
+                        const isOpen = status === 'ONGOING'
                         if (!canAct || !isOpen) return <span className="text-gray-300">-</span>
                         const targetId = isBatch ? row.key : head.id
                         const title = isBatch
@@ -423,7 +415,7 @@ export default function ApprovalsPage() {
                               <Check className="w-3 h-3" />
                               BM approved
                             </button>
-                            {status === 'PENDING_APPROVAL' && (
+                            {status === 'ONGOING' && (
                               <button
                                 onClick={() => handleResend(targetId, isBatch)}
                                 disabled={resending === targetId}

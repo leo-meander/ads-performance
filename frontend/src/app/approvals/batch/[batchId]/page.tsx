@@ -6,6 +6,7 @@ import { useAuth } from '@/components/AuthContext'
 import ApprovalStatusBadge from '@/components/ApprovalStatusBadge'
 import ReviewerStatusList from '@/components/ReviewerStatusList'
 import BranchManagerApproveModal from '@/components/BranchManagerApproveModal'
+import ApprovalCommentThread from '@/components/ApprovalCommentThread'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -88,7 +89,6 @@ export default function BatchDetailPage() {
   const [batch, setBatch] = useState<BatchDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [deciding, setDeciding] = useState(false)
-  const [feedback, setFeedback] = useState('')
   const [decisionError, setDecisionError] = useState('')
   const [bmModalOpen, setBmModalOpen] = useState(false)
 
@@ -114,10 +114,7 @@ export default function BatchDetailPage() {
   useEffect(() => { fetchBatch() }, [batchId])
 
   const isCreator = !!batch && user?.id === batch.submitted_by
-  const needsRevision = batch?.status === 'NEEDS_REVISION'
-  // Creator can edit in place while pending, OR resubmit after a needs-revision verdict.
-  const canRevise =
-    isCreator && (batch?.status === 'PENDING_APPROVAL' || batch?.status === 'NEEDS_REVISION')
+  const canRevise = isCreator && batch?.status === 'ONGOING'
 
   // Lazy-load reviewer/angle/keypoint options the first time the creator opens the edit panel
   useEffect(() => {
@@ -167,12 +164,7 @@ export default function BatchDetailPage() {
   const patchDraft = (vid: string, patch: Partial<VersionDraft>) =>
     setEditVersions(prev => ({ ...prev, [vid]: { ...prev[vid], ...patch } }))
 
-  const handleDecision = async (decision: string) => {
-    const trimmed = feedback.trim()
-    if (decision !== 'APPROVED' && !trimmed) {
-      setDecisionError('Please leave feedback before requesting revision or rejecting.')
-      return
-    }
+  const handleApprove = async () => {
     setDecisionError('')
     setDeciding(true)
     try {
@@ -180,12 +172,11 @@ export default function BatchDetailPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ decision, feedback: trimmed || null }),
+        body: JSON.stringify({ decision: 'APPROVED' }),
       })
       const data = await res.json()
       if (data.success) {
         setBatch(data.data)
-        setFeedback('')
       } else {
         setDecisionError(data.error || 'Failed to submit decision')
       }
@@ -244,15 +235,11 @@ export default function BatchDetailPage() {
   if (!batch) return <p className="text-red-500">Batch not found</p>
 
   const isAssignedReviewer = batch.reviewers.some(
-    r => r.reviewer_id === user?.id && r.status === 'PENDING'
+    r => r.reviewer_id === user?.id && r.status === 'ONGOING'
   )
   const isAdmin = !!user && (user.is_admin === true || (user.roles || []).includes('admin'))
-  // Branch-manager sign-off (offline) marks the whole batch APPROVED, bypassing
-  // the reviewer round — available while it's still open.
-  const canBmApprove =
-    (isCreator || isAdmin) &&
-    (batch.status === 'PENDING_APPROVAL' || batch.status === 'NEEDS_REVISION')
-  const overdue = batch.deadline ? new Date(batch.deadline) < new Date() && batch.status === 'PENDING_APPROVAL' : false
+  const canBmApprove = (isCreator || isAdmin) && batch.status === 'ONGOING'
+  const overdue = batch.deadline ? new Date(batch.deadline) < new Date() && batch.status === 'ONGOING' : false
 
   return (
     <div>
@@ -454,72 +441,39 @@ export default function BatchDetailPage() {
           )}
 
           {/* Reviewer decision — one control for the whole batch */}
-          {isAssignedReviewer && batch.status === 'PENDING_APPROVAL' && (
+          {isAssignedReviewer && batch.status === 'ONGOING' && (
             <div className="bg-white rounded-xl border border-gray-200 p-4">
               <h3 className="text-sm font-semibold text-gray-900 mb-1">Your Decision</h3>
               <p className="text-xs text-gray-500 mb-3">
-                This decision applies to all {batch.versions.length} versions at once.
+                This decision applies to all {batch.versions.length} versions at once. Use the comment thread to leave feedback.
               </p>
-              <div className="mb-3">
-                <label className="block text-xs text-gray-600 mb-1">
-                  Feedback
-                  <span className="text-gray-400 font-normal"> (required for Needs Revision / Reject)</span>
-                </label>
-                <textarea
-                  value={feedback}
-                  onChange={e => setFeedback(e.target.value)}
-                  placeholder="What works, what to change across these versions…"
-                  rows={4}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
               {decisionError && (
                 <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-xs mb-3">{decisionError}</div>
               )}
-              <div className="flex flex-wrap gap-3">
-                <button
-                  onClick={() => handleDecision('APPROVED')}
-                  disabled={deciding}
-                  className="bg-green-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
-                >
-                  {deciding ? 'Submitting...' : 'Approve all'}
-                </button>
-                <button
-                  onClick={() => handleDecision('NEEDS_REVISION')}
-                  disabled={deciding}
-                  className="bg-orange-500 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 disabled:opacity-50"
-                >
-                  {deciding ? 'Submitting...' : 'Needs Revision'}
-                </button>
-                <button
-                  onClick={() => handleDecision('REJECTED')}
-                  disabled={deciding}
-                  className="bg-red-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50"
-                >
-                  {deciding ? 'Submitting...' : 'Reject all'}
-                </button>
-              </div>
+              <button
+                onClick={handleApprove}
+                disabled={deciding}
+                className="bg-green-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
+              >
+                {deciding ? 'Submitting...' : 'Approve all'}
+              </button>
             </div>
           )}
 
           {/* Creator: edit while pending OR resubmit after needs-revision — bumps round, resets reviewers across all versions */}
           {canRevise && (
-            <div className={`${needsRevision ? 'bg-orange-50 border-orange-200' : 'bg-blue-50 border-blue-200'} border rounded-xl p-4`}>
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
               <div className="flex items-center justify-between mb-1">
-                <h3 className={`text-sm font-semibold ${needsRevision ? 'text-orange-900' : 'text-blue-900'}`}>
-                  {needsRevision ? 'Revise & Resubmit' : 'Edit while pending'}
-                </h3>
+                <h3 className="text-sm font-semibold text-blue-900">Edit while pending</h3>
                 <button
                   onClick={() => setEditOpen(o => !o)}
-                  className={`text-xs font-medium ${needsRevision ? 'text-orange-700 hover:text-orange-800' : 'text-blue-700 hover:text-blue-800'}`}
+                  className="text-xs font-medium text-blue-700 hover:text-blue-800"
                 >
-                  {editOpen ? 'Cancel' : needsRevision ? 'Revise →' : 'Edit →'}
+                  {editOpen ? 'Cancel' : 'Edit →'}
                 </button>
               </div>
-              <p className={`text-xs ${needsRevision ? 'text-orange-700' : 'text-blue-700'}`}>
-                {needsRevision
-                  ? `A reviewer asked for changes. Update the versions below, then resubmit round ${batch.round + 1} to all reviewers.`
-                  : `Apply quick fixes (verbal feedback). Saving bumps to round ${batch.round + 1} and asks all reviewers to re-review the whole batch.`}
+              <p className="text-xs text-blue-700">
+                Apply quick fixes. Saving bumps to round {batch.round + 1} and asks all reviewers to re-review the whole batch.
               </p>
 
               {editOpen && (
@@ -715,13 +669,9 @@ export default function BatchDetailPage() {
                   <button
                     onClick={handleRevise}
                     disabled={editing}
-                    className={`${needsRevision ? 'bg-orange-600 hover:bg-orange-700' : 'bg-blue-600 hover:bg-blue-700'} text-white px-6 py-2 rounded-lg text-sm font-medium disabled:opacity-50`}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
                   >
-                    {editing
-                      ? 'Saving…'
-                      : needsRevision
-                        ? `Resubmit round ${batch.round + 1}`
-                        : `Save & re-notify (round ${batch.round + 1})`}
+                    {editing ? 'Saving…' : `Save & re-notify (round ${batch.round + 1})`}
                   </button>
                 </div>
               )}
@@ -774,6 +724,7 @@ export default function BatchDetailPage() {
               If you have feedback, please make changes directly on these files.
             </p>
           </div>
+          <ApprovalCommentThread batchId={String(batchId)} />
         </div>
       </div>
 

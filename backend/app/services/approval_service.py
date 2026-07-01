@@ -7,13 +7,27 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
-from app.models.approval import ApprovalBatch, ApprovalReviewer, ComboApproval
+from app.models.approval import ApprovalBatch, ApprovalComment, ApprovalReviewer, ApprovalReviewerHistory, ComboApproval
 from app.models.user import User
 from app.services.email_service import render_approval_result_email, render_review_request_email
 from app.services.figma_service import ensure_template_from_url
 from app.services.notification_service import create_notification
 
 logger = logging.getLogger(__name__)
+
+
+def _snapshot_reviewers(db: Session, reviewers: list, round: int) -> None:
+    """Save a copy of reviewer decisions before resetting them for a new round."""
+    for r in reviewers:
+        if r.status != "ONGOING":
+            db.add(ApprovalReviewerHistory(
+                approval_id=r.approval_id,
+                reviewer_id=r.reviewer_id,
+                round=round,
+                status=r.status,
+                feedback=r.feedback,
+                decided_at=r.decided_at,
+            ))
 
 
 def submit_for_approval(
@@ -56,7 +70,7 @@ def submit_for_approval(
     approval = ComboApproval(
         combo_id=combo_id,
         round=round_num,
-        status="PENDING_APPROVAL",
+        status="ONGOING",
         submitted_by=submitted_by,
         submitted_at=now,
         deadline=parsed_deadline,
@@ -80,7 +94,7 @@ def submit_for_approval(
         reviewer_row = ApprovalReviewer(
             approval_id=approval.id,
             reviewer_id=rid,
-            status="PENDING",
+            status="ONGOING",
             notified_system_at=now,
         )
         db.add(reviewer_row)
@@ -146,14 +160,14 @@ def record_decision(
     """Record a reviewer's decision (APPROVED or REJECTED).
     After each decision, check if all reviewers have decided and update approval status.
     """
-    if decision not in ("APPROVED", "REJECTED", "NEEDS_REVISION"):
-        raise ValueError("Decision must be APPROVED, REJECTED, or NEEDS_REVISION")
+    if decision != "APPROVED":
+        raise ValueError("Decision must be APPROVED")
 
     approval = db.query(ComboApproval).filter(ComboApproval.id == approval_id).first()
     if not approval:
         raise ValueError("Approval not found")
 
-    if approval.status != "PENDING_APPROVAL":
+    if approval.status != "ONGOING":
         raise ValueError(f"Approval is already {approval.status}")
 
     reviewer_row = (
@@ -167,15 +181,12 @@ def record_decision(
     if not reviewer_row:
         raise ValueError("You are not assigned as a reviewer for this approval")
 
-    if reviewer_row.status != "PENDING":
+    if reviewer_row.status != "ONGOING":
         raise ValueError(f"You have already decided: {reviewer_row.status}")
 
     now = datetime.now(timezone.utc)
-    reviewer_row.status = decision
+    reviewer_row.status = "APPROVED"
     reviewer_row.decided_at = now
-    cleaned_feedback = (feedback or "").strip() or None
-    if cleaned_feedback is not None:
-        reviewer_row.feedback = cleaned_feedback
 
     # Check all reviewers' decisions
     all_reviewers = (
@@ -186,25 +197,13 @@ def record_decision(
 
     email_tasks = []
 
-    # ANY rejected → REJECTED (terminal); ANY needs-revision → NEEDS_REVISION
-    # so the creator can revise without waiting for remaining reviewers
-    if decision == "REJECTED":
-        approval.status = "REJECTED"
-        approval.resolved_at = now
-        _notify_creator_of_result(db, approval, "REJECTED", reviewer_id, email_tasks)
-    elif decision == "NEEDS_REVISION":
-        approval.status = "NEEDS_REVISION"
-        approval.resolved_at = now
-        _notify_creator_of_result(db, approval, "NEEDS_REVISION", reviewer_id, email_tasks)
-    else:
-        # Check if ALL approved
-        all_decided = all(r.status != "PENDING" for r in all_reviewers)
-        all_approved = all(r.status == "APPROVED" for r in all_reviewers)
+    # Check if ALL approved
+    all_approved = all(r.status == "APPROVED" for r in all_reviewers)
 
-        if all_decided and all_approved:
-            approval.status = "APPROVED"
-            approval.resolved_at = now
-            _notify_creator_of_result(db, approval, "APPROVED", None, email_tasks)
+    if all_approved:
+        approval.status = "APPROVED"
+        approval.resolved_at = now
+        _notify_creator_of_result(db, approval, "APPROVED", None, email_tasks)
 
     db.commit()
 
@@ -266,7 +265,7 @@ def record_branch_manager_approval(
     if not approval:
         raise ValueError("Approval not found")
 
-    if approval.status not in ("PENDING_APPROVAL", "NEEDS_REVISION"):
+    if approval.status != "ONGOING":
         raise ValueError(
             f"Approval is already {approval.status}; branch-manager approval only "
             "applies while it's still open"
@@ -323,7 +322,7 @@ def record_batch_branch_manager_approval(
         raise ValueError("Batch has no versions")
 
     current_status = _rollup_batch_status([c.status for c in children])
-    if current_status not in ("PENDING_APPROVAL", "NEEDS_REVISION"):
+    if current_status != "ONGOING":
         raise ValueError(
             f"Batch is already {current_status}; branch-manager approval only "
             "applies while it's still open"
@@ -457,9 +456,9 @@ def revise_pending_approval(
     if not approval:
         raise ValueError("Approval not found")
 
-    if approval.status != "PENDING_APPROVAL":
+    if approval.status != "ONGOING":
         raise ValueError(
-            f"Only PENDING_APPROVAL approvals can be revised in place; current status: {approval.status}"
+            f"Only ONGOING approvals can be revised in place; current status: {approval.status}"
         )
 
     if approval.submitted_by != creator_id:
@@ -518,9 +517,8 @@ def revise_pending_approval(
             if rid not in new_ids:
                 db.delete(row)
             else:
-                row.status = "PENDING"
+                row.status = "ONGOING"
                 row.decided_at = None
-                row.feedback = None
                 row.notified_email_at = None
                 row.notified_system_at = now
 
@@ -528,14 +526,13 @@ def revise_pending_approval(
             db.add(ApprovalReviewer(
                 approval_id=approval.id,
                 reviewer_id=rid,
-                status="PENDING",
+                status="ONGOING",
                 notified_system_at=now,
             ))
     else:
         for r in existing:
-            r.status = "PENDING"
+            r.status = "ONGOING"
             r.decided_at = None
-            r.feedback = None
             r.notified_email_at = None
             r.notified_system_at = now
 
@@ -551,7 +548,7 @@ def revise_pending_approval(
         db.query(ApprovalReviewer)
         .filter(
             ApprovalReviewer.approval_id == approval.id,
-            ApprovalReviewer.status == "PENDING",
+            ApprovalReviewer.status == "ONGOING",
         )
         .all()
     )
@@ -603,8 +600,8 @@ def resubmit(
     if not old_approval:
         raise ValueError("Approval not found")
 
-    if old_approval.status not in ("REJECTED", "NEEDS_REVISION"):
-        raise ValueError("Only rejected or needs-revision approvals can be re-submitted")
+    if old_approval.status not in ("REJECTED", "NEEDS_REVISION", "ONGOING"):
+        raise ValueError("Only open approvals can be re-submitted")
 
     if old_approval.submitted_by != creator_id:
         raise ValueError("Only the original creator can re-submit")
@@ -701,13 +698,9 @@ def _rollup_batch_status(child_statuses: list[str]) -> str:
     """Whole-batch status from its versions. ANY reject → REJECTED;
     ANY needs-revision → NEEDS_REVISION; ALL approved → APPROVED; else pending.
     Mirrors the single-approval terminal rules, applied across versions."""
-    if any(s == "REJECTED" for s in child_statuses):
-        return "REJECTED"
-    if any(s == "NEEDS_REVISION" for s in child_statuses):
-        return "NEEDS_REVISION"
     if child_statuses and all(s == "APPROVED" for s in child_statuses):
         return "APPROVED"
-    return "PENDING_APPROVAL"
+    return "ONGOING"
 
 
 def submit_batch(
@@ -770,7 +763,7 @@ def submit_batch(
             batch_id=batch.id,
             combo_id=combo.id,
             round=(max_round or 0) + 1,
-            status="PENDING_APPROVAL",
+            status="ONGOING",
             submitted_by=submitted_by,
             submitted_at=now,
             deadline=parsed_deadline,
@@ -786,7 +779,7 @@ def submit_batch(
             db.add(ApprovalReviewer(
                 approval_id=approval.id,
                 reviewer_id=rid,
-                status="PENDING",
+                status="ONGOING",
                 notified_system_at=now,
             ))
 
@@ -870,8 +863,8 @@ def record_batch_decision(
     with the same rules as a single approval. The creator gets ONE
     consolidated result notification.
     """
-    if decision not in ("APPROVED", "REJECTED", "NEEDS_REVISION"):
-        raise ValueError("Decision must be APPROVED, REJECTED, or NEEDS_REVISION")
+    if decision != "APPROVED":
+        raise ValueError("Decision must be APPROVED")
 
     batch = db.query(ApprovalBatch).filter(ApprovalBatch.id == batch_id).first()
     if not batch:
@@ -886,7 +879,7 @@ def record_batch_decision(
         raise ValueError("Batch has no versions")
 
     current_status = _rollup_batch_status([c.status for c in children])
-    if current_status != "PENDING_APPROVAL":
+    if current_status != "ONGOING":
         raise ValueError(f"Batch is already {current_status}")
 
     child_ids = [c.id for c in children]
@@ -900,7 +893,7 @@ def record_batch_decision(
     )
     if not my_rows:
         raise ValueError("You are not assigned as a reviewer for this batch")
-    if any(r.status != "PENDING" for r in my_rows):
+    if any(r.status != "ONGOING" for r in my_rows):
         raise ValueError("You have already decided on this batch")
 
     now = datetime.now(timezone.utc)
@@ -925,21 +918,14 @@ def record_batch_decision(
 
     for child in children:
         rows = reviewers_by_child.get(child.id, [])
-        if decision == "REJECTED":
-            child.status = "REJECTED"
+        if rows and all(x.status == "APPROVED" for x in rows):
+            child.status = "APPROVED"
             child.resolved_at = now
-        elif decision == "NEEDS_REVISION":
-            child.status = "NEEDS_REVISION"
-            child.resolved_at = now
-        else:
-            if rows and all(x.status == "APPROVED" for x in rows):
-                child.status = "APPROVED"
-                child.resolved_at = now
 
     batch_status = _rollup_batch_status([c.status for c in children])
 
     email_tasks = []
-    if batch_status != "PENDING_APPROVAL":
+    if batch_status != "ONGOING":
         _notify_creator_of_batch_result(
             db, batch, children, batch_status, reviewer_id, email_tasks
         )
@@ -1002,9 +988,9 @@ def revise_batch(
         raise ValueError("Batch has no versions")
 
     current_status = _rollup_batch_status([c.status for c in children])
-    if current_status not in ("PENDING_APPROVAL", "NEEDS_REVISION"):
+    if current_status != "ONGOING":
         raise ValueError(
-            f"Only pending or needs-revision batches can be revised; current status: {current_status}"
+            f"Only ongoing batches can be revised; current status: {current_status}"
         )
 
     now = datetime.now(timezone.utc)
@@ -1029,8 +1015,7 @@ def revise_batch(
         batch.deadline = None
 
     batch.round = (batch.round or 0) + 1
-    # Re-open the batch as a whole — a NEEDS_REVISION batch returns to review.
-    batch.status = "PENDING_APPROVAL"
+    batch.status = "ONGOING"
     batch.resolved_at = None
 
     edits_by_approval = {v["approval_id"]: v for v in (versions or []) if v.get("approval_id")}
@@ -1039,8 +1024,7 @@ def revise_batch(
         combo = db.query(AdCombo).filter(AdCombo.id == child.combo_id).first()
         child.round = (child.round or 0) + 1
         child.submitted_at = now
-        # Reset any prior terminal verdict so the rollup reflects the re-open.
-        child.status = "PENDING_APPROVAL"
+        child.status = "ONGOING"
         child.resolved_at = None
         if parsed_deadline is not None:
             child.deadline = parsed_deadline
@@ -1084,24 +1068,22 @@ def revise_batch(
                 if rid not in new_ids:
                     db.delete(row)
                 else:
-                    row.status = "PENDING"
+                    row.status = "ONGOING"
                     row.decided_at = None
-                    row.feedback = None
                     row.notified_email_at = None
                     row.notified_system_at = now
             for rid in new_ids - set(by_rid.keys()):
                 db.add(ApprovalReviewer(
                     approval_id=child.id,
                     reviewer_id=rid,
-                    status="PENDING",
+                    status="ONGOING",
                     notified_system_at=now,
                 ))
         final_reviewer_ids = new_ids
     else:
         for r in existing:
-            r.status = "PENDING"
+            r.status = "ONGOING"
             r.decided_at = None
-            r.feedback = None
             r.notified_email_at = None
             r.notified_system_at = now
         final_reviewer_ids = {r.reviewer_id for r in existing}
@@ -1525,8 +1507,8 @@ def resend_review_request_emails(
     if not approval:
         raise ValueError("Approval not found")
 
-    if approval.status != "PENDING_APPROVAL":
-        raise ValueError(f"Approval is {approval.status}; only PENDING_APPROVAL can be resent")
+    if approval.status != "ONGOING":
+        raise ValueError(f"Approval is {approval.status}; only ONGOING can be resent")
 
     requester = db.query(User).filter(User.id == requester_id).first()
     requester_roles = (requester.roles if requester else None) or []
@@ -1548,7 +1530,7 @@ def resend_review_request_emails(
         db.query(ApprovalReviewer)
         .filter(
             ApprovalReviewer.approval_id == approval_id,
-            ApprovalReviewer.status == "PENDING",
+            ApprovalReviewer.status == "ONGOING",
         )
         .all()
     )
@@ -1617,8 +1599,8 @@ def resend_batch_review_request_emails(
         raise ValueError("Batch has no versions")
 
     status = _rollup_batch_status([c.status for c in children])
-    if status != "PENDING_APPROVAL":
-        raise ValueError(f"Batch is {status}; only PENDING_APPROVAL can be resent")
+    if status != "ONGOING":
+        raise ValueError(f"Batch is {status}; only ONGOING can be resent")
 
     requester = db.query(User).filter(User.id == requester_id).first()
     requester_roles = (requester.roles if requester else None) or []
@@ -1654,7 +1636,7 @@ def resend_batch_review_request_emails(
         db.query(ApprovalReviewer)
         .filter(
             ApprovalReviewer.approval_id.in_(child_ids),
-            ApprovalReviewer.status == "PENDING",
+            ApprovalReviewer.status == "ONGOING",
         )
         .all()
     )
@@ -1872,6 +1854,132 @@ def _build_render_payload(db: Session, combo: AdCombo) -> dict:
             payload[f"benefit_{i}"] = title
 
     return payload
+
+
+def add_comment(
+    db: Session,
+    user_id: str,
+    body: str,
+    approval_id: str | None = None,
+    batch_id: str | None = None,
+    parent_id: str | None = None,
+) -> ApprovalComment:
+    """Add a comment to an approval or batch. Notifies all participants except the commenter."""
+    if not approval_id and not batch_id:
+        raise ValueError("Either approval_id or batch_id is required")
+    body_stripped = (body or "").strip()
+    if not body_stripped:
+        raise ValueError("Comment body cannot be empty")
+
+    comment = ApprovalComment(
+        approval_id=approval_id,
+        batch_id=batch_id,
+        user_id=user_id,
+        body=body_stripped,
+        parent_id=parent_id,
+    )
+    db.add(comment)
+    db.flush()
+
+    # Determine combo name for notification title
+    combo_name = "approval"
+    if approval_id:
+        approval = db.query(ComboApproval).filter(ComboApproval.id == approval_id).first()
+        if approval:
+            from app.models.ad_combo import AdCombo
+            combo = db.query(AdCombo).filter(AdCombo.id == approval.combo_id).first()
+            if combo:
+                combo_name = combo.ad_name or combo.combo_id
+
+    # Collect participants: submitted_by + all reviewers (deduplicated, excluding commenter)
+    participant_ids: set = set()
+    if approval_id:
+        approval = db.query(ComboApproval).filter(ComboApproval.id == approval_id).first()
+        if approval and approval.submitted_by:
+            participant_ids.add(str(approval.submitted_by))
+        reviewers = db.query(ApprovalReviewer).filter(ApprovalReviewer.approval_id == approval_id).all()
+        for r in reviewers:
+            participant_ids.add(str(r.reviewer_id))
+    elif batch_id:
+        batch = db.query(ApprovalBatch).filter(ApprovalBatch.id == batch_id).first()
+        if batch and batch.submitted_by:
+            participant_ids.add(str(batch.submitted_by))
+        children = db.query(ComboApproval).filter(ComboApproval.batch_id == batch_id).all()
+        child_ids = [c.id for c in children]
+        if child_ids:
+            reviewers = db.query(ApprovalReviewer).filter(
+                ApprovalReviewer.approval_id.in_(child_ids)
+            ).all()
+            for r in reviewers:
+                participant_ids.add(str(r.reviewer_id))
+
+    participant_ids.discard(str(user_id))
+
+    snippet = body_stripped[:100]
+    ref_id = approval_id or batch_id
+    ref_type = "combo_approval" if approval_id else "approval_batch"
+
+    for pid in participant_ids:
+        create_notification(
+            db,
+            user_id=pid,
+            type="APPROVAL_COMMENT",
+            title=f"New comment on {combo_name}",
+            body=snippet,
+            reference_id=ref_id,
+            reference_type=ref_type,
+        )
+
+    db.commit()
+    return comment
+
+
+def get_comments(
+    db: Session,
+    approval_id: str | None = None,
+    batch_id: str | None = None,
+) -> list[dict]:
+    """Return comments as a nested thread (replies embedded under parent comments)."""
+    if not approval_id and not batch_id:
+        raise ValueError("Either approval_id or batch_id is required")
+
+    q = db.query(ApprovalComment)
+    if approval_id:
+        q = q.filter(ApprovalComment.approval_id == approval_id)
+    else:
+        q = q.filter(ApprovalComment.batch_id == batch_id)
+
+    all_comments = q.order_by(ApprovalComment.created_at.asc()).all()
+
+    # Resolve user names
+    user_ids = {c.user_id for c in all_comments}
+    users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
+    user_by_id = {u.id: u for u in users}
+
+    def serialize(c: ApprovalComment, replies: list) -> dict:
+        user = user_by_id.get(c.user_id)
+        return {
+            "id": c.id,
+            "user_id": c.user_id,
+            "user_name": user.full_name if user else "Unknown",
+            "body": c.body,
+            "parent_id": c.parent_id,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "replies": replies,
+        }
+
+    # Build tree: top-level first, then nest replies
+    top_level = [c for c in all_comments if not c.parent_id]
+    children_by_parent: dict = {}
+    for c in all_comments:
+        if c.parent_id:
+            children_by_parent.setdefault(c.parent_id, []).append(c)
+
+    def build_thread(comment: ApprovalComment) -> dict:
+        child_comments = children_by_parent.get(comment.id, [])
+        return serialize(comment, [build_thread(ch) for ch in child_comments])
+
+    return [build_thread(c) for c in top_level]
 
 
 def _queue_emails(email_tasks: list):

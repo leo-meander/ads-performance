@@ -9,9 +9,11 @@ from app.dependencies.auth import get_current_user, require_page, require_role
 from app.models.approval import ApprovalReviewer, ComboApproval
 from app.models.user import User
 from app.services.approval_service import (
+    add_comment,
     get_approval_detail,
     get_approvals_list_summary,
     get_batch_detail,
+    get_comments,
     record_batch_branch_manager_approval,
     record_batch_decision,
     record_branch_manager_approval,
@@ -117,6 +119,11 @@ class ReviseRequest(BaseModel):
     target_audience: str | None = None
 
 
+class CommentRequest(BaseModel):
+    body: str
+    parent_id: str | None = None
+
+
 # ── Endpoints ────────────────────────────────────────────────
 
 
@@ -208,7 +215,7 @@ def list_pending_reviews(
             db.query(ApprovalReviewer.approval_id)
             .filter(
                 ApprovalReviewer.reviewer_id == current_user.id,
-                ApprovalReviewer.status == "PENDING",
+                ApprovalReviewer.status == "ONGOING",
             )
             .all()
         )
@@ -218,7 +225,7 @@ def list_pending_reviews(
             db.query(ComboApproval)
             .filter(
                 ComboApproval.id.in_(approval_ids),
-                ComboApproval.status == "PENDING_APPROVAL",
+                ComboApproval.status == "ONGOING",
             )
             .order_by(ComboApproval.created_at.desc())
             .all()
@@ -549,6 +556,87 @@ def resubmit_approval(
         )
         detail = get_approval_detail(db, new_approval.id)
         return _api_response(data=detail)
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+# ── Comment threads ───────────────────────────────────────────
+
+
+@router.get("/approvals/{approval_id}/comments")
+def list_approval_comments(
+    approval_id: str,
+    current_user: User = Depends(require_page("approvals")),
+    db: Session = Depends(get_db),
+):
+    """List comments (threaded) for a single approval."""
+    try:
+        thread = get_comments(db, approval_id=approval_id)
+        return _api_response(data=thread)
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.post("/approvals/{approval_id}/comments")
+def post_approval_comment(
+    approval_id: str,
+    body: CommentRequest,
+    current_user: User = Depends(require_page("approvals")),
+    db: Session = Depends(get_db),
+):
+    """Add a comment to an approval."""
+    try:
+        comment = add_comment(
+            db,
+            user_id=current_user.id,
+            body=body.body,
+            approval_id=approval_id,
+            parent_id=body.parent_id,
+        )
+        thread = get_comments(db, approval_id=approval_id)
+        return _api_response(data=thread)
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.get("/approvals/batch/{batch_id}/comments")
+def list_batch_comments(
+    batch_id: str,
+    current_user: User = Depends(require_page("approvals")),
+    db: Session = Depends(get_db),
+):
+    """List comments (threaded) for a batch."""
+    try:
+        thread = get_comments(db, batch_id=batch_id)
+        return _api_response(data=thread)
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.post("/approvals/batch/{batch_id}/comments")
+def post_batch_comment(
+    batch_id: str,
+    body: CommentRequest,
+    current_user: User = Depends(require_page("approvals")),
+    db: Session = Depends(get_db),
+):
+    """Add a comment to an approval batch."""
+    try:
+        comment = add_comment(
+            db,
+            user_id=current_user.id,
+            body=body.body,
+            batch_id=batch_id,
+            parent_id=body.parent_id,
+        )
+        thread = get_comments(db, batch_id=batch_id)
+        return _api_response(data=thread)
     except ValueError as e:
         return _api_response(error=str(e))
     except Exception as e:
