@@ -16,12 +16,12 @@ depends_on = None
 def upgrade():
     op.create_table(
         "approval_comments",
-        sa.Column("id", sa.UUID(), server_default=sa.text("gen_random_uuid()"), nullable=False),
-        sa.Column("approval_id", sa.UUID(), nullable=True),
-        sa.Column("batch_id", sa.UUID(), nullable=True),
-        sa.Column("user_id", sa.UUID(), nullable=False),
+        sa.Column("id", sa.String(), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("approval_id", sa.String(), nullable=True),
+        sa.Column("batch_id", sa.String(), nullable=True),
+        sa.Column("user_id", sa.String(), nullable=False),
         sa.Column("body", sa.Text(), nullable=False),
-        sa.Column("parent_id", sa.UUID(), nullable=True),
+        sa.Column("parent_id", sa.String(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.ForeignKeyConstraint(["approval_id"], ["combo_approvals.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["batch_id"], ["approval_batches.id"], ondelete="CASCADE"),
