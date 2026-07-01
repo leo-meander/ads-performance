@@ -7,6 +7,7 @@ import ApprovalStatusBadge from '@/components/ApprovalStatusBadge'
 import ReviewerStatusList from '@/components/ReviewerStatusList'
 import WorkingFileLinkCard from '@/components/WorkingFileLinkCard'
 import BranchManagerApproveModal from '@/components/BranchManagerApproveModal'
+import ApprovalCommentThread from '@/components/ApprovalCommentThread'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -81,7 +82,6 @@ export default function ApprovalDetailPage() {
   const [approval, setApproval] = useState<ApprovalDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [deciding, setDeciding] = useState(false)
-  const [feedback, setFeedback] = useState('')
   const [decisionError, setDecisionError] = useState('')
   const [resubmitting, setResubmitting] = useState(false)
   const [resubmitFile, setResubmitFile] = useState('')
@@ -118,7 +118,7 @@ export default function ApprovalDetailPage() {
   useEffect(() => { fetchApproval() }, [id])
 
   const isCreatorPending =
-    approval && user?.id === approval.submitted_by && approval.status === 'PENDING_APPROVAL'
+    approval && user?.id === approval.submitted_by && approval.status === 'ONGOING'
 
   // Lazy-load reviewer/angle/keypoint options the first time the creator opens the edit panel
   useEffect(() => {
@@ -159,12 +159,7 @@ export default function ApprovalDetailPage() {
     setEditError('')
   }, [editOpen, approval])
 
-  const handleDecision = async (decision: string) => {
-    const trimmed = feedback.trim()
-    if (decision !== 'APPROVED' && !trimmed) {
-      setDecisionError('Please leave feedback before requesting revision or rejecting.')
-      return
-    }
+  const handleApprove = async () => {
     setDecisionError('')
     setDeciding(true)
     try {
@@ -172,12 +167,11 @@ export default function ApprovalDetailPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ decision, feedback: trimmed || null }),
+        body: JSON.stringify({ decision: 'APPROVED' }),
       })
       const data = await res.json()
       if (data.success) {
         setApproval(data.data)
-        setFeedback('')
       } else {
         setDecisionError(data.error || 'Failed to submit decision')
       }
@@ -256,14 +250,11 @@ export default function ApprovalDetailPage() {
   const isCreator = user?.id === approval.submitted_by
   const isAdmin = !!user && (user.is_admin === true || (user.roles || []).includes('admin'))
   const isAssignedReviewer = approval.reviewers.some(
-    r => r.reviewer_id === user?.id && r.status === 'PENDING'
+    r => r.reviewer_id === user?.id && r.status === 'ONGOING'
   )
   const canLaunch = (isCreator || isAdmin) && approval.status === 'APPROVED' && !approval.launch_status
-  // Branch-manager sign-off (done offline) can be recorded while the approval
-  // is still open — it marks the combo APPROVED, bypassing the reviewer round.
   const canBmApprove =
-    (isCreator || isAdmin) &&
-    (approval.status === 'PENDING_APPROVAL' || approval.status === 'NEEDS_REVISION')
+    (isCreator || isAdmin) && approval.status === 'ONGOING'
 
   return (
     <div>
@@ -302,9 +293,9 @@ export default function ApprovalDetailPage() {
               {approval.deadline && (
                 <div>
                   <span className="text-gray-500">Deadline:</span>{' '}
-                  <span className={`font-medium ${new Date(approval.deadline) < new Date() && approval.status === 'PENDING_APPROVAL' ? 'text-red-600' : 'text-gray-900'}`}>
+                  <span className={`font-medium ${new Date(approval.deadline) < new Date() && approval.status === 'ONGOING' ? 'text-red-600' : 'text-gray-900'}`}>
                     {new Date(approval.deadline).toLocaleString()}
-                    {new Date(approval.deadline) < new Date() && approval.status === 'PENDING_APPROVAL' && ' (overdue)'}
+                    {new Date(approval.deadline) < new Date() && approval.status === 'ONGOING' && ' (overdue)'}
                   </span>
                 </div>
               )}
@@ -425,39 +416,6 @@ export default function ApprovalDetailPage() {
                 <span>{approval.copy.target_audience}</span>
               </div>
 
-              {/* Reviewers feedback on the ad copy */}
-              <div className="mt-4 pt-3 border-t border-gray-100">
-                <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
-                  Reviewers feedback
-                </h4>
-                {approval.reviewers.filter(r => r.feedback && r.feedback.trim()).length === 0 ? (
-                  <p className="text-xs text-gray-400 italic">No feedback yet.</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {approval.reviewers
-                      .filter(r => r.feedback && r.feedback.trim())
-                      .map(r => (
-                        <li key={r.id} className="bg-gray-50 rounded-lg p-3">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-sm font-medium text-gray-900">{r.reviewer_name}</span>
-                            <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${
-                              r.status === 'APPROVED' ? 'bg-green-100 text-green-700' :
-                              r.status === 'REJECTED' ? 'bg-red-100 text-red-700' :
-                              r.status === 'NEEDS_REVISION' ? 'bg-orange-100 text-orange-700' :
-                              'bg-amber-100 text-amber-700'
-                            }`}>{r.status}</span>
-                            {r.decided_at && (
-                              <span className="text-[11px] text-gray-400">
-                                {new Date(r.decided_at).toLocaleString()}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-sm text-gray-700 whitespace-pre-line">{r.feedback}</p>
-                        </li>
-                      ))}
-                  </ul>
-                )}
-              </div>
             </div>
           )}
 
@@ -512,51 +470,22 @@ export default function ApprovalDetailPage() {
           )}
 
           {/* Action buttons */}
-          {isAssignedReviewer && approval.status === 'PENDING_APPROVAL' && (
+          {isAssignedReviewer && approval.status === 'ONGOING' && (
             <div className="bg-white rounded-xl border border-gray-200 p-4">
               <h3 className="text-sm font-semibold text-gray-900 mb-3">Your Decision</h3>
-              <div className="mb-3">
-                <label className="block text-xs text-gray-600 mb-1">
-                  Feedback for ad copy
-                  <span className="text-gray-400 font-normal"> (required for Needs Revision / Reject)</span>
-                </label>
-                <textarea
-                  value={feedback}
-                  onChange={e => setFeedback(e.target.value)}
-                  placeholder="What works, what to change, suggested rewrites…"
-                  rows={4}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
+              <p className="text-xs text-gray-500 mb-3">
+                Use the comment thread below to leave feedback. Approve when ready.
+              </p>
               {decisionError && (
                 <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-xs mb-3">{decisionError}</div>
               )}
-              <div className="flex flex-wrap gap-3">
-                <button
-                  onClick={() => handleDecision('APPROVED')}
-                  disabled={deciding}
-                  className="bg-green-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
-                >
-                  {deciding ? 'Submitting...' : 'Approve'}
-                </button>
-                <button
-                  onClick={() => handleDecision('NEEDS_REVISION')}
-                  disabled={deciding}
-                  className="bg-orange-500 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 disabled:opacity-50"
-                >
-                  {deciding ? 'Submitting...' : 'Needs Revision'}
-                </button>
-                <button
-                  onClick={() => handleDecision('REJECTED')}
-                  disabled={deciding}
-                  className="bg-red-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50"
-                >
-                  {deciding ? 'Submitting...' : 'Reject'}
-                </button>
-              </div>
-              <p className="text-xs text-gray-400 mt-2">
-                Approve = ready to launch. Needs Revision = creator can fix and resubmit. Reject = combo dead.
-              </p>
+              <button
+                onClick={handleApprove}
+                disabled={deciding}
+                className="bg-green-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
+              >
+                {deciding ? 'Submitting...' : 'Approve'}
+              </button>
             </div>
           )}
 
@@ -751,47 +680,6 @@ export default function ApprovalDetailPage() {
             </div>
           )}
 
-          {/* Creator: revise & resubmit panel */}
-          {isCreator && approval.status === 'NEEDS_REVISION' && (
-            <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
-              <h3 className="text-sm font-semibold text-orange-900 mb-1">Revise & Resubmit</h3>
-              <p className="text-xs text-orange-700 mb-3">
-                Update the working file with your changes, then submit a new round to the same reviewers.
-              </p>
-              {resubmitError && (
-                <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-xs mb-3">{resubmitError}</div>
-              )}
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs text-gray-600 mb-1">New working file URL (optional)</label>
-                  <input
-                    type="url"
-                    value={resubmitFile}
-                    onChange={e => setResubmitFile(e.target.value)}
-                    placeholder={approval.working_file_url || 'https://figma.com/design/...'}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
-                  />
-                  <p className="text-[11px] text-gray-400 mt-1">Leave empty to reuse the previous file.</p>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-600 mb-1">New deadline (optional)</label>
-                  <input
-                    type="datetime-local"
-                    value={resubmitDeadline}
-                    onChange={e => setResubmitDeadline(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
-                  />
-                </div>
-                <button
-                  onClick={handleResubmit}
-                  disabled={resubmitting}
-                  className="bg-orange-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-orange-700 disabled:opacity-50"
-                >
-                  {resubmitting ? 'Submitting...' : 'Submit New Round'}
-                </button>
-              </div>
-            </div>
-          )}
 
           {/* Branch Manager approval — record offline sign-off with a screenshot */}
           {canBmApprove && (
@@ -847,6 +735,7 @@ export default function ApprovalDetailPage() {
         <div className="space-y-4">
           <ReviewerStatusList reviewers={approval.reviewers} />
           <WorkingFileLinkCard url={approval.working_file_url} label={approval.working_file_label} />
+          <ApprovalCommentThread approvalId={approval.id} />
         </div>
       </div>
 

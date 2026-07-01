@@ -1,6 +1,38 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, func
 
 from app.models.base import Base, TimestampMixin, UUIDType
+
+
+class ApprovalComment(Base):
+    __tablename__ = "approval_comments"
+
+    id = Column(UUIDType, primary_key=True, server_default=func.gen_random_uuid())
+    # Either approval_id or batch_id is set, not both
+    approval_id = Column(
+        UUIDType,
+        ForeignKey("combo_approvals.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    batch_id = Column(
+        UUIDType,
+        ForeignKey("approval_batches.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    user_id = Column(
+        UUIDType,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    body = Column(Text, nullable=False)
+    parent_id = Column(
+        UUIDType,
+        ForeignKey("approval_comments.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class ApprovalBatch(Base, TimestampMixin):
@@ -42,7 +74,7 @@ class ComboApproval(Base, TimestampMixin):
         index=True,
     )
     round = Column(Integer, nullable=False, default=1)
-    status = Column(String(20), nullable=False, default="PENDING_APPROVAL")  # PENDING_APPROVAL | APPROVED | REJECTED
+    status = Column(String(20), nullable=False, default="ONGOING")  # ONGOING | APPROVED
     submitted_by = Column(
         UUIDType,
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -84,6 +116,20 @@ class ComboApproval(Base, TimestampMixin):
     launched_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class ApprovalReviewerHistory(Base):
+    """Immutable snapshot of a reviewer's decision before a round reset."""
+    __tablename__ = "approval_reviewer_history"
+
+    id = Column(UUIDType, primary_key=True, server_default=func.gen_random_uuid())
+    approval_id = Column(UUIDType, ForeignKey("combo_approvals.id", ondelete="CASCADE"), nullable=False, index=True)
+    reviewer_id = Column(UUIDType, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    round = Column(Integer, nullable=False)
+    status = Column(String(20), nullable=False)
+    feedback = Column(Text, nullable=True)
+    decided_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class ApprovalReviewer(Base, TimestampMixin):
     __tablename__ = "approval_reviewers"
 
@@ -99,7 +145,7 @@ class ApprovalReviewer(Base, TimestampMixin):
         nullable=False,
         index=True,
     )
-    status = Column(String(20), nullable=False, default="PENDING")  # PENDING | APPROVED | REJECTED
+    status = Column(String(20), nullable=False, default="ONGOING")  # ONGOING | APPROVED
     decided_at = Column(DateTime(timezone=True), nullable=True)
     feedback = Column(Text, nullable=True)  # Reviewer's free-text feedback on the ad copy / combo
     notified_email_at = Column(DateTime(timezone=True), nullable=True)
