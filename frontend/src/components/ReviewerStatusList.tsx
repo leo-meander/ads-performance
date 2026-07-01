@@ -6,6 +6,7 @@ interface Reviewer {
   reviewer_name: string
   status: string
   decided_at: string | null
+  feedback?: string | null
 }
 
 function timeAgo(dateStr: string): string {
@@ -39,22 +40,29 @@ export default function ReviewerStatusList({ reviewers }: { reviewers: Reviewer[
       <h3 className="text-sm font-semibold text-gray-900 mb-3">Reviewers</h3>
       <div className="space-y-2">
         {reviewers.map(r => (
-          <div key={r.id} className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2">
-              <span>{STATUS_ICON[r.status] || '⏳'}</span>
-              <span className="text-gray-900">{r.reviewer_name}</span>
+          <div key={r.id}>
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2">
+                <span>{STATUS_ICON[r.status] || '⏳'}</span>
+                <span className="text-gray-900">{r.reviewer_name}</span>
+              </div>
+              <div className="flex items-center gap-2 text-gray-500 text-xs">
+                <span className={
+                  r.status === 'APPROVED' ? 'text-green-600' :
+                  r.status === 'REJECTED' ? 'text-red-600' :
+                  r.status === 'NEEDS_REVISION' ? 'text-orange-600' :
+                  'text-amber-600'
+                }>
+                  {STATUS_LABEL[r.status] || r.status}
+                </span>
+                {r.decided_at && <span>{timeAgo(r.decided_at)}</span>}
+              </div>
             </div>
-            <div className="flex items-center gap-2 text-gray-500 text-xs">
-              <span className={
-                r.status === 'APPROVED' ? 'text-green-600' :
-                r.status === 'REJECTED' ? 'text-red-600' :
-                r.status === 'NEEDS_REVISION' ? 'text-orange-600' :
-                'text-amber-600'
-              }>
-                {STATUS_LABEL[r.status] || r.status}
-              </span>
-              {r.decided_at && <span>{timeAgo(r.decided_at)}</span>}
-            </div>
+            {r.feedback && r.feedback.trim() && (
+              <p className="ml-7 mt-1 text-xs text-gray-600 bg-gray-50 rounded px-2 py-1 whitespace-pre-line">
+                {r.feedback}
+              </p>
+            )}
           </div>
         ))}
       </div>
