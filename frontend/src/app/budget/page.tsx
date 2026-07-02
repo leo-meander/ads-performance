@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/components/AuthContext'
+import { Sparkles } from 'lucide-react'
+import BudgetSuggestionPanel from '@/components/BudgetSuggestionPanel'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -219,6 +221,14 @@ export default function BudgetDashboard() {
   const [saveStatus, setSaveStatus] = useState<Record<number, 'ok' | 'err' | null>>({})
   const splitEditable = editableBranches.includes(splitBranch)
 
+  // AI suggestion state
+  const [suggestionLoading, setSuggestionLoading] = useState(false)
+  const [suggestion, setSuggestion] = useState<Record<string, unknown> | null>(null)
+  const [suggestMonth, setSuggestMonth] = useState<number>(() => {
+    const d = new Date()
+    return d.getMonth() + 2 > 12 ? 1 : d.getMonth() + 2  // next month
+  })
+
   const loadMonthly = () => {
     setLoading(true)
     fetch(`${API_BASE}/api/budget/dashboard?month=${month}`, { credentials: 'include' }).then(r => r.json())
@@ -409,6 +419,32 @@ export default function BudgetDashboard() {
   const applyChannelToAll = (ch: string, val: number) => {
     setSplitRows(prev => prev.map(r => {
       const channel_pct = { ...r.channel_pct, [ch]: val }
+      const sum = Object.values(channel_pct).reduce((s, v) => s + (Number(v) || 0), 0)
+      return { ...r, channel_pct, pct_sum: Math.round(sum * 100) / 100 }
+    }))
+    setSaveStatus({})
+  }
+
+  const fetchSuggestion = async () => {
+    setSuggestionLoading(true)
+    setSuggestion(null)
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/budget/suggest?branch=${encodeURIComponent(splitBranch)}&year=${year}&month=${suggestMonth}`,
+        { credentials: 'include' }
+      )
+      const data = await res.json()
+      setSuggestion(data.success ? data.data : { error: data.error || 'Unknown error' })
+    } catch {
+      setSuggestion({ error: 'Network error — could not fetch suggestion' })
+    } finally {
+      setSuggestionLoading(false)
+    }
+  }
+
+  const applySuggestion = (channelPct: Record<string, number>) => {
+    setSplitRows(prev => prev.map(r => {
+      const channel_pct = { ...r.channel_pct, ...channelPct }
       const sum = Object.values(channel_pct).reduce((s, v) => s + (Number(v) || 0), 0)
       return { ...r, channel_pct, pct_sum: Math.round(sum * 100) / 100 }
     }))
@@ -819,6 +855,36 @@ export default function BudgetDashboard() {
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-2 text-sm text-yellow-800">
               View-only — you don't have edit access to <strong>{splitBranch}</strong>.
             </div>
+          )}
+
+          {/* AI suggestion controls */}
+          <div className="flex items-center gap-3">
+            <select
+              value={suggestMonth}
+              onChange={e => { setSuggestMonth(Number(e.target.value)); setSuggestion(null) }}
+              className="border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {MONTH_NAMES.slice(1).map((name, i) => (
+                <option key={i + 1} value={i + 1}>{name} {year}</option>
+              ))}
+            </select>
+            <button
+              onClick={fetchSuggestion}
+              disabled={suggestionLoading}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium border border-blue-300 text-blue-700 bg-blue-50 rounded-lg hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <Sparkles className="w-4 h-4" />
+              {suggestionLoading ? 'Analysing last month…' : 'Get AI Suggestion'}
+            </button>
+          </div>
+
+          {suggestion && (
+            <BudgetSuggestionPanel
+              suggestion={suggestion as Parameters<typeof BudgetSuggestionPanel>[0]['suggestion']}
+              targetMonthLabel={`${MONTH_NAMES[suggestMonth]} ${year}`}
+              onApply={pct => { applySuggestion(pct); setSuggestion(null) }}
+              onDismiss={() => setSuggestion(null)}
+            />
           )}
 
           {splitsLoading ? (
