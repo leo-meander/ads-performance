@@ -16,17 +16,13 @@ depends_on = None
 def upgrade():
     op.create_table(
         "approval_comments",
-        sa.Column("id", sa.String(), server_default=sa.text("gen_random_uuid()"), nullable=False),
-        sa.Column("approval_id", sa.String(), nullable=True),
-        sa.Column("batch_id", sa.String(), nullable=True),
-        sa.Column("user_id", sa.String(), nullable=False),
+        sa.Column("id", sa.String(36), server_default=sa.text("gen_random_uuid()"), nullable=False),
+        sa.Column("approval_id", sa.String(36), nullable=True),
+        sa.Column("batch_id", sa.String(36), nullable=True),
+        sa.Column("user_id", sa.String(36), nullable=False),
         sa.Column("body", sa.Text(), nullable=False),
-        sa.Column("parent_id", sa.String(), nullable=True),
+        sa.Column("parent_id", sa.String(36), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.ForeignKeyConstraint(["approval_id"], ["combo_approvals.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["batch_id"], ["approval_batches.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["parent_id"], ["approval_comments.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_approval_comments_approval_id", "approval_comments", ["approval_id"])
