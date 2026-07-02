@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.permissions import accessible_branches, is_admin
 from app.database import get_db
 from app.dependencies.auth import require_section
-from app.models.budget import BudgetPlan
+from app.models.budget import BudgetPlan, BudgetYearlyPlan
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
 from app.models.user import User
@@ -27,6 +27,7 @@ from app.services.budget_service import (
     upsert_monthly_split,
     upsert_yearly_plan,
 )
+from app.services.budget_suggestion_service import generate_budget_suggestion
 
 router = APIRouter()
 
@@ -619,4 +620,43 @@ def put_yearly_plan_route(
         return _api_response(data=get_yearly_plan(db, body.branch, body.year))
     except Exception as e:
         db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.get("/budget/suggest")
+def suggest_budget(
+    branch: str = Query(...),
+    year: int = Query(...),
+    month: int = Query(...),
+    total_vnd: float | None = Query(None),
+    current_user: User = Depends(require_section("budget", "view")),
+    db: Session = Depends(get_db),
+):
+    """Generate an AI budget allocation suggestion for a given branch + month.
+
+    Analyses last month's ads performance (ROAS/CPA/spend by channel × TA ×
+    country) and HiD hotel-intelligence signals, then returns a suggested
+    channel_pct breakdown with rationale. Read-only — no DB writes.
+    """
+    try:
+        target_month = date(year, month, 1)
+
+        # If total_vnd not supplied, derive from yearly plan
+        if total_vnd is None:
+            yp = db.query(BudgetYearlyPlan).filter(
+                BudgetYearlyPlan.branch == branch,
+                BudgetYearlyPlan.year == year,
+            ).first()
+            if yp and yp.month_pct and yp.yearly_total_vnd:
+                pct = float(yp.month_pct.get(str(month), 0) or 0)
+                total_vnd = float(yp.yearly_total_vnd) * pct / 100 if pct else None
+
+        result = generate_budget_suggestion(
+            db,
+            branch=branch,
+            target_month=target_month,
+            total_vnd=total_vnd,
+        )
+        return _api_response(data=result)
+    except Exception as e:
         return _api_response(error=str(e))
