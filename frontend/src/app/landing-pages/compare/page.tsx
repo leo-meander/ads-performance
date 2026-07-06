@@ -186,9 +186,13 @@ function computeVerdict(ma: MetricsResponse, mb: MetricsResponse): Verdict {
 
 // ─────────────────────────── component ─────────────────────────────────────
 
+type BranchItem = { id: string; name: string }
+
 function ComparePageInner() {
   const search = useSearchParams()
-  const [pages, setPages] = useState<LandingPage[]>([])
+  const [allPages, setAllPages] = useState<LandingPage[]>([])
+  const [branches, setBranches] = useState<BranchItem[]>([])
+  const [branchFilter, setBranchFilter] = useState<string>('')
   const [idA, setIdA] = useState<string>(search?.get('a') || '')
   const [idB, setIdB] = useState<string>(search?.get('b') || '')
   const [days, setDays] = useState(28)
@@ -197,13 +201,28 @@ function ComparePageInner() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Load the page list once for the pickers.
+  // Load the page list and branch list once.
   useEffect(() => {
     fetch(`${API_BASE}/api/landing-pages?limit=200`, { credentials: 'include' })
       .then((r) => r.json())
-      .then((j) => { if (j.success) setPages(j.data.items) })
+      .then((j) => { if (j.success) setAllPages(j.data.items) })
+      .catch(() => {})
+    fetch(`${API_BASE}/api/branches`, { credentials: 'include' })
+      .then((r) => r.json())
+      .then((j) => { if (j.success) setBranches(j.data) })
       .catch(() => {})
   }, [])
+
+  const pages = branchFilter
+    ? allPages.filter((p) => p.branch_id === branchFilter)
+    : allPages
+
+  // Clear selections if they're no longer in the filtered list.
+  useEffect(() => {
+    if (idA && !pages.find((p) => p.id === idA)) setIdA('')
+    if (idB && !pages.find((p) => p.id === idB)) setIdB('')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchFilter])
 
   // Fetch metrics for both pages whenever the selection or window changes.
   useEffect(() => {
@@ -261,10 +280,34 @@ function ComparePageInner() {
         </div>
       </div>
 
-      {/* Page pickers */}
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        <PagePicker label="Page A" pages={pages} value={idA} exclude={idB} onChange={setIdA} />
-        <PagePicker label="Page B" pages={pages} value={idB} exclude={idA} onChange={setIdB} />
+      {/* Branch filter + page pickers */}
+      <div className="mb-4 flex flex-col gap-3">
+        {branches.length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-gray-600">Branch</span>
+            <div className="flex gap-1 flex-wrap">
+              <button
+                onClick={() => setBranchFilter('')}
+                className={`px-3 py-1 text-xs rounded-full border transition-colors ${branchFilter === '' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+              >
+                All
+              </button>
+              {branches.map((b) => (
+                <button
+                  key={b.id}
+                  onClick={() => setBranchFilter(b.id)}
+                  className={`px-3 py-1 text-xs rounded-full border transition-colors ${branchFilter === b.id ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                >
+                  {b.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <PagePicker label="Page A" pages={pages} value={idA} exclude={idB} onChange={setIdA} />
+          <PagePicker label="Page B" pages={pages} value={idB} exclude={idA} onChange={setIdB} />
+        </div>
       </div>
 
       {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded mb-4 text-sm">{error}</div>}
