@@ -186,7 +186,7 @@ function computeVerdict(ma: MetricsResponse, mb: MetricsResponse): Verdict {
 
 // ─────────────────────────── component ─────────────────────────────────────
 
-type BranchItem = { id: string; name: string }
+type BranchItem = { name: string }
 
 function ComparePageInner() {
   const search = useSearchParams()
@@ -214,7 +214,7 @@ function ComparePageInner() {
   }, [])
 
   const pages = branchFilter
-    ? allPages.filter((p) => p.branch_id === branchFilter)
+    ? allPages.filter((p) => p.branch_name === branchFilter)
     : allPages
 
   // Clear selections if they're no longer in the filtered list.
@@ -294,9 +294,9 @@ function ComparePageInner() {
               </button>
               {branches.map((b) => (
                 <button
-                  key={b.id}
-                  onClick={() => setBranchFilter(b.id)}
-                  className={`px-3 py-1 text-xs rounded-full border transition-colors ${branchFilter === b.id ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+                  key={b.name}
+                  onClick={() => setBranchFilter(b.name)}
+                  className={`px-3 py-1 text-xs rounded-full border transition-colors ${branchFilter === b.name ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
                 >
                   {b.name}
                 </button>

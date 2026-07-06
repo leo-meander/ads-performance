@@ -31,6 +31,7 @@ from app.services.landing_page_service import (
     rollup_metrics,
 )
 from app.services.landing_page_url_normalizer import build_url_with_utms, normalize_url
+from app.core.branches import resolve_branch_for_account_name
 
 router = APIRouter()
 
@@ -45,10 +46,16 @@ def _api(data=None, error=None):
 
 
 def _serialize_page(p: LandingPage, *, include_version: bool = False, db: Session | None = None) -> dict:
+    branch_name: str | None = None
+    if p.branch_id and db:
+        acct = db.query(AdAccount.account_name).filter(AdAccount.id == p.branch_id).scalar()
+        branch_name = resolve_branch_for_account_name(acct) if acct else None
+
     out = {
         "id": p.id,
         "source": p.source,
         "branch_id": p.branch_id,
+        "branch_name": branch_name,
         "title": p.title,
         "domain": p.domain,
         "slug": p.slug,
