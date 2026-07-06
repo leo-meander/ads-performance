@@ -110,6 +110,7 @@ export type LandingPage = {
   id: string
   source: 'managed' | 'external'
   branch_id: string | null
+  branch_name: string | null
   title: string
   domain: string
   slug: string
