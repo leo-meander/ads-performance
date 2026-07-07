@@ -34,6 +34,16 @@ class CreativeHypothesis(TimestampMixin, Base):
     confounding_factors = Column(JSONType, nullable=True)
     confidence_level = Column(String(10), nullable=True)  # low/medium/high
 
+    # Brief + script input for AI analysis
+    brief_text = Column(Text, nullable=True)
+    script_text = Column(Text, nullable=True)
+
+    # AI-extracted deep analysis (from analyze-brief endpoint)
+    evidence = Column(Text, nullable=True)          # what actually happened & why (qualitative)
+    creative_principle = Column(Text, nullable=True) # abstracted principle, reusable across creatives
+    why_it_worked = Column(Text, nullable=True)      # psychological/behavioral explanation
+    human_moment = Column(String(200), nullable=True) # the specific human moment category
+
     # Outcome
     status = Column(String(20), nullable=False, default="pending", index=True)
     # pending | running | validated | refuted | inconclusive

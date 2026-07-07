@@ -44,6 +44,9 @@ interface Hypothesis {
   actual_ctr: number | null; actual_roas: number | null
   actual_spend: number | null
   learning: string | null; created_at: string
+  brief_text: string | null; script_text: string | null
+  evidence: string | null; creative_principle: string | null
+  why_it_worked: string | null; human_moment: string | null
 }
 
 interface Account { id: string; account_name: string; platform: string }
@@ -127,6 +130,22 @@ export default function AnglesPage() {
     variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '',
     expected_outcome: '',
   })
+
+  // Analyze brief state
+  const [analyzeTarget, setAnalyzeTarget] = useState<string | null>(null) // hypothesis_id
+  const [analyzeForm, setAnalyzeForm] = useState({ brief_text: '', script_text: '' })
+  const [analyzeLoading, setAnalyzeLoading] = useState(false)
+
+  const handleAnalyzeBrief = (hypId: string) => {
+    setAnalyzeLoading(true)
+    fetch(`${API_BASE}/api/hypotheses/${hypId}/analyze-brief`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(analyzeForm),
+    }).then(r => r.json()).then(d => {
+      if (d.success) { setAnalyzeTarget(null); setAnalyzeForm({ brief_text: '', script_text: '' }); fetchHypotheses() }
+    }).catch(() => {}).finally(() => setAnalyzeLoading(false))
+  }
 
   // AI suggestion state
   const [suggestions, setSuggestions] = useState<{hypothesis: string; variable_tested: string; expected_outcome: string; rationale: string}[]>([])
@@ -779,6 +798,81 @@ export default function AnglesPage() {
                             <p className={`text-[10px] font-semibold uppercase tracking-wider mb-0.5 ${h.status === 'validated' ? 'text-green-600' : 'text-orange-600'}`}>Learning</p>
                             <p className={`text-xs ${h.status === 'validated' ? 'text-green-800' : 'text-orange-800'}`}>{h.learning}</p>
                           </div>
+                        )}
+
+                        {/* Deep analysis — evidence + principle */}
+                        {(h.evidence || h.creative_principle) && (
+                          <div className="border border-indigo-100 rounded-xl bg-indigo-50 p-4 mb-3 space-y-2">
+                            {h.human_moment && (
+                              <span className="inline-block text-[10px] font-bold uppercase tracking-widest text-indigo-500 bg-indigo-100 px-2 py-0.5 rounded-full">{h.human_moment}</span>
+                            )}
+                            {h.evidence && (
+                              <div>
+                                <p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-0.5">Evidence</p>
+                                <p className="text-xs text-indigo-900">{h.evidence}</p>
+                              </div>
+                            )}
+                            {h.why_it_worked && (
+                              <div>
+                                <p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-0.5">Why it worked</p>
+                                <p className="text-xs text-indigo-800 italic">{h.why_it_worked}</p>
+                              </div>
+                            )}
+                            {h.creative_principle && (
+                              <div className="border-t border-indigo-200 pt-2">
+                                <p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-0.5">Creative Principle</p>
+                                <p className="text-sm font-semibold text-indigo-900">"{h.creative_principle}"</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Analyze brief panel */}
+                        {analyzeTarget === h.hypothesis_id ? (
+                          <div className="border border-indigo-200 rounded-xl bg-white p-4 mb-3">
+                            <div className="flex justify-between items-center mb-3">
+                              <p className="text-xs font-semibold text-indigo-700">Paste Brief + Script for AI Analysis</p>
+                              <button onClick={() => setAnalyzeTarget(null)} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                            </div>
+                            <div className="space-y-2">
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Creative Brief</label>
+                                <textarea
+                                  value={analyzeForm.brief_text}
+                                  onChange={e => setAnalyzeForm(p => ({ ...p, brief_text: e.target.value }))}
+                                  rows={3}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400"
+                                  placeholder="What is this ad trying to do? Who is it for? What feeling should the viewer have?"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Script / Scene Description / Dialogue</label>
+                                <textarea
+                                  value={analyzeForm.script_text}
+                                  onChange={e => setAnalyzeForm(p => ({ ...p, script_text: e.target.value }))}
+                                  rows={4}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400"
+                                  placeholder="Paste the actual script, scene breakdown, or lời thoại here..."
+                                />
+                              </div>
+                              <button
+                                onClick={() => handleAnalyzeBrief(h.hypothesis_id)}
+                                disabled={!analyzeForm.brief_text || !analyzeForm.script_text || analyzeLoading}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
+                              >
+                                {analyzeLoading
+                                  ? <><span className="animate-spin inline-block w-3 h-3 border border-white border-t-transparent rounded-full" />Analyzing...</>
+                                  : <>🔬 Extract Evidence &amp; Principle</>}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => { setAnalyzeTarget(h.hypothesis_id); setAnalyzeForm({ brief_text: h.brief_text || '', script_text: h.script_text || '' }) }}
+                            className="mb-3 text-xs text-indigo-500 hover:text-indigo-700 underline underline-offset-2"
+                          >
+                            {h.evidence ? '✏️ Re-analyze brief' : '🔬 Analyze brief + script'}
+                          </button>
                         )}
 
                         {/* Next step */}

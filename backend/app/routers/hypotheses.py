@@ -46,6 +46,11 @@ class HypothesisCreate(BaseModel):
     created_by: Optional[str] = None
 
 
+class BriefAnalysisRequest(BaseModel):
+    brief_text: str
+    script_text: str
+
+
 class HypothesisResultUpdate(BaseModel):
     status: str
     actual_ctr: Optional[float] = None
@@ -106,6 +111,13 @@ def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None) -> dict:
         "validated_at": h.validated_at.isoformat() if h.validated_at else None,
         "created_by": h.created_by,
         "created_at": h.created_at.isoformat() if h.created_at else None,
+        # Deep analysis fields
+        "brief_text": h.brief_text,
+        "script_text": h.script_text,
+        "evidence": h.evidence,
+        "creative_principle": h.creative_principle,
+        "why_it_worked": h.why_it_worked,
+        "human_moment": h.human_moment,
     }
 
 
@@ -287,6 +299,40 @@ def update_hypothesis_result(
         db.refresh(hyp)
         return {"success": True, "data": _serialize(hyp), "error": None,
                 "timestamp": datetime.now(timezone.utc).isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@router.post("/{hypothesis_id}/analyze-brief")
+def analyze_brief(
+    hypothesis_id: str,
+    payload: BriefAnalysisRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Paste a creative brief + script — Claude extracts deep evidence,
+    creative principle, human moment, and why it worked.
+
+    Works on any status (running, validated, refuted) — most useful after
+    results are in so the analysis is grounded in actual outcome.
+    """
+    try:
+        hyp = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.hypothesis_id == hypothesis_id
+        ).first()
+        if not hyp:
+            raise HTTPException(status_code=404, detail=f"Hypothesis not found: {hypothesis_id}")
+
+        from app.services.hypothesis_analysis_service import analyze_brief as _analyze
+        result = _analyze(db, hyp, payload.brief_text, payload.script_text)
+        if "error" in result:
+            return {"success": False, "data": None, "error": result["error"],
+                    "timestamp": datetime.now(timezone.utc).isoformat()}
+        return {"success": True, "data": {**result, "hypothesis": _serialize(hyp)},
+                "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
     except HTTPException:
         raise
     except Exception as e:
