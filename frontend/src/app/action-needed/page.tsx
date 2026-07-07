@@ -147,6 +147,9 @@ export default function ActionNeededPage() {
   const [changelog, setChangelog] = useState<ChangeLogItem[]>([])
   const [funnel, setFunnel] = useState<FunnelStep[]>([])
   const [loading, setLoading] = useState(true)
+  const [comparisonMode, setComparisonMode] = useState<'prev' | 'benchmark'>('prev')
+  const [benchmarkFunnel, setBenchmarkFunnel] = useState<FunnelStep[]>([])
+  const [benchmarkLoading, setBenchmarkLoading] = useState(false)
   // Per-campaign apply/mark-done status, keyed by campaign_id.
   const [actionState, setActionState] = useState<
     Record<string, { status: 'loading' | 'done' | 'error'; msg?: string; tail?: string }>
@@ -206,6 +209,29 @@ export default function ActionNeededPage() {
       .catch(() => setRows([]))
       .finally(() => setLoading(false))
   }, [buildQs, datePreset, customFrom, customTo])
+
+  // Benchmark funnel: 90-day window for the same branch/platform scope.
+  // Fetched lazily when user switches to benchmark mode.
+  useEffect(() => {
+    if (comparisonMode !== 'benchmark') return
+    let cancelled = false
+    setBenchmarkLoading(true)
+    const today = new Date()
+    const d90ago = new Date(today)
+    d90ago.setDate(today.getDate() - 89)
+    const fmt = (d: Date) => d.toISOString().slice(0, 10)
+    const params = new URLSearchParams({ date_from: fmt(d90ago), date_to: fmt(today) })
+    if (platform) params.set('platform', platform)
+    if (branchParam) params.set('branches', branchParam)
+    apiFetch<FunnelResponse>(`/api/dashboard/funnel?${params}`)
+      .then((res) => {
+        if (cancelled) return
+        setBenchmarkFunnel(res.success && res.data ? res.data.steps || [] : [])
+      })
+      .catch(() => { if (!cancelled) setBenchmarkFunnel([]) })
+      .finally(() => { if (!cancelled) setBenchmarkLoading(false) })
+    return () => { cancelled = true }
+  }, [comparisonMode, branchParam, platform])
 
   // close branch dropdown on outside click
   const branchRef = useRef<HTMLDivElement>(null)
@@ -488,11 +514,39 @@ export default function ActionNeededPage() {
           {/* Conversion funnel diagnosis */}
           {funnel.length > 1 && (
             <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
-              <div className="flex items-center gap-2 mb-1">
-                <FilterIcon className="w-4 h-4 text-blue-600" />
-                <h2 className="text-sm font-semibold text-gray-800">Conversion funnel — where we lose people</h2>
+              <div className="flex items-start justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  <FilterIcon className="w-4 h-4 text-blue-600" />
+                  <h2 className="text-sm font-semibold text-gray-800">Conversion funnel — where we lose people</h2>
+                </div>
+                {/* Comparison mode tabs */}
+                <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
+                  <button
+                    onClick={() => setComparisonMode('prev')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                      comparisonMode === 'prev' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    vs Last Period
+                  </button>
+                  <button
+                    onClick={() => setComparisonMode('benchmark')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                      comparisonMode === 'benchmark' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    {benchmarkLoading ? '…' : 'vs 90-day Avg'}
+                  </button>
+                </div>
               </div>
-              <p className="text-[11px] text-gray-400 mb-4">Impression → Click → Search → Add to cart → Checkout → Booking · drop-off shown between steps</p>
+              <p className="text-[11px] text-gray-400 mb-4">
+                Impression → Click → Search → Add to cart → Checkout → Booking · drop-off shown between steps
+                {comparisonMode === 'benchmark' && (
+                  <span className="ml-2 text-blue-500">
+                    · comparing to 90-day average{selectedBranches.length === 1 ? ` for ${selectedBranches[0]}` : selectedBranches.length > 1 ? ' for selected branches' : ' across all branches'}
+                  </span>
+                )}
+              </p>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Funnel bars */}
@@ -500,6 +554,11 @@ export default function ActionNeededPage() {
                   {funnel.map((s, i) => {
                     const width = Math.max((s.value / funnelMax) * 100, 6)
                     const isLeak = funnelDiag?.stepKey === s.key
+                    // Benchmark delta: current drop_off minus benchmark drop_off
+                    const bmStep = benchmarkFunnel.find((b) => b.key === s.key)
+                    const bmDelta = comparisonMode === 'benchmark' && s.drop_off != null && bmStep?.drop_off != null
+                      ? s.drop_off - bmStep.drop_off
+                      : null
                     return (
                       <div key={s.key}>
                         {i > 0 && (
@@ -507,7 +566,15 @@ export default function ActionNeededPage() {
                             <span className="text-[11px] text-gray-400">
                               {s.drop_off != null ? `${(s.drop_off * 100).toFixed(1)}% drop-off` : '—'}
                             </span>
-                            <ChangeTag change={s.drop_off_change} inverseColor />
+                            {comparisonMode === 'prev' ? (
+                              <ChangeTag change={s.drop_off_change} inverseColor />
+                            ) : bmDelta != null ? (
+                              <span className={`text-[11px] font-medium ${bmDelta > 0.005 ? 'text-red-500' : bmDelta < -0.005 ? 'text-emerald-600' : 'text-gray-400'}`}>
+                                {bmDelta > 0 ? '+' : ''}{(bmDelta * 100).toFixed(1)}pp vs avg
+                              </span>
+                            ) : benchmarkLoading ? (
+                              <span className="text-[11px] text-gray-300">loading…</span>
+                            ) : null}
                             {isLeak && (
                               <span className="text-[10px] font-semibold text-red-600 bg-red-50 px-1.5 py-0.5 rounded">worst leak</span>
                             )}
@@ -522,6 +589,12 @@ export default function ActionNeededPage() {
                             <span className="text-sm font-bold text-gray-900 ml-2">{fmtNum(s.value)}</span>
                           </div>
                           <ChangeTag change={s.change} />
+                          {/* Benchmark reference rate */}
+                          {comparisonMode === 'benchmark' && bmStep?.drop_off != null && i > 0 && (
+                            <span className="text-[10px] text-gray-400 whitespace-nowrap">
+                              avg drop: {(bmStep.drop_off * 100).toFixed(1)}%
+                            </span>
+                          )}
                         </div>
                       </div>
                     )
