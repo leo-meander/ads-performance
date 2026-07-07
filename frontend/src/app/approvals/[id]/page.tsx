@@ -73,6 +73,16 @@ interface ApprovalDetail {
     combos: number; spend: number; roas: number
     conversions: number; branch_verdict: string
   }[]
+  hypothesis_id: string | null
+  hypothesis: {
+    hypothesis_id: string; hypothesis: string
+    human_desire: string | null; creative_angle: string | null
+    target_audience: string | null; market: string | null
+    variable_tested: string | null; primary_kpi: string | null
+    expected_outcome: string | null; status: string
+    actual_roas: number | null; actual_ctr: number | null
+    learning: string | null; creative_principle: string | null
+  } | null
 }
 
 export default function ApprovalDetailPage() {
@@ -310,6 +320,43 @@ export default function ApprovalDetailPage() {
             <div className="bg-white rounded-xl border border-gray-200 p-4">
               <h3 className="text-sm font-semibold text-gray-900 mb-2">Note from Submitter</h3>
               <p className="text-sm text-gray-700 whitespace-pre-line">{approval.note}</p>
+            </div>
+          )}
+
+          {/* Hypothesis being tested */}
+          {approval.hypothesis && (
+            <div className="bg-indigo-50 rounded-xl border border-indigo-200 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm">🔬</span>
+                <h3 className="text-sm font-semibold text-indigo-900">Hypothesis Being Tested</h3>
+                <span className="font-mono text-xs text-indigo-400">{approval.hypothesis.hypothesis_id}</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                  approval.hypothesis.status === 'validated' ? 'bg-green-100 text-green-700' :
+                  approval.hypothesis.status === 'refuted' ? 'bg-red-100 text-red-700' :
+                  approval.hypothesis.status === 'running' ? 'bg-blue-100 text-blue-700' :
+                  'bg-yellow-100 text-yellow-700'
+                }`}>{approval.hypothesis.status}</span>
+              </div>
+              <p className="text-sm text-indigo-900 font-medium mb-2">{approval.hypothesis.hypothesis}</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-indigo-700">
+                {approval.hypothesis.human_desire && <div><span className="text-indigo-400">Desire:</span> {approval.hypothesis.human_desire}</div>}
+                {approval.hypothesis.creative_angle && <div><span className="text-indigo-400">Angle:</span> {approval.hypothesis.creative_angle}</div>}
+                {approval.hypothesis.variable_tested && <div><span className="text-indigo-400">Testing:</span> {approval.hypothesis.variable_tested}</div>}
+                {approval.hypothesis.primary_kpi && <div><span className="text-indigo-400">KPI:</span> {approval.hypothesis.primary_kpi}</div>}
+              </div>
+              {approval.hypothesis.expected_outcome && (
+                <p className="mt-2 text-xs text-indigo-600 bg-white/60 rounded-lg px-2 py-1.5">
+                  <span className="font-medium">Expected: </span>{approval.hypothesis.expected_outcome}
+                </p>
+              )}
+              {approval.hypothesis.creative_principle && (
+                <p className="mt-2 text-xs text-indigo-500 italic">
+                  Principle: {approval.hypothesis.creative_principle}
+                </p>
+              )}
+              <a href="/angles" className="mt-2 inline-block text-xs text-indigo-500 hover:text-indigo-700 underline underline-offset-2">
+                View all hypotheses →
+              </a>
             </div>
           )}
 

@@ -47,6 +47,7 @@ interface Hypothesis {
   brief_text: string | null; script_text: string | null
   evidence: string | null; creative_principle: string | null
   why_it_worked: string | null; human_moment: string | null
+  approval_status: string | null
 }
 
 interface Account { id: string; account_name: string; platform: string }
@@ -770,6 +771,14 @@ export default function AnglesPage() {
                           {h.target_audience && <span className="text-xs text-gray-400">{h.target_audience}</span>}
                           {h.market && <span className="text-xs text-gray-400">{h.market}</span>}
                           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-600'}`}>{h.status}</span>
+                          {h.approval_status && (
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${
+                              h.approval_status === 'APPROVED' ? 'bg-green-50 text-green-700 border-green-200' :
+                              'bg-orange-50 text-orange-700 border-orange-200'
+                            }`}>
+                              {h.approval_status === 'APPROVED' ? '✓ Approved' : '⏳ In Review'}
+                            </span>
+                          )}
                         </div>
 
                         {/* Linked combo */}

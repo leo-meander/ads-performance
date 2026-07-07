@@ -30,6 +30,19 @@ def _snapshot_reviewers(db: Session, reviewers: list, round: int) -> None:
             ))
 
 
+def _sync_hypothesis_to_running(db: Session, hypothesis_id: str | None) -> None:
+    """When an approval is fully approved, move the linked hypothesis to 'running'."""
+    if not hypothesis_id:
+        return
+    from app.models.creative_hypothesis import CreativeHypothesis
+    hyp = db.query(CreativeHypothesis).filter(
+        CreativeHypothesis.hypothesis_id == hypothesis_id
+    ).first()
+    if hyp and hyp.status == "pending":
+        hyp.status = "running"
+        db.add(hyp)
+
+
 def submit_for_approval(
     db: Session,
     combo_id: str,
@@ -39,6 +52,7 @@ def submit_for_approval(
     submitted_by: str,
     deadline: str | None = None,
     note: str | None = None,
+    hypothesis_id: str | None = None,
 ) -> ComboApproval:
     """Submit a combo for approval. Creates combo_approval + reviewer rows + notifications."""
     combo = db.query(AdCombo).filter(AdCombo.id == combo_id).first()
@@ -77,6 +91,7 @@ def submit_for_approval(
         working_file_url=working_file_url,
         working_file_label=working_file_label,
         note=(note or "").strip() or None,
+        hypothesis_id=hypothesis_id or None,
     )
     db.add(approval)
     db.flush()  # Get approval.id
@@ -204,6 +219,7 @@ def record_decision(
         approval.status = "APPROVED"
         approval.resolved_at = now
         _notify_creator_of_result(db, approval, "APPROVED", None, email_tasks)
+        _sync_hypothesis_to_running(db, approval.hypothesis_id)
 
     db.commit()
 
@@ -280,6 +296,7 @@ def record_branch_manager_approval(
 
     email_tasks: list = []
     _notify_creator_of_result(db, approval, "APPROVED", None, email_tasks)
+    _sync_hypothesis_to_running(db, approval.hypothesis_id)
 
     db.commit()
 
@@ -710,6 +727,7 @@ def submit_batch(
     submitted_by: str,
     deadline: str | None = None,
     note: str | None = None,
+    hypothesis_id: str | None = None,
 ) -> ApprovalBatch:
     """Submit N combo versions of one target as a single review batch.
 
@@ -770,6 +788,7 @@ def submit_batch(
             working_file_url=v.get("working_file_url"),
             working_file_label=v.get("working_file_label"),
             note=(note or "").strip() or None,
+            hypothesis_id=hypothesis_id or None,
         )
         db.add(approval)
         db.flush()
@@ -932,16 +951,18 @@ def record_batch_decision(
 
     db.commit()
 
-    # Per approved version, queue its Figma render (outcome already committed).
+    # Per approved version, queue its Figma render + sync hypothesis to running.
     if batch_status == "APPROVED":
         for child in children:
             if child.status == "APPROVED":
+                _sync_hypothesis_to_running(db, child.hypothesis_id)
                 try:
                     _auto_queue_figma_render(db, child)
                 except Exception:
                     logger.exception(
                         "Auto-queue Figma render on batch approval failed for %s", child.id
                     )
+        db.commit()
 
     _queue_emails(email_tasks)
     return batch
@@ -1438,6 +1459,31 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
                     "conversions": ang_conversions,
                 }
 
+    # Hypothesis linked to this approval
+    hypothesis_data = None
+    if approval.hypothesis_id:
+        from app.models.creative_hypothesis import CreativeHypothesis
+        hyp = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.hypothesis_id == approval.hypothesis_id
+        ).first()
+        if hyp:
+            hypothesis_data = {
+                "hypothesis_id": hyp.hypothesis_id,
+                "hypothesis": hyp.hypothesis,
+                "human_desire": hyp.human_desire,
+                "creative_angle": hyp.creative_angle,
+                "target_audience": hyp.target_audience,
+                "market": hyp.market,
+                "variable_tested": hyp.variable_tested,
+                "primary_kpi": hyp.primary_kpi,
+                "expected_outcome": hyp.expected_outcome,
+                "status": hyp.status,
+                "actual_roas": float(hyp.actual_roas) if hyp.actual_roas else None,
+                "actual_ctr": float(hyp.actual_ctr) if hyp.actual_ctr else None,
+                "learning": hyp.learning,
+                "creative_principle": hyp.creative_principle,
+            }
+
     # Combo performance data
     combo_performance = None
     if combo:
@@ -1490,6 +1536,8 @@ def get_approval_detail(db: Session, approval_id: str) -> dict | None:
         "branch": branch_data,
         "angle": angle_data,
         "keypoints": keypoint_list,
+        "hypothesis": hypothesis_data,
+        "hypothesis_id": approval.hypothesis_id,
     }
 
 

@@ -89,6 +89,14 @@ class ComboApproval(Base, TimestampMixin):
     working_file_url = Column(Text, nullable=True)
     working_file_label = Column(String(100), nullable=True)
 
+    # Hypothesis being tested by this approval — optional link
+    hypothesis_id = Column(
+        String(20),
+        ForeignKey("creative_hypotheses.hypothesis_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Free-text note from the submitter, shown to reviewers for extra context
     note = Column(Text, nullable=True)
 
