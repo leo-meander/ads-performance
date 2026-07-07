@@ -28,6 +28,7 @@ from app.routers import (
     approvals,
     auth,
     booking_matches,
+    brand_intelligence,
     budget,
     campaigns,
     changelog,
@@ -39,6 +40,7 @@ from app.routers import (
     funnel_recommendations,
     google_campaigns,
     google_recommendations,
+    hypotheses,
     internal_tasks,
     landing_pages,
     lark,
@@ -161,6 +163,8 @@ app.include_router(landing_pages.router, prefix="/api", tags=["landing-pages"])
 app.include_router(public_landing.router, prefix="/api", tags=["public-landing"])
 app.include_router(changelog.router, prefix="/api", tags=["changelog"])
 app.include_router(winning_ads.router, prefix="/api", tags=["winning-ads"])
+app.include_router(brand_intelligence.router)
+app.include_router(hypotheses.router)
 
 # MCP server — no /api prefix; OAuth and MCP paths must live at server root
 app.include_router(mcp_router)

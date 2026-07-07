@@ -34,6 +34,7 @@ from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
+from app.models.brand_identity import BrandIdentity
 from app.models.creative_visual_tag import CreativeVisualTag
 from app.models.figma import FigmaTemplate
 from app.models.keypoint import BranchKeypoint
@@ -156,6 +157,9 @@ def generate_brief(
     if not branch:
         raise ValueError(f"Branch {branch_id} not found")
 
+    # Load brand identity to anchor AI context (Module 1 — Brand Intelligence)
+    brand_identity = _load_brand_identity(db, branch.account_name)
+
     pattern = _gather_patterns(
         db,
         branch_id=branch_id,
@@ -198,6 +202,7 @@ def generate_brief(
         language=language,
         ad_format=ad_format,
         pattern=pattern,
+        brand_identity=brand_identity,
     )
 
     try:
@@ -534,6 +539,34 @@ _LANGUAGE_NAMES = {
 }
 
 
+def _load_brand_identity(db: Session, account_name: str) -> Optional[dict[str, Any]]:
+    """Load brand identity by matching account_name against branch_name."""
+    from app.core.branches import BRANCH_ACCOUNT_MAP
+    branch_name = None
+    for bname, aliases in BRANCH_ACCOUNT_MAP.items():
+        if any(alias.lower() in account_name.lower() for alias in aliases):
+            branch_name = bname
+            break
+    if not branch_name:
+        return None
+    # Try partial match against brand_identities.branch_name
+    row = db.query(BrandIdentity).filter(
+        BrandIdentity.branch_name.ilike(f"%{branch_name}%")
+    ).first()
+    if not row:
+        return None
+    return {
+        "branch_name": row.branch_name,
+        "human_desires": row.human_desires or [],
+        "brand_territory": row.brand_territory,
+        "brand_promise": row.brand_promise,
+        "emotional_themes": row.emotional_themes or [],
+        "never_say": row.never_say or [],
+        "always_say": row.always_say or [],
+        "feeling_target": row.feeling_target,
+    }
+
+
 def _build_user_prompt(
     *,
     branch_name: str,
@@ -544,6 +577,7 @@ def _build_user_prompt(
     language: Optional[str],
     ad_format: str,
     pattern: dict[str, Any],
+    brand_identity: Optional[dict[str, Any]] = None,
 ) -> str:
     """Stitch the pattern summary into a model-facing prompt."""
     lines = [
@@ -551,6 +585,27 @@ def _build_user_prompt(
         f"Ad format: {ad_format}",
         f"Number of brief variants requested: {n_variants}",
     ]
+
+    # Prepend brand intelligence as the primary anchor
+    if brand_identity:
+        lines.append("")
+        lines.append("=== BRAND INTELLIGENCE (read this first) ===")
+        if brand_identity.get("feeling_target"):
+            lines.append(f"Core question: {brand_identity['feeling_target']}")
+        if brand_identity.get("brand_promise"):
+            lines.append(f"Brand promise: {brand_identity['brand_promise']}")
+        if brand_identity.get("brand_territory"):
+            lines.append(f"Brand territory: {brand_identity['brand_territory']}")
+        if brand_identity.get("human_desires"):
+            lines.append(f"Human desires this brand owns: {', '.join(brand_identity['human_desires'])}")
+        if brand_identity.get("emotional_themes"):
+            lines.append(f"Emotional themes: {', '.join(brand_identity['emotional_themes'])}")
+        if brand_identity.get("always_say"):
+            lines.append(f"Always evoke: {', '.join(brand_identity['always_say'])}")
+        if brand_identity.get("never_say"):
+            lines.append(f"Never use or imply: {', '.join(brand_identity['never_say'])}")
+        lines.append("=== END BRAND INTELLIGENCE ===")
+        lines.append("")
     if ad_format == "video":
         lines.append(
             "These are the branch's winning VIDEO ads. Prioritize a strong "
