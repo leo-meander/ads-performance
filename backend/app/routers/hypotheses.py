@@ -23,7 +23,6 @@ HYPOTHESIS_STATUSES = ["pending", "running", "validated", "refuted", "inconclusi
 class HypothesisSuggestRequest(BaseModel):
     branch_name: str
     human_desire: str
-    emotional_theme: Optional[str] = None
     creative_angle: Optional[str] = None
     target_audience: Optional[str] = None
     market: Optional[str] = None
@@ -110,31 +109,58 @@ def suggest_hypotheses(payload: HypothesisSuggestRequest, db: Session = Depends(
     try:
         from anthropic import Anthropic
         from app.config import settings
+        from app.models.ad_account import AdAccount
+        from app.models.ad_combo import AdCombo
 
         brand = db.query(BrandIdentity).filter(
             BrandIdentity.branch_name == payload.branch_name
         ).first()
 
-        # Build brand context block
+        # Brand context
         brand_ctx = ""
         if brand:
-            brand_ctx = f"""
-BRAND: {brand.branch_name}
+            brand_ctx = f"""BRAND: {brand.branch_name}
 Territory: {brand.brand_territory or "—"}
 Promise: {brand.brand_promise or "—"}
 Feeling target: {brand.feeling_target or "—"}
 Always say: {', '.join(brand.always_say or [])}
-Never say: {', '.join(brand.never_say or [])}
-"""
+Never say: {', '.join(brand.never_say or [])}"""
 
-        # Pull recent learnings for this desire to give Claude context
+        # WIN/LOSE combos for this branch — gives AI grounding in what actually worked
+        account = db.query(AdAccount).filter(
+            AdAccount.account_name == payload.branch_name,
+            AdAccount.platform == "meta",
+        ).first()
+        combo_ctx = ""
+        if account:
+            wins = db.query(AdCombo).filter(
+                AdCombo.branch_id == account.id,
+                AdCombo.verdict == "WIN",
+                AdCombo.spend > 0,
+            ).order_by(AdCombo.roas.desc()).limit(3).all()
+            loses = db.query(AdCombo).filter(
+                AdCombo.branch_id == account.id,
+                AdCombo.verdict == "LOSE",
+                AdCombo.spend > 0,
+            ).order_by(AdCombo.roas.asc()).limit(3).all()
+            if wins:
+                combo_ctx += "\nWINNING ADS (high ROAS):\n" + "\n".join(
+                    f"- {c.ad_name or c.combo_id} | TA:{c.target_audience} | ROAS:{float(c.roas or 0):.2f}x"
+                    for c in wins
+                )
+            if loses:
+                combo_ctx += "\nLOSING ADS (low ROAS):\n" + "\n".join(
+                    f"- {c.ad_name or c.combo_id} | TA:{c.target_audience} | ROAS:{float(c.roas or 0):.2f}x"
+                    for c in loses
+                )
+
+        # Past learnings for this desire
         past = db.query(CreativeHypothesis).filter(
             CreativeHypothesis.branch_name == payload.branch_name,
             CreativeHypothesis.human_desire == payload.human_desire,
             CreativeHypothesis.status.in_(["validated", "refuted"]),
             CreativeHypothesis.learning.isnot(None),
         ).order_by(desc(CreativeHypothesis.validated_at)).limit(3).all()
-
         past_ctx = ""
         if past:
             past_ctx = "\nPAST LEARNINGS FOR THIS DESIRE:\n" + "\n".join(
@@ -147,17 +173,19 @@ Return a JSON array of 3 objects, each with these fields:
 - hypothesis: one clear sentence stating the belief being tested (start with "We believe..." or "If we...")
 - variable_tested: the specific creative element being changed (e.g. "Social scene vs Room scene")
 - expected_outcome: measurable prediction (e.g. "+15% CTR vs control")
-- rationale: one sentence WHY this hypothesis aligns with the brand desire
+- rationale: one sentence WHY this hypothesis aligns with the brand and what the winning/losing ads suggest
 
 CONTEXT:
 {brand_ctx}
+{combo_ctx}
+{past_ctx}
+
+THIS TEST:
 Human Desire: {payload.human_desire}
-Emotional Theme: {payload.emotional_theme or "—"}
 Creative Angle: {payload.creative_angle or "—"}
 Target Audience: {payload.target_audience or "—"}
 Market: {payload.market or "—"}
 Primary KPI: {payload.primary_kpi or "ROAS"}
-{past_ctx}
 
 Return ONLY valid JSON array. No markdown, no explanation."""
 
