@@ -570,7 +570,19 @@ export default function AnglesPage() {
                 {/* Row 2: Angle + TA + Market + KPI */}
                 <div className="grid grid-cols-4 gap-3">
                   <div><label className="block text-xs text-gray-500 mb-1">Creative Angle</label>
-                    <input value={hypoForm.creative_angle} onChange={e => setHypoForm(p => ({ ...p, creative_angle: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="e.g. Strangers Become Friends" /></div>
+                    <select
+                      value={hypoForm.creative_angle}
+                      onChange={e => setHypoForm(p => ({ ...p, creative_angle: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                    >
+                      <option value="">— Any angle —</option>
+                      {angles
+                        .filter(a => !hypoForm.human_desire || a.human_desire === hypoForm.human_desire)
+                        .filter(a => !a.applicable_to?.length || a.applicable_to.includes(hypoForm.branch_name))
+                        .map(a => <option key={a.angle_id} value={a.angle_type}>{a.angle_type}</option>)
+                      }
+                    </select>
+                  </div>
                   <div><label className="block text-xs text-gray-500 mb-1">Target Audience</label>
                     <input value={hypoForm.target_audience} onChange={e => setHypoForm(p => ({ ...p, target_audience: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Solo / Couple..." /></div>
                   <div><label className="block text-xs text-gray-500 mb-1">Market</label>

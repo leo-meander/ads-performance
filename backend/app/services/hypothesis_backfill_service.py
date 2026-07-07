@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from app.models.ad_angle import AdAngle
-from app.models.ad_account import AdAccount
+from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.creative_hypothesis import CreativeHypothesis
 from app.services.hypothesis_sync_service import sync_hypothesis_results
