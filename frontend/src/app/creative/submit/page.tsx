@@ -13,6 +13,7 @@ interface Copy { id: string; copy_id: string; headline: string; body_text: strin
 interface Material { id: string; material_id: string; material_type: string; file_url: string; description: string | null; target_audience: string | null }
 interface Keypoint { id: string; branch_id: string; category: string; title: string }
 interface Angle { angle_id: string; branch_id: string | null; angle_type: string; angle_explain: string; status: string }
+interface HypothesisOption { hypothesis_id: string; hypothesis: string; human_desire: string | null; status: string }
 
 interface Version {
   mode: 'new' | 'existing'
@@ -49,6 +50,8 @@ export default function CreateBatchAndSubmitPage() {
   const [angles, setAngles] = useState<Angle[]>([])
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [hypotheses, setHypotheses] = useState<HypothesisOption[]>([])
+  const [hypothesisId, setHypothesisId] = useState('')
 
   // Shared fields (same target across all versions)
   const [branchId, setBranchId] = useState('')
@@ -72,10 +75,18 @@ export default function CreateBatchAndSubmitPage() {
   }, [])
 
   useEffect(() => {
-    if (!branchId) { setCopies([]); setMaterials([]); return }
+    if (!branchId) { setCopies([]); setMaterials([]); setHypotheses([]); setHypothesisId(''); return }
     fetch(`${API_BASE}/api/copies?branch_id=${branchId}&limit=200`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setCopies(d.data.items || []) }).catch(() => {})
     fetch(`${API_BASE}/api/materials?branch_id=${branchId}&limit=200`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setMaterials(d.data.items || []) }).catch(() => {})
-  }, [branchId])
+    // Load open hypotheses for this branch (pending + running = still being tested)
+    const branchName = accounts.find(a => a.id === branchId)?.account_name || ''
+    if (branchName) {
+      fetch(`${API_BASE}/api/hypotheses?branch_name=${encodeURIComponent(branchName)}&limit=50`, { credentials: 'include' })
+        .then(r => r.json()).then(d => {
+          if (d.success) setHypotheses((d.data.items || []).filter((h: HypothesisOption) => ['pending', 'running'].includes(h.status)))
+        }).catch(() => {})
+    }
+  }, [branchId, accounts])
 
   const toggleReviewer = (id: string) => setSelectedReviewers(prev => prev.includes(id) ? prev.filter(r => r !== id) : [...prev, id])
 
@@ -189,6 +200,7 @@ export default function CreateBatchAndSubmitPage() {
           reviewer_ids: selectedReviewers,
           deadline: deadline ? new Date(deadline).toISOString() : null,
           note: note.trim() || null,
+          hypothesis_id: hypothesisId || null,
         }),
       })
       const data = await res.json()
@@ -392,7 +404,7 @@ export default function CreateBatchAndSubmitPage() {
           <Plus className="w-4 h-4" /> Add another version
         </button>
 
-        {/* Working file label + deadline + note */}
+        {/* Working file label + deadline + note + hypothesis */}
         <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Working File Type</label>
@@ -411,6 +423,33 @@ export default function CreateBatchAndSubmitPage() {
             <textarea value={note} onChange={e => setNote(e.target.value)} rows={2}
               placeholder="e.g. Testing 3 hook variations of the June angle."
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y" />
+          </div>
+
+          {/* Hypothesis link */}
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">
+              Linked Hypothesis <span className="text-gray-400">(optional)</span>
+            </label>
+            {!branchId ? (
+              <p className="text-xs text-gray-400 italic">Select a branch first to see open hypotheses.</p>
+            ) : hypotheses.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">No open hypotheses for this branch. <a href="/angles" className="text-indigo-500 hover:underline">Create one →</a></p>
+            ) : (
+              <select value={hypothesisId} onChange={e => setHypothesisId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">— No hypothesis —</option>
+                {hypotheses.map(h => (
+                  <option key={h.hypothesis_id} value={h.hypothesis_id}>
+                    {h.hypothesis_id} · {h.hypothesis.slice(0, 80)}{h.hypothesis.length > 80 ? '…' : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+            {hypothesisId && (
+              <p className="mt-1.5 text-[11px] text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md">
+                When approved, this hypothesis will auto-move to <strong>running</strong>.
+              </p>
+            )}
           </div>
         </div>
 

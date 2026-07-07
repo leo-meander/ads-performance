@@ -51,6 +51,10 @@ class BriefAnalysisRequest(BaseModel):
     script_text: str
 
 
+class VisionAnalysisRequest(BaseModel):
+    image_urls: Optional[list[str]] = None  # base64 data: URLs or http(s); auto-pulled from combo if omitted
+
+
 class HypothesisResultUpdate(BaseModel):
     status: str
     actual_ctr: Optional[float] = None
@@ -78,7 +82,7 @@ def _next_hypothesis_id(db: Session) -> str:
     return f"HYP-{num:03d}"
 
 
-def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None) -> dict:
+def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_status: Optional[str] = None) -> dict:
     clicks = int(combo.clicks or 0) if combo else None
     conversions = int(combo.conversions or 0) if combo else None
     return {
@@ -118,6 +122,8 @@ def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None) -> dict:
         "creative_principle": h.creative_principle,
         "why_it_worked": h.why_it_worked,
         "human_moment": h.human_moment,
+        # Approval linkage — latest approval status for this hypothesis
+        "approval_status": approval_status,
     }
 
 
@@ -249,8 +255,23 @@ def list_hypotheses(
         rows = q.order_by(desc(CreativeHypothesis.created_at)).offset(offset).limit(limit).all()
         combo_ids = [r.combo_id for r in rows if r.combo_id]
         combos = {c.combo_id: c for c in db.query(AdCombo).filter(AdCombo.combo_id.in_(combo_ids)).all()}
-        return {"success": True, "data": {"items": [_serialize(r, combos.get(r.combo_id)) for r in rows], "total": total},
-                "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+        # Bulk-fetch latest approval status per hypothesis_id
+        from app.models.approval import ComboApproval as _CA
+        hyp_ids = [r.hypothesis_id for r in rows if r.hypothesis_id]
+        approval_statuses: dict[str, str] = {}
+        if hyp_ids:
+            approvals = db.query(_CA.hypothesis_id, _CA.status, _CA.submitted_at).filter(
+                _CA.hypothesis_id.in_(hyp_ids)
+            ).order_by(_CA.submitted_at.desc()).all()
+            for a in approvals:
+                if a.hypothesis_id not in approval_statuses:
+                    approval_statuses[a.hypothesis_id] = a.status
+
+        return {"success": True, "data": {"items": [
+            _serialize(r, combos.get(r.combo_id), approval_statuses.get(r.hypothesis_id))
+            for r in rows
+        ], "total": total}, "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
         return {"success": False, "data": None, "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()}
@@ -337,6 +358,53 @@ def analyze_brief(
         raise
     except Exception as e:
         db.rollback()
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@router.post("/{hypothesis_id}/analyze-vision")
+def analyze_vision(
+    hypothesis_id: str,
+    payload: VisionAnalysisRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Analyze ad images (single or carousel) with Claude Vision.
+
+    If image_urls is omitted and the hypothesis has a combo_id, images are
+    auto-pulled from ad_materials via the combo's material_id.
+    """
+    try:
+        hyp = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.hypothesis_id == hypothesis_id
+        ).first()
+        if not hyp:
+            raise HTTPException(status_code=404, detail=f"Hypothesis not found: {hypothesis_id}")
+
+        from app.services.hypothesis_analysis_service import analyze_vision as _analyze_vision
+        result = _analyze_vision(db, hyp, payload.image_urls)
+        if "error" in result:
+            return {"success": False, "data": None, "error": result["error"],
+                    "timestamp": datetime.now(timezone.utc).isoformat()}
+        return {"success": True, "data": {**result, "hypothesis": _serialize(hyp)},
+                "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@router.get("/by-combo/{combo_id}")
+def hypotheses_for_combo(combo_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Return hypotheses linked to a specific combo (for approval submit form)."""
+    try:
+        rows = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.combo_id == combo_id
+        ).order_by(desc(CreativeHypothesis.created_at)).all()
+        return {"success": True, "data": [_serialize(r) for r in rows],
+                "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
+    except Exception as e:
         return {"success": False, "data": None, "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()}
 

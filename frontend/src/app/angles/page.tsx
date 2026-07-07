@@ -47,6 +47,7 @@ interface Hypothesis {
   brief_text: string | null; script_text: string | null
   evidence: string | null; creative_principle: string | null
   why_it_worked: string | null; human_moment: string | null
+  approval_status: string | null
 }
 
 interface Account { id: string; account_name: string; platform: string }
@@ -133,7 +134,9 @@ export default function AnglesPage() {
 
   // Analyze brief state
   const [analyzeTarget, setAnalyzeTarget] = useState<string | null>(null) // hypothesis_id
+  const [analyzeMode, setAnalyzeMode] = useState<'brief' | 'vision'>('brief')
   const [analyzeForm, setAnalyzeForm] = useState({ brief_text: '', script_text: '' })
+  const [visionUrls, setVisionUrls] = useState('') // newline-separated image URLs
   const [analyzeLoading, setAnalyzeLoading] = useState(false)
 
   const handleAnalyzeBrief = (hypId: string) => {
@@ -144,6 +147,18 @@ export default function AnglesPage() {
       body: JSON.stringify(analyzeForm),
     }).then(r => r.json()).then(d => {
       if (d.success) { setAnalyzeTarget(null); setAnalyzeForm({ brief_text: '', script_text: '' }); fetchHypotheses() }
+    }).catch(() => {}).finally(() => setAnalyzeLoading(false))
+  }
+
+  const handleAnalyzeVision = (hypId: string) => {
+    setAnalyzeLoading(true)
+    const urls = visionUrls.split('\n').map(u => u.trim()).filter(Boolean)
+    fetch(`${API_BASE}/api/hypotheses/${hypId}/analyze-vision`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ image_urls: urls.length ? urls : null }),
+    }).then(r => r.json()).then(d => {
+      if (d.success) { setAnalyzeTarget(null); setVisionUrls(''); fetchHypotheses() }
     }).catch(() => {}).finally(() => setAnalyzeLoading(false))
   }
 
@@ -756,6 +771,14 @@ export default function AnglesPage() {
                           {h.target_audience && <span className="text-xs text-gray-400">{h.target_audience}</span>}
                           {h.market && <span className="text-xs text-gray-400">{h.market}</span>}
                           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-600'}`}>{h.status}</span>
+                          {h.approval_status && (
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${
+                              h.approval_status === 'APPROVED' ? 'bg-green-50 text-green-700 border-green-200' :
+                              'bg-orange-50 text-orange-700 border-orange-200'
+                            }`}>
+                              {h.approval_status === 'APPROVED' ? '✓ Approved' : '⏳ In Review'}
+                            </span>
+                          )}
                         </div>
 
                         {/* Linked combo */}
@@ -827,51 +850,95 @@ export default function AnglesPage() {
                           </div>
                         )}
 
-                        {/* Analyze brief panel */}
+                        {/* Analyze panel */}
                         {analyzeTarget === h.hypothesis_id ? (
                           <div className="border border-indigo-200 rounded-xl bg-white p-4 mb-3">
                             <div className="flex justify-between items-center mb-3">
-                              <p className="text-xs font-semibold text-indigo-700">Paste Brief + Script for AI Analysis</p>
+                              {/* Mode toggle */}
+                              <div className="flex gap-1 bg-indigo-50 rounded-lg p-0.5">
+                                <button
+                                  onClick={() => setAnalyzeMode('brief')}
+                                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${analyzeMode === 'brief' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                                >
+                                  🔬 Brief + Script
+                                </button>
+                                <button
+                                  onClick={() => setAnalyzeMode('vision')}
+                                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${analyzeMode === 'vision' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                                >
+                                  🖼️ Images
+                                </button>
+                              </div>
                               <button onClick={() => setAnalyzeTarget(null)} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
                             </div>
-                            <div className="space-y-2">
-                              <div>
-                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Creative Brief</label>
-                                <textarea
-                                  value={analyzeForm.brief_text}
-                                  onChange={e => setAnalyzeForm(p => ({ ...p, brief_text: e.target.value }))}
-                                  rows={3}
-                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400"
-                                  placeholder="What is this ad trying to do? Who is it for? What feeling should the viewer have?"
-                                />
+
+                            {analyzeMode === 'brief' ? (
+                              <div className="space-y-2">
+                                <div>
+                                  <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Creative Brief</label>
+                                  <textarea
+                                    value={analyzeForm.brief_text}
+                                    onChange={e => setAnalyzeForm(p => ({ ...p, brief_text: e.target.value }))}
+                                    rows={3}
+                                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400"
+                                    placeholder="What is this ad trying to do? Who is it for? What feeling should the viewer have?"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Script / Scene Description / Dialogue</label>
+                                  <textarea
+                                    value={analyzeForm.script_text}
+                                    onChange={e => setAnalyzeForm(p => ({ ...p, script_text: e.target.value }))}
+                                    rows={4}
+                                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400"
+                                    placeholder="Paste the actual script, scene breakdown, or lời thoại here..."
+                                  />
+                                </div>
+                                <button
+                                  onClick={() => handleAnalyzeBrief(h.hypothesis_id)}
+                                  disabled={!analyzeForm.brief_text || !analyzeForm.script_text || analyzeLoading}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
+                                >
+                                  {analyzeLoading
+                                    ? <><span className="animate-spin inline-block w-3 h-3 border border-white border-t-transparent rounded-full" />Analyzing...</>
+                                    : <>🔬 Extract Evidence &amp; Principle</>}
+                                </button>
                               </div>
-                              <div>
-                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Script / Scene Description / Dialogue</label>
-                                <textarea
-                                  value={analyzeForm.script_text}
-                                  onChange={e => setAnalyzeForm(p => ({ ...p, script_text: e.target.value }))}
-                                  rows={4}
-                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400"
-                                  placeholder="Paste the actual script, scene breakdown, or lời thoại here..."
-                                />
+                            ) : (
+                              <div className="space-y-2">
+                                <p className="text-[11px] text-gray-500">
+                                  {h.combo_id
+                                    ? `Linked to ${h.combo_id} — images will be pulled automatically. Or paste URLs below to override.`
+                                    : 'Paste image URLs (one per line). Supports base64 data: URLs or https:// links. Multiple = carousel.'}
+                                </p>
+                                <div>
+                                  <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Image URLs (optional override)</label>
+                                  <textarea
+                                    value={visionUrls}
+                                    onChange={e => setVisionUrls(e.target.value)}
+                                    rows={4}
+                                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono text-gray-800 placeholder-gray-400"
+                                    placeholder={"https://... or data:image/jpeg;base64,...\n(one URL per line for carousel)"}
+                                  />
+                                </div>
+                                <button
+                                  onClick={() => handleAnalyzeVision(h.hypothesis_id)}
+                                  disabled={analyzeLoading || (!h.combo_id && !visionUrls.trim())}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
+                                >
+                                  {analyzeLoading
+                                    ? <><span className="animate-spin inline-block w-3 h-3 border border-white border-t-transparent rounded-full" />Analyzing...</>
+                                    : <>🖼️ Analyze Visual Creative</>}
+                                </button>
                               </div>
-                              <button
-                                onClick={() => handleAnalyzeBrief(h.hypothesis_id)}
-                                disabled={!analyzeForm.brief_text || !analyzeForm.script_text || analyzeLoading}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
-                              >
-                                {analyzeLoading
-                                  ? <><span className="animate-spin inline-block w-3 h-3 border border-white border-t-transparent rounded-full" />Analyzing...</>
-                                  : <>🔬 Extract Evidence &amp; Principle</>}
-                              </button>
-                            </div>
+                            )}
                           </div>
                         ) : (
                           <button
-                            onClick={() => { setAnalyzeTarget(h.hypothesis_id); setAnalyzeForm({ brief_text: h.brief_text || '', script_text: h.script_text || '' }) }}
+                            onClick={() => { setAnalyzeTarget(h.hypothesis_id); setAnalyzeMode('brief'); setAnalyzeForm({ brief_text: h.brief_text || '', script_text: h.script_text || '' }) }}
                             className="mb-3 text-xs text-indigo-500 hover:text-indigo-700 underline underline-offset-2"
                           >
-                            {h.evidence ? '✏️ Re-analyze brief' : '🔬 Analyze brief + script'}
+                            {h.evidence ? '✏️ Re-analyze' : '🔬 Analyze creative'}
                           </button>
                         )}
 

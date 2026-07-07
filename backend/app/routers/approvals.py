@@ -49,6 +49,7 @@ class SubmitApprovalRequest(BaseModel):
     working_file_label: str | None = None
     deadline: str | None = None  # ISO8601 datetime string
     note: str | None = None
+    hypothesis_id: str | None = None  # HYP-xxx — links the approval to an experiment
 
 
 class DecisionRequest(BaseModel):
@@ -71,6 +72,7 @@ class SubmitBatchRequest(BaseModel):
     reviewer_ids: list[str]
     deadline: str | None = None  # ISO8601 datetime string
     note: str | None = None
+    hypothesis_id: str | None = None  # HYP-xxx — shared across all versions in this batch
 
 
 class ReviseBatchVersion(BaseModel):
@@ -145,6 +147,7 @@ def submit_approval(
             submitted_by=current_user.id,
             deadline=body.deadline,
             note=body.note,
+            hypothesis_id=body.hypothesis_id,
         )
         detail = get_approval_detail(db, approval.id)
         return _api_response(data=detail)
@@ -258,6 +261,7 @@ def submit_approval_batch(
             submitted_by=current_user.id,
             deadline=body.deadline,
             note=body.note,
+            hypothesis_id=body.hypothesis_id,
         )
         detail = get_batch_detail(db, batch.id)
         return _api_response(data=detail)
