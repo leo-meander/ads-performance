@@ -545,43 +545,106 @@ export default function AnglesPage() {
               <p>No hypotheses yet.</p>
               <p className="text-xs mt-1">Each ad idea should have a hypothesis before it runs.</p>
             </div>
-          ) : (
-            <div className="space-y-3">
-              {hypotheses.map(h => (
-                <div key={h.id} className="bg-white rounded-xl border border-gray-200 p-5">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="font-mono text-xs text-gray-400">{h.hypothesis_id}</span>
-                        <span className="text-xs text-gray-500">{h.branch_name}</span>
-                        {h.human_desire && <span className="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">{h.human_desire}</span>}
-                        {h.creative_angle && <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">{h.creative_angle}</span>}
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-600'}`}>{h.status}</span>
-                      </div>
-                      <p className="text-sm font-medium text-gray-800 mb-1">{h.hypothesis}</p>
-                      <div className="flex gap-4 text-xs text-gray-500 flex-wrap">
-                        {h.variable_tested && <span>Variable: <span className="text-gray-700">{h.variable_tested}</span></span>}
-                        {h.primary_kpi && <span>KPI: <span className="text-gray-700">{h.primary_kpi}</span></span>}
-                        {h.expected_outcome && <span>Expected: <span className="text-gray-700">{h.expected_outcome}</span></span>}
-                      </div>
-                      {h.learning && (
-                        <div className="mt-2 bg-green-50 rounded-lg px-3 py-2">
-                          <p className="text-[10px] text-green-600 font-semibold uppercase tracking-wider mb-0.5">Learning</p>
-                          <p className="text-xs text-green-800">{h.learning}</p>
-                        </div>
-                      )}
+          ) : (() => {
+            // Summary stats
+            const concluded = hypotheses.filter(h => ['validated','refuted'].includes(h.status))
+            const running = hypotheses.filter(h => h.status === 'running')
+            const pending = hypotheses.filter(h => h.status === 'pending')
+            const validated = hypotheses.filter(h => h.status === 'validated')
+            // Group learnings by desire
+            const learningsByDesire: Record<string, Hypothesis[]> = {}
+            concluded.filter(h => h.learning).forEach(h => {
+              const k = h.human_desire || 'General'
+              ;(learningsByDesire[k] = learningsByDesire[k] || []).push(h)
+            })
+            return (
+              <div className="space-y-6">
+                {/* Summary bar */}
+                <div className="grid grid-cols-4 gap-3">
+                  {[
+                    { label: 'Total', value: hypotheses.length, cls: 'text-gray-800' },
+                    { label: 'Running', value: running.length, cls: 'text-blue-700' },
+                    { label: 'Validated', value: validated.length, cls: 'text-green-700' },
+                    { label: 'Refuted', value: hypotheses.filter(h=>h.status==='refuted').length, cls: 'text-red-600' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-white rounded-xl border border-gray-200 p-4 text-center">
+                      <p className={`text-2xl font-bold ${s.cls}`}>{s.value}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">{s.label}</p>
                     </div>
-                    {(h.actual_roas || h.actual_ctr) && (
-                      <div className="shrink-0 text-right">
-                        {h.actual_roas && <p className="text-lg font-bold text-gray-900">{h.actual_roas.toFixed(2)}x</p>}
-                        {h.actual_ctr && <p className="text-xs text-gray-500">CTR {(h.actual_ctr * 100).toFixed(2)}%</p>}
-                      </div>
-                    )}
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
+
+                {/* Learnings by Desire */}
+                {Object.keys(learningsByDesire).length > 0 && (
+                  <div className="bg-violet-50 rounded-xl border border-violet-100 p-5">
+                    <p className="text-xs font-semibold text-violet-700 uppercase tracking-wider mb-3">Validated Learnings</p>
+                    <div className="space-y-3">
+                      {Object.entries(learningsByDesire).map(([desire, items]) => (
+                        <div key={desire}>
+                          <p className="text-[10px] font-bold text-violet-500 uppercase tracking-widest mb-1.5">{desire}</p>
+                          {items.map(h => (
+                            <div key={h.id} className="flex items-start gap-2 mb-1.5">
+                              <span className={`mt-0.5 shrink-0 w-1.5 h-1.5 rounded-full ${h.status === 'validated' ? 'bg-green-500' : 'bg-red-400'}`} />
+                              <p className="text-xs text-gray-700">{h.learning} <span className="text-gray-400">({h.creative_angle})</span></p>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Hypothesis list */}
+                <div className="space-y-3">
+                  {hypotheses.map(h => {
+                    const hasResult = h.actual_roas !== null || h.actual_ctr !== null
+                    return (
+                    <div key={h.id} className={`bg-white rounded-xl border p-5 ${h.status === 'validated' ? 'border-green-200' : h.status === 'refuted' ? 'border-red-200' : 'border-gray-200'}`}>
+                      <div className="flex items-start gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-2">
+                            <span className="font-mono text-xs text-gray-400">{h.hypothesis_id}</span>
+                            <span className="text-xs text-gray-500">{h.branch_name}</span>
+                            {h.human_desire && <span className="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">{h.human_desire}</span>}
+                            {h.creative_angle && <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">{h.creative_angle}</span>}
+                            {h.target_audience && <span className="text-xs text-gray-400">{h.target_audience}</span>}
+                            {h.market && <span className="text-xs text-gray-400">{h.market}</span>}
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-600'}`}>{h.status}</span>
+                          </div>
+                          <p className="text-sm font-medium text-gray-800 mb-2">{h.hypothesis}</p>
+
+                          {/* Expected vs Actual */}
+                          {(h.variable_tested || h.expected_outcome || hasResult) && (
+                            <div className="grid grid-cols-2 gap-3 mb-2">
+                              <div className="bg-gray-50 rounded-lg p-3">
+                                <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Expected</p>
+                                {h.variable_tested && <p className="text-xs text-gray-600 mb-0.5">Variable: {h.variable_tested}</p>}
+                                {h.primary_kpi && <p className="text-xs text-gray-600 mb-0.5">KPI: {h.primary_kpi}</p>}
+                                {h.expected_outcome && <p className="text-xs font-semibold text-gray-800">{h.expected_outcome}</p>}
+                              </div>
+                              <div className={`rounded-lg p-3 ${h.status === 'validated' ? 'bg-green-50' : h.status === 'refuted' ? 'bg-red-50' : 'bg-gray-50'}`}>
+                                <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Actual</p>
+                                {h.actual_roas !== null && <p className="text-xs font-bold text-gray-800">ROAS: {h.actual_roas.toFixed(2)}x</p>}
+                                {h.actual_ctr !== null && <p className="text-xs text-gray-600">CTR: {(h.actual_ctr * 100).toFixed(2)}%</p>}
+                                {!hasResult && <p className="text-xs text-gray-400 italic">Waiting for data...</p>}
+                              </div>
+                            </div>
+                          )}
+
+                          {h.learning && (
+                            <div className={`rounded-lg px-3 py-2 ${h.status === 'validated' ? 'bg-green-50' : 'bg-orange-50'}`}>
+                              <p className={`text-[10px] font-semibold uppercase tracking-wider mb-0.5 ${h.status === 'validated' ? 'text-green-600' : 'text-orange-600'}`}>Learning</p>
+                              <p className={`text-xs ${h.status === 'validated' ? 'text-green-800' : 'text-orange-800'}`}>{h.learning}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )})}
+                </div>
+              </div>
+            )
+          })()}
         </>
       )}
     </div>
