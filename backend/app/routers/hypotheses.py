@@ -109,7 +109,7 @@ def suggest_hypotheses(payload: HypothesisSuggestRequest, db: Session = Depends(
     try:
         from anthropic import Anthropic
         from app.config import settings
-        from app.models.ad_account import AdAccount
+        from app.models.account import AdAccount
         from app.models.ad_combo import AdCombo
 
         brand = db.query(BrandIdentity).filter(
