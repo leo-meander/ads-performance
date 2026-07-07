@@ -8,8 +8,8 @@ class CreativeHypothesis(TimestampMixin, Base):
 
     hypothesis_id = Column(String(20), nullable=False, unique=True, index=True)  # HYP-001
     branch_name = Column(String(100), nullable=False, index=True)
-    combo_id = Column(UUIDType, ForeignKey("ad_combos.id", ondelete="SET NULL"), nullable=True, index=True)
-    angle_id = Column(UUIDType, ForeignKey("ad_angles.id", ondelete="SET NULL"), nullable=True)
+    combo_id = Column(String(20), ForeignKey("ad_combos.combo_id", ondelete="SET NULL"), nullable=True, index=True)
+    angle_id = Column(String(20), ForeignKey("ad_angles.angle_id", ondelete="SET NULL"), nullable=True)
 
     # Strategy context
     human_desire = Column(String(100), nullable=True, index=True)
