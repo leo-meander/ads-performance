@@ -587,9 +587,15 @@ export default function AnglesPage() {
                     </select>
                   </div>
                   <div><label className="block text-xs text-gray-500 mb-1">Target Audience</label>
-                    <input value={hypoForm.target_audience} onChange={e => setHypoForm(p => ({ ...p, target_audience: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Solo / Couple..." /></div>
+                    <select value={hypoForm.target_audience} onChange={e => setHypoForm(p => ({ ...p, target_audience: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                      <option value="">— All —</option>
+                      {['Solo', 'Couple', 'Friend', 'Group', 'Business'].map(t => <option key={t}>{t}</option>)}
+                    </select></div>
                   <div><label className="block text-xs text-gray-500 mb-1">Market</label>
-                    <input value={hypoForm.market} onChange={e => setHypoForm(p => ({ ...p, market: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="US / VN / TW..." /></div>
+                    <select value={hypoForm.market} onChange={e => setHypoForm(p => ({ ...p, market: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                      <option value="">— All —</option>
+                      {['VN', 'TW', 'JP', 'SG', 'HK', 'AU', 'US', 'GB', 'DE', 'FR', 'KR', 'TH', 'PH', 'MY', 'ID'].map(m => <option key={m}>{m}</option>)}
+                    </select></div>
                   <div><label className="block text-xs text-gray-500 mb-1">Primary KPI</label>
                     <select value={hypoForm.primary_kpi} onChange={e => setHypoForm(p => ({ ...p, primary_kpi: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
                       {['CTR', 'CVR', 'ROAS', 'LPV', 'Hook Rate', 'Thruplay'].map(k => <option key={k}>{k}</option>)}
