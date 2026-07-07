@@ -19,8 +19,8 @@ def upgrade():
         sa.Column("id", sa.UUID(), server_default=sa.text("gen_random_uuid()"), nullable=False),
         sa.Column("hypothesis_id", sa.String(20), nullable=False, unique=True),
         sa.Column("branch_name", sa.String(100), nullable=False),
-        sa.Column("combo_id", sa.UUID(), nullable=True),
-        sa.Column("angle_id", sa.UUID(), nullable=True),
+        sa.Column("combo_id", sa.String(20), nullable=True),
+        sa.Column("angle_id", sa.String(20), nullable=True),
         # Strategy context
         sa.Column("human_desire", sa.String(100), nullable=True),
         sa.Column("creative_angle", sa.String(200), nullable=True),
@@ -49,8 +49,8 @@ def upgrade():
         sa.Column("created_by", sa.String(200), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), onupdate=sa.text("now()"), nullable=False),
-        sa.ForeignKeyConstraint(["combo_id"], ["ad_combos.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["angle_id"], ["ad_angles.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["combo_id"], ["ad_combos.combo_id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["angle_id"], ["ad_angles.angle_id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_creative_hypotheses_branch", "creative_hypotheses", ["branch_name"])

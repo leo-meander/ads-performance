@@ -805,6 +805,35 @@ def trigger_backfill_combo_country(
     return _api_response(data={"status": "started", "force": force})
 
 
+@router.post("/internal/tasks/sync-hypothesis-results", status_code=202)
+def sync_hypothesis_results(
+    background_tasks: BackgroundTasks,
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Evaluate all hypotheses with a linked combo_id.
+
+    Applies Creative Library verdict rules:
+      running    = clicks <= 4500 AND bookings < 5
+      validated  = ROAS >= branch benchmark
+      refuted    = ROAS < branch benchmark
+    """
+    _require_secret(x_internal_secret)
+    from app.services.hypothesis_sync_service import sync_hypothesis_results as _sync
+
+    def _run():
+        db = SessionLocal()
+        try:
+            result = _sync(db)
+            logger.info("[hypothesis-sync] done: %s", result)
+        except Exception:
+            logger.exception("[hypothesis-sync] failed")
+        finally:
+            db.close()
+
+    background_tasks.add_task(_run)
+    return _api_response(data={"status": "hypothesis sync started"})
+
+
 # ----------------------------------------------------------------- debug ----
 
 
@@ -944,3 +973,42 @@ def debug_combo(
         return _api_response(data={"results": results})
     finally:
         db.close()
+
+
+# ------------------------------------------- Hypothesis backfill + sync ------
+
+
+def _do_backfill_hypotheses(db, days: int = 60):
+    from app.services.hypothesis_backfill_service import backfill_hypotheses
+    return backfill_hypotheses(db, days=days)
+
+
+@router.post("/internal/tasks/backfill-hypotheses", status_code=200)
+def trigger_backfill_hypotheses(
+    x_internal_secret: str | None = Header(default=None),
+    days: int = 60,
+):
+    """One-shot: create a CreativeHypothesis for every AdCombo created in the
+    last `days` days (default 60) that isn't already linked to a hypothesis.
+
+    For each combo:
+    - Generates hypothesis text from the combo's linked angle (human_desire,
+      story_structure, visual patterns) — or a generic template if no angle.
+    - Sets status=running so auto-sync can evaluate immediately.
+    - After creating, runs hypothesis_sync_service to fill in actual ROAS/CTR.
+
+    Inline (synchronous) so the response shows the full summary.
+    Safe to run multiple times — skips combos already linked.
+    """
+    _require_secret(x_internal_secret)
+    if days < 1 or days > 365:
+        raise HTTPException(status_code=400, detail="days must be 1..365")
+    db = SessionLocal()
+    try:
+        result = _do_backfill_hypotheses(db, days=days)
+    except Exception as e:
+        logger.exception("[backfill-hypotheses] failed")
+        return _api_response(error=f"{type(e).__name__}: {e}")
+    finally:
+        db.close()
+    return _api_response(data=result)
