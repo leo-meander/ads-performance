@@ -10,6 +10,7 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.ad_combo import AdCombo
 from app.models.brand_identity import BrandIdentity
 from app.models.creative_hypothesis import CreativeHypothesis
 
@@ -72,12 +73,17 @@ def _next_hypothesis_id(db: Session) -> str:
     return f"HYP-{num:03d}"
 
 
-def _serialize(h: CreativeHypothesis) -> dict:
+def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None) -> dict:
+    clicks = int(combo.clicks or 0) if combo else None
+    conversions = int(combo.conversions or 0) if combo else None
     return {
         "id": str(h.id),
         "hypothesis_id": h.hypothesis_id,
         "branch_name": h.branch_name,
         "combo_id": str(h.combo_id) if h.combo_id else None,
+        "ad_name": combo.ad_name if combo else None,
+        "combo_clicks": clicks,
+        "combo_conversions": conversions,
         "angle_id": str(h.angle_id) if h.angle_id else None,
         "human_desire": h.human_desire,
         "creative_angle": h.creative_angle,
@@ -229,7 +235,9 @@ def list_hypotheses(
             q = q.filter(CreativeHypothesis.human_desire == human_desire)
         total = q.count()
         rows = q.order_by(desc(CreativeHypothesis.created_at)).offset(offset).limit(limit).all()
-        return {"success": True, "data": {"items": [_serialize(r) for r in rows], "total": total},
+        combo_ids = [r.combo_id for r in rows if r.combo_id]
+        combos = {c.combo_id: c for c in db.query(AdCombo).filter(AdCombo.combo_id.in_(combo_ids)).all()}
+        return {"success": True, "data": {"items": [_serialize(r, combos.get(r.combo_id)) for r in rows], "total": total},
                 "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
         return {"success": False, "data": None, "error": str(e),
