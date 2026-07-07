@@ -51,6 +51,10 @@ class BriefAnalysisRequest(BaseModel):
     script_text: str
 
 
+class VisionAnalysisRequest(BaseModel):
+    image_urls: Optional[list[str]] = None  # base64 data: URLs or http(s); auto-pulled from combo if omitted
+
+
 class HypothesisResultUpdate(BaseModel):
     status: str
     actual_ctr: Optional[float] = None
@@ -328,6 +332,39 @@ def analyze_brief(
 
         from app.services.hypothesis_analysis_service import analyze_brief as _analyze
         result = _analyze(db, hyp, payload.brief_text, payload.script_text)
+        if "error" in result:
+            return {"success": False, "data": None, "error": result["error"],
+                    "timestamp": datetime.now(timezone.utc).isoformat()}
+        return {"success": True, "data": {**result, "hypothesis": _serialize(hyp)},
+                "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@router.post("/{hypothesis_id}/analyze-vision")
+def analyze_vision(
+    hypothesis_id: str,
+    payload: VisionAnalysisRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Analyze ad images (single or carousel) with Claude Vision.
+
+    If image_urls is omitted and the hypothesis has a combo_id, images are
+    auto-pulled from ad_materials via the combo's material_id.
+    """
+    try:
+        hyp = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.hypothesis_id == hypothesis_id
+        ).first()
+        if not hyp:
+            raise HTTPException(status_code=404, detail=f"Hypothesis not found: {hypothesis_id}")
+
+        from app.services.hypothesis_analysis_service import analyze_vision as _analyze_vision
+        result = _analyze_vision(db, hyp, payload.image_urls)
         if "error" in result:
             return {"success": False, "data": None, "error": result["error"],
                     "timestamp": datetime.now(timezone.utc).isoformat()}
