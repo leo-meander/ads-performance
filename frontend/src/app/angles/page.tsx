@@ -119,11 +119,20 @@ export default function AnglesPage() {
 
   // Create hypothesis form
   const [hypoForm, setHypoForm] = useState({
-    branch_name: '', human_desire: '', creative_angle: '',
+    branch_name: '', human_desire: '', emotional_theme: '', creative_angle: '',
     target_audience: '', market: '', hypothesis: '',
     variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '',
     expected_outcome: '',
   })
+
+  // Derived: desires + themes for selected branch
+  const selectedBrand = brandIdentities.find(b => b.branch_name === hypoForm.branch_name)
+  const branchDesires = selectedBrand ? selectedBrand.human_desires : HUMAN_DESIRES
+  const branchThemes = selectedBrand
+    ? (hypoForm.human_desire
+        ? selectedBrand.emotional_themes   // all themes for now; can filter per-desire if seeded
+        : selectedBrand.emotional_themes)
+    : []
 
   const fetchAngles = () => {
     setLoading(true)
@@ -181,7 +190,7 @@ export default function AnglesPage() {
     }).then(r => r.json()).then(d => {
       if (d.success) {
         setShowCreateHypo(false)
-        setHypoForm({ branch_name: '', human_desire: '', creative_angle: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '' })
+        setHypoForm({ branch_name: '', human_desire: '', emotional_theme: '', creative_angle: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '' })
         fetchHypotheses()
       }
     })
@@ -505,15 +514,49 @@ export default function AnglesPage() {
                 <button onClick={() => setShowCreateHypo(false)}><X className="w-5 h-5 text-gray-400" /></button>
               </div>
               <div className="space-y-3">
+                {/* Row 1: Branch → auto-populates desires */}
                 <div className="grid grid-cols-3 gap-3">
-                  <div><label className="block text-xs text-gray-500 mb-1">Branch *</label>
-                    <select value={hypoForm.branch_name} onChange={e => setHypoForm(p => ({ ...p, branch_name: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                      <option value="">Select...</option>{BRANCH_NAMES.map(b => <option key={b}>{b}</option>)}
-                    </select></div>
-                  <div><label className="block text-xs text-gray-500 mb-1">Human Desire</label>
-                    <select value={hypoForm.human_desire} onChange={e => setHypoForm(p => ({ ...p, human_desire: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                      <option value="">Select...</option>{HUMAN_DESIRES.map(d => <option key={d}>{d}</option>)}
-                    </select></div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Branch *</label>
+                    <select
+                      value={hypoForm.branch_name}
+                      onChange={e => setHypoForm(p => ({ ...p, branch_name: e.target.value, human_desire: '', emotional_theme: '' }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                    >
+                      <option value="">Select...</option>
+                      {BRANCH_NAMES.map(b => <option key={b}>{b}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">
+                      Human Desire
+                      {selectedBrand && <span className="ml-1 text-purple-500">({branchDesires.length} for {hypoForm.branch_name.split(' ').pop()})</span>}
+                    </label>
+                    <select
+                      value={hypoForm.human_desire}
+                      onChange={e => setHypoForm(p => ({ ...p, human_desire: e.target.value, emotional_theme: '' }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                      disabled={!hypoForm.branch_name}
+                    >
+                      <option value="">{hypoForm.branch_name ? 'Select...' : '← Pick branch first'}</option>
+                      {branchDesires.map(d => <option key={d}>{d}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Emotional Theme</label>
+                    <select
+                      value={hypoForm.emotional_theme}
+                      onChange={e => setHypoForm(p => ({ ...p, emotional_theme: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                      disabled={!hypoForm.human_desire || branchThemes.length === 0}
+                    >
+                      <option value="">{hypoForm.human_desire ? 'Select...' : '← Pick desire first'}</option>
+                      {branchThemes.map(t => <option key={t}>{t}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {/* Row 2: Angle + TA + Market + KPI */}
+                <div className="grid grid-cols-4 gap-3">
                   <div><label className="block text-xs text-gray-500 mb-1">Creative Angle</label>
                     <input value={hypoForm.creative_angle} onChange={e => setHypoForm(p => ({ ...p, creative_angle: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="e.g. Strangers Become Friends" /></div>
                   <div><label className="block text-xs text-gray-500 mb-1">Target Audience</label>
