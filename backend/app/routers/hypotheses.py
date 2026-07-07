@@ -1,4 +1,6 @@
 """Creative Hypotheses API — Learning Engine."""
+import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -8,11 +10,24 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.brand_identity import BrandIdentity
 from app.models.creative_hypothesis import CreativeHypothesis
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/hypotheses", tags=["hypotheses"])
 
 HYPOTHESIS_STATUSES = ["pending", "running", "validated", "refuted", "inconclusive"]
+
+
+class HypothesisSuggestRequest(BaseModel):
+    branch_name: str
+    human_desire: str
+    emotional_theme: Optional[str] = None
+    creative_angle: Optional[str] = None
+    target_audience: Optional[str] = None
+    market: Optional[str] = None
+    primary_kpi: Optional[str] = None
 
 
 class HypothesisCreate(BaseModel):
@@ -87,6 +102,84 @@ def _serialize(h: CreativeHypothesis) -> dict:
         "created_by": h.created_by,
         "created_at": h.created_at.isoformat() if h.created_at else None,
     }
+
+
+@router.post("/suggest")
+def suggest_hypotheses(payload: HypothesisSuggestRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Use Claude to generate 3 hypothesis variants based on brand context."""
+    try:
+        from anthropic import Anthropic
+        from app.config import settings
+
+        brand = db.query(BrandIdentity).filter(
+            BrandIdentity.branch_name == payload.branch_name
+        ).first()
+
+        # Build brand context block
+        brand_ctx = ""
+        if brand:
+            brand_ctx = f"""
+BRAND: {brand.branch_name}
+Territory: {brand.brand_territory or "—"}
+Promise: {brand.brand_promise or "—"}
+Feeling target: {brand.feeling_target or "—"}
+Always say: {', '.join(brand.always_say or [])}
+Never say: {', '.join(brand.never_say or [])}
+"""
+
+        # Pull recent learnings for this desire to give Claude context
+        past = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.branch_name == payload.branch_name,
+            CreativeHypothesis.human_desire == payload.human_desire,
+            CreativeHypothesis.status.in_(["validated", "refuted"]),
+            CreativeHypothesis.learning.isnot(None),
+        ).order_by(desc(CreativeHypothesis.validated_at)).limit(3).all()
+
+        past_ctx = ""
+        if past:
+            past_ctx = "\nPAST LEARNINGS FOR THIS DESIRE:\n" + "\n".join(
+                f"- [{h.status.upper()}] {h.learning}" for h in past
+            )
+
+        prompt = f"""You are a performance marketing strategist for a boutique hotel brand.
+Generate exactly 3 creative hypothesis variants for an upcoming ad creative test.
+Return a JSON array of 3 objects, each with these fields:
+- hypothesis: one clear sentence stating the belief being tested (start with "We believe..." or "If we...")
+- variable_tested: the specific creative element being changed (e.g. "Social scene vs Room scene")
+- expected_outcome: measurable prediction (e.g. "+15% CTR vs control")
+- rationale: one sentence WHY this hypothesis aligns with the brand desire
+
+CONTEXT:
+{brand_ctx}
+Human Desire: {payload.human_desire}
+Emotional Theme: {payload.emotional_theme or "—"}
+Creative Angle: {payload.creative_angle or "—"}
+Target Audience: {payload.target_audience or "—"}
+Market: {payload.market or "—"}
+Primary KPI: {payload.primary_kpi or "ROAS"}
+{past_ctx}
+
+Return ONLY valid JSON array. No markdown, no explanation."""
+
+        client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = msg.content[0].text.strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        suggestions = json.loads(raw.strip())
+        return {"success": True, "data": {"suggestions": suggestions},
+                "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
+    except Exception as e:
+        logger.exception("[hypothesis-suggest] failed")
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @router.get("")
