@@ -125,6 +125,39 @@ export default function AnglesPage() {
     expected_outcome: '',
   })
 
+  // AI suggestion state
+  const [suggestions, setSuggestions] = useState<{hypothesis: string; variable_tested: string; expected_outcome: string; rationale: string}[]>([])
+  const [suggestLoading, setSuggestLoading] = useState(false)
+
+  const handleSuggest = () => {
+    if (!hypoForm.branch_name || !hypoForm.human_desire) return
+    setSuggestLoading(true)
+    setSuggestions([])
+    fetch(`${API_BASE}/api/hypotheses/suggest`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        branch_name: hypoForm.branch_name,
+        human_desire: hypoForm.human_desire,
+        creative_angle: hypoForm.creative_angle || null,
+        target_audience: hypoForm.target_audience || null,
+        market: hypoForm.market || null,
+        primary_kpi: hypoForm.primary_kpi,
+      }),
+    }).then(r => r.json()).then(d => {
+      if (d.success) setSuggestions(d.data.suggestions)
+    }).catch(() => {}).finally(() => setSuggestLoading(false))
+  }
+
+  const applySuggestion = (s: typeof suggestions[0]) => {
+    setHypoForm(p => ({ ...p, hypothesis: s.hypothesis, variable_tested: s.variable_tested, expected_outcome: s.expected_outcome }))
+    setSuggestions([])
+  }
+
+  // Derived: desires for selected branch
+  const selectedBrand = brandIdentities.find(b => b.branch_name === hypoForm.branch_name)
+  const branchDesires = selectedBrand ? selectedBrand.human_desires : HUMAN_DESIRES
+
   const fetchAngles = () => {
     setLoading(true)
     const p = new URLSearchParams()
@@ -505,15 +538,37 @@ export default function AnglesPage() {
                 <button onClick={() => setShowCreateHypo(false)}><X className="w-5 h-5 text-gray-400" /></button>
               </div>
               <div className="space-y-3">
+                {/* Row 1: Branch → auto-populates desires */}
                 <div className="grid grid-cols-3 gap-3">
-                  <div><label className="block text-xs text-gray-500 mb-1">Branch *</label>
-                    <select value={hypoForm.branch_name} onChange={e => setHypoForm(p => ({ ...p, branch_name: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                      <option value="">Select...</option>{BRANCH_NAMES.map(b => <option key={b}>{b}</option>)}
-                    </select></div>
-                  <div><label className="block text-xs text-gray-500 mb-1">Human Desire</label>
-                    <select value={hypoForm.human_desire} onChange={e => setHypoForm(p => ({ ...p, human_desire: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                      <option value="">Select...</option>{HUMAN_DESIRES.map(d => <option key={d}>{d}</option>)}
-                    </select></div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Branch *</label>
+                    <select
+                      value={hypoForm.branch_name}
+                      onChange={e => setHypoForm(p => ({ ...p, branch_name: e.target.value, human_desire: '' }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                    >
+                      <option value="">Select...</option>
+                      {BRANCH_NAMES.map(b => <option key={b}>{b}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">
+                      Human Desire
+                      {selectedBrand && <span className="ml-1 text-purple-500">({branchDesires.length} for {hypoForm.branch_name.split(' ').pop()})</span>}
+                    </label>
+                    <select
+                      value={hypoForm.human_desire}
+                      onChange={e => setHypoForm(p => ({ ...p, human_desire: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                      disabled={!hypoForm.branch_name}
+                    >
+                      <option value="">{hypoForm.branch_name ? 'Select...' : '← Pick branch first'}</option>
+                      {branchDesires.map(d => <option key={d}>{d}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {/* Row 2: Angle + TA + Market + KPI */}
+                <div className="grid grid-cols-4 gap-3">
                   <div><label className="block text-xs text-gray-500 mb-1">Creative Angle</label>
                     <input value={hypoForm.creative_angle} onChange={e => setHypoForm(p => ({ ...p, creative_angle: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="e.g. Strangers Become Friends" /></div>
                   <div><label className="block text-xs text-gray-500 mb-1">Target Audience</label>
@@ -525,8 +580,43 @@ export default function AnglesPage() {
                       {['CTR', 'CVR', 'ROAS', 'LPV', 'Hook Rate', 'Thruplay'].map(k => <option key={k}>{k}</option>)}
                     </select></div>
                 </div>
+                {/* AI Suggest */}
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleSuggest}
+                    disabled={!hypoForm.branch_name || !hypoForm.human_desire || suggestLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-50 text-violet-700 border border-violet-200 rounded-lg text-xs font-medium hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {suggestLoading
+                      ? <><span className="animate-spin inline-block w-3 h-3 border border-violet-400 border-t-transparent rounded-full" />Generating...</>
+                      : <>✨ Suggest hypotheses with AI</>}
+                  </button>
+                  {!hypoForm.human_desire && <span className="text-xs text-gray-400">Pick branch + desire first</span>}
+                </div>
+
+                {/* Suggestions panel */}
+                {suggestions.length > 0 && (
+                  <div className="border border-violet-200 rounded-xl bg-violet-50 p-4 space-y-3">
+                    <p className="text-xs font-semibold text-violet-700 uppercase tracking-wider">AI Suggestions — click to use</p>
+                    {suggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        onClick={() => applySuggestion(s)}
+                        className="w-full text-left bg-white rounded-lg border border-violet-100 p-3 hover:border-violet-400 hover:shadow-sm transition-all group"
+                      >
+                        <p className="text-sm text-gray-800 font-medium mb-1 group-hover:text-violet-800">{s.hypothesis}</p>
+                        <div className="flex gap-4 text-xs text-gray-500 flex-wrap">
+                          <span>Variable: <span className="text-gray-700">{s.variable_tested}</span></span>
+                          <span>Expected: <span className="text-gray-700">{s.expected_outcome}</span></span>
+                        </div>
+                        <p className="text-[11px] text-violet-500 mt-1 italic">{s.rationale}</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 <div><label className="block text-xs text-gray-500 mb-1">Hypothesis *</label>
-                  <textarea value={hypoForm.hypothesis} onChange={e => setHypoForm(p => ({ ...p, hypothesis: e.target.value }))} rows={2} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Solo travelers are more likely to click when they see real social interactions than room aesthetics." /></div>
+                  <textarea value={hypoForm.hypothesis} onChange={e => setHypoForm(p => ({ ...p, hypothesis: e.target.value }))} rows={2} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="We believe that showing guests recovering rather than arriving will resonate more with burnout-prone urban audiences." /></div>
                 <div className="grid grid-cols-2 gap-3">
                   <div><label className="block text-xs text-gray-500 mb-1">Variable Tested</label>
                     <input value={hypoForm.variable_tested} onChange={e => setHypoForm(p => ({ ...p, variable_tested: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Social scene vs Room scene" /></div>
