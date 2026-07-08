@@ -511,6 +511,87 @@ def hypothesis_summary(branch_name: str, db: Session = Depends(get_db)) -> dict[
                 "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+@router.get("/benchmark/{branch_name}/{metric}")
+def metric_benchmark(branch_name: str, metric: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Return 60-day average of a creative metric for a branch (used to auto-fill win_threshold)."""
+    try:
+        from datetime import date, timedelta
+        from sqlalchemy import func, and_
+        from app.models.metrics import MetricsCache
+        from app.models.campaign import Campaign
+
+        SUPPORTED = {"hook_rate", "thumb_stop_rate", "hold_rate", "CTR", "ctr", "booking_rate"}
+        if metric not in SUPPORTED:
+            return {"success": False, "data": None,
+                    "error": f"Unsupported metric '{metric}'. Supported: {sorted(SUPPORTED)}",
+                    "timestamp": datetime.now(timezone.utc).isoformat()}
+
+        cutoff = date.today() - timedelta(days=60)
+
+        # Join metrics_cache → campaigns to filter by branch
+        q = (
+            db.query(MetricsCache)
+            .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+            .filter(
+                Campaign.branch_name == branch_name,
+                MetricsCache.date >= cutoff,
+                MetricsCache.ad_id.isnot(None),         # ad-level rows only
+                MetricsCache.impressions > 0,
+            )
+        )
+        rows = q.all()
+
+        if not rows:
+            return {"success": True, "data": {"branch_name": branch_name, "metric": metric,
+                    "average": None, "sample_size": 0, "note": "No data in last 60 days"},
+                    "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+        values: list[float] = []
+        for r in rows:
+            imp = r.impressions or 0
+            if imp == 0:
+                continue
+            if metric in ("hook_rate", "thumb_stop_rate"):
+                # 3s video views / impressions
+                if r.video_3s_views:
+                    values.append(r.video_3s_views / imp * 100)
+            elif metric == "hold_rate":
+                # thruplay / impressions
+                if r.video_thru_plays:
+                    values.append(r.video_thru_plays / imp * 100)
+            elif metric in ("CTR", "ctr"):
+                if r.ctr:
+                    values.append(float(r.ctr) * 100)
+            elif metric == "booking_rate":
+                # conversions / clicks
+                if r.clicks and r.conversions:
+                    values.append(float(r.conversions) / r.clicks * 100)
+
+        if not values:
+            return {"success": True, "data": {"branch_name": branch_name, "metric": metric,
+                    "average": None, "sample_size": 0, "note": "Metric not present in data"},
+                    "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+        average = round(sum(values) / len(values), 2)
+        return {
+            "success": True,
+            "data": {
+                "branch_name": branch_name,
+                "metric": metric,
+                "average": average,
+                "sample_size": len(values),
+                "unit": "percent",
+                "period_days": 60,
+            },
+            "error": None,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        logger.exception("[benchmark] failed")
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
 @router.get("/learning-dashboard/{branch_name}")
 def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Learning Dashboard — win rates by desire, category, angle, and funnel-stage failure map."""

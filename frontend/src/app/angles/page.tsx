@@ -221,6 +221,22 @@ export default function AnglesPage() {
     }).catch(() => {}).finally(() => setAnalyzeLoading(false))
   }
 
+  // Auto-fetch benchmark win threshold
+  const [benchmarkLoading, setBenchmarkLoading] = useState(false)
+  const fetchBenchmark = (branch: string, metric: string) => {
+    if (!branch || !metric) return
+    setBenchmarkLoading(true)
+    fetch(`${API_BASE}/api/hypotheses/benchmark/${encodeURIComponent(branch)}/${encodeURIComponent(metric)}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success && d.data.average !== null) {
+          setHypoForm(p => ({ ...p, win_threshold: String(d.data.average) }))
+        }
+      })
+      .catch(() => {})
+      .finally(() => setBenchmarkLoading(false))
+  }
+
   // AI suggestion state
   const [suggestions, setSuggestions] = useState<{hypothesis: string; variable_tested: string; expected_outcome: string; rationale: string}[]>([])
   const [suggestLoading, setSuggestLoading] = useState(false)
@@ -742,7 +758,8 @@ export default function AnglesPage() {
                         onChange={e => {
                           const stage = e.target.value
                           const metric = FUNNEL_METRICS[stage]?.[hypoForm.format] || ''
-                          setHypoForm(p => ({ ...p, funnel_stage: stage, primary_metric: metric }))
+                          setHypoForm(p => ({ ...p, funnel_stage: stage, primary_metric: metric, win_threshold: '' }))
+                          if (hypoForm.branch_name && hypoForm.format && metric) fetchBenchmark(hypoForm.branch_name, metric)
                         }}
                         className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
                       >
@@ -757,7 +774,8 @@ export default function AnglesPage() {
                         onChange={e => {
                           const fmt = e.target.value
                           const metric = FUNNEL_METRICS[hypoForm.funnel_stage]?.[fmt] || ''
-                          setHypoForm(p => ({ ...p, format: fmt, primary_metric: metric }))
+                          setHypoForm(p => ({ ...p, format: fmt, primary_metric: metric, win_threshold: '' }))
+                          if (hypoForm.branch_name && hypoForm.funnel_stage && metric) fetchBenchmark(hypoForm.branch_name, metric)
                         }}
                         className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
                       >
@@ -776,14 +794,18 @@ export default function AnglesPage() {
                       />
                     </div>
                     <div>
-                      <label className="block text-xs text-gray-500 mb-1">Win Threshold</label>
+                      <label className="block text-xs text-gray-500 mb-1">
+                        Win Threshold
+                        {benchmarkLoading && <span className="ml-1 text-blue-400 animate-pulse">fetching avg...</span>}
+                        {!benchmarkLoading && hypoForm.win_threshold && <span className="ml-1 text-gray-300">(60d avg — editable)</span>}
+                      </label>
                       <input
                         type="number"
                         value={hypoForm.win_threshold}
                         onChange={e => setHypoForm(p => ({ ...p, win_threshold: e.target.value }))}
                         className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
-                        placeholder="e.g. 3.5 (CTR%)"
-                        step="0.1"
+                        placeholder={hypoForm.primary_metric ? `auto-fill on stage+format` : 'e.g. 3.5'}
+                        step="0.01"
                       />
                     </div>
                   </div>
