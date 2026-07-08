@@ -56,6 +56,17 @@ class CreativeHypothesis(TimestampMixin, Base):
     why_it_worked = Column(Text, nullable=True)      # psychological/behavioral explanation
     human_moment = Column(String(200), nullable=True) # the specific human moment category
 
+    # Layer A (creative) verdict fields
+    funnel_stage = Column(String(20), nullable=True, index=True)  # Stop|Hold|Click|Downstream
+    format = Column(String(10), nullable=True, index=True)        # Image|Video
+    primary_metric = Column(String(50), nullable=True)            # hook_rate|CTR|hold_rate|…
+    win_threshold = Column(Numeric(5, 2), nullable=True)          # pre-registered threshold
+    min_sample = Column(Numeric(6, 0), nullable=True, default=5)  # verdict gate
+
+    # Layer B (downstream) verdict — independent of creative verdict
+    layer_b_status = Column(String(20), nullable=True)            # pass|fail|insufficient
+    layer_b_notes = Column(String, nullable=True)
+
     # Outcome
     status = Column(String(20), nullable=False, default="pending", index=True)
     # pending | running | validated | refuted | inconclusive
