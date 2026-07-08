@@ -44,6 +44,12 @@ class HypothesisCreate(BaseModel):
     market: Optional[str] = None
     hypothesis: str
     variable_tested: Optional[str] = None
+    # Layer A verdict setup
+    funnel_stage: Optional[str] = None        # Stop|Hold|Click|Downstream
+    format: Optional[str] = None             # Image|Video
+    primary_metric: Optional[str] = None     # pre-registered primary metric
+    win_threshold: Optional[float] = None    # pre-registered threshold value
+    min_sample: Optional[int] = 5            # verdict gate
     primary_kpi: Optional[str] = None
     secondary_kpi: Optional[str] = None
     expected_outcome: Optional[str] = None
@@ -74,6 +80,9 @@ class HypothesisResultUpdate(BaseModel):
     confidence_score: Optional[float] = None
     learning: Optional[str] = None
     result_notes: Optional[str] = None
+    # Layer B (downstream) verdict — set independently of creative verdict
+    layer_b_status: Optional[str] = None   # pass|fail|insufficient
+    layer_b_notes: Optional[str] = None
     # 4-tier links
     principle_id: Optional[str] = None   # UUID string
     research_question_id: Optional[str] = None
@@ -139,6 +148,14 @@ def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_sta
         "human_moment": h.human_moment,
         # Approval linkage — latest approval status for this hypothesis
         "approval_status": approval_status,
+        # Layer A/B verdict split
+        "funnel_stage": h.funnel_stage,
+        "format": h.format,
+        "primary_metric": h.primary_metric,
+        "win_threshold": float(h.win_threshold) if h.win_threshold is not None else None,
+        "min_sample": int(h.min_sample) if h.min_sample is not None else 5,
+        "layer_b_status": h.layer_b_status,
+        "layer_b_notes": h.layer_b_notes,
         # 4-tier knowledge system
         "confidence_score": float(h.confidence_score) if h.confidence_score is not None else None,
         "principle_id": str(h.principle_id) if h.principle_id else None,
@@ -496,98 +513,111 @@ def hypothesis_summary(branch_name: str, db: Session = Depends(get_db)) -> dict[
 
 @router.get("/learning-dashboard/{branch_name}")
 def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Structured knowledge dashboard — Top Desires, Decision Drivers, Principles, Hooks, Rejected."""
+    """Learning Dashboard — win rates by desire, category, angle, and funnel-stage failure map."""
     try:
         from collections import defaultdict
-        from app.models.creative_principle import CreativePrinciple
+
+        MIN_SAMPLE = 5  # spec §5: below this, result is greyed "insufficient data"
+
+        concluded = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.branch_name == branch_name,
+            CreativeHypothesis.status.in_(["validated", "refuted"]),
+        ).all()
 
         all_hyps = db.query(CreativeHypothesis).filter(
             CreativeHypothesis.branch_name == branch_name,
-            CreativeHypothesis.status.in_(["validated", "refuted", "inconclusive"]),
+            CreativeHypothesis.status.in_(["validated", "refuted", "inconclusive", "running"]),
         ).all()
 
-        # ── Top Human Desires by win rate ─────────────────────────────────
-        desire_stats: dict[str, dict] = defaultdict(lambda: {"win": 0, "total": 0})
-        for h in all_hyps:
+        # ── Desire Win Rate ──────────────────────────────────────────────
+        # spec: validated / (validated + refuted) per desire, not raw count
+        desire_stats: dict[str, dict] = defaultdict(lambda: {"wins": 0, "total": 0})
+        for h in concluded:
             if not h.human_desire:
                 continue
             desire_stats[h.human_desire]["total"] += 1
             if h.status == "validated":
-                desire_stats[h.human_desire]["win"] += 1
+                desire_stats[h.human_desire]["wins"] += 1
         top_desires = sorted(
             [
-                {"desire": d, "win_rate": round(v["win"] / v["total"] * 100, 0),
-                 "experiments": v["total"], "wins": v["win"]}
+                {
+                    "desire": d,
+                    "win_rate": round(v["wins"] / v["total"] * 100, 0),
+                    "experiments": v["total"],
+                    "wins": v["wins"],
+                    "sufficient": v["total"] >= MIN_SAMPLE,
+                }
                 for d, v in desire_stats.items() if v["total"] > 0
             ],
-            key=lambda x: x["win_rate"],
-            reverse=True,
+            key=lambda x: (-x["sufficient"], -x["win_rate"]),
         )[:8]
 
-        # ── Top Decision Drivers by win rate (hypothesis_category) ────────
-        cat_stats: dict[str, dict] = defaultdict(lambda: {"win": 0, "total": 0})
-        for h in all_hyps:
+        # ── Decision Driver Win Rate (hypothesis_category) ────────────────
+        cat_stats: dict[str, dict] = defaultdict(lambda: {"wins": 0, "total": 0})
+        for h in concluded:
             if not h.hypothesis_category:
                 continue
             cat_stats[h.hypothesis_category]["total"] += 1
             if h.status == "validated":
-                cat_stats[h.hypothesis_category]["win"] += 1
+                cat_stats[h.hypothesis_category]["wins"] += 1
         top_drivers = sorted(
             [
-                {"category": c.replace("_", " ").title(), "raw": c,
-                 "win_rate": round(v["win"] / v["total"] * 100, 0),
-                 "experiments": v["total"]}
+                {
+                    "category": c.replace("_", " ").title(),
+                    "raw": c,
+                    "win_rate": round(v["wins"] / v["total"] * 100, 0),
+                    "experiments": v["total"],
+                    "sufficient": v["total"] >= MIN_SAMPLE,
+                }
                 for c, v in cat_stats.items() if v["total"] > 0
             ],
-            key=lambda x: x["win_rate"],
-            reverse=True,
+            key=lambda x: (-x["sufficient"], -x["win_rate"]),
         )
 
-        # ── Creative Principles for this branch ───────────────────────────
-        principles = db.query(CreativePrinciple).filter(
-            (CreativePrinciple.branch_name == branch_name) |
-            (CreativePrinciple.branch_name.is_(None)),
-            CreativePrinciple.is_active == True,
-        ).order_by(desc(CreativePrinciple.confidence_score)).all()
+        # ── Angle Win Rate — ONE table, sorted by win rate ────────────────
+        # spec: an angle appears only once; grey if below min sample
+        angle_stats: dict[str, dict] = defaultdict(lambda: {"wins": 0, "total": 0})
+        for h in concluded:
+            if not h.creative_angle:
+                continue
+            angle_stats[h.creative_angle]["total"] += 1
+            if h.status == "validated":
+                angle_stats[h.creative_angle]["wins"] += 1
+        angle_win_rates = sorted(
+            [
+                {
+                    "angle": angle,
+                    "wins": v["wins"],
+                    "total": v["total"],
+                    "win_rate": round(v["wins"] / v["total"] * 100, 0) if v["total"] > 0 else 0,
+                    "sufficient": v["total"] >= MIN_SAMPLE,
+                }
+                for angle, v in angle_stats.items()
+            ],
+            key=lambda x: (-x["sufficient"], -x["win_rate"]),
+        )
 
-        top_principles = [
-            {
-                "principle_id": p.principle_id,
-                "title": p.title,
-                "anti_principle": p.anti_principle,
-                "confidence_score": float(p.confidence_score) if p.confidence_score else 0,
-                "experiment_count": p.experiment_count or 0,
-                "validated_count": p.validated_count or 0,
-                "human_desire": p.human_desire,
+        # ── Funnel-Stage Failure Map ──────────────────────────────────────
+        # spec §6 (new card): % of refutes at Stop/Hold/Click/Downstream
+        stage_stats: dict[str, dict] = defaultdict(lambda: {"refutes": 0, "total": 0})
+        for h in concluded:
+            if not h.funnel_stage:
+                continue
+            stage_stats[h.funnel_stage]["total"] += 1
+            if h.status == "refuted":
+                stage_stats[h.funnel_stage]["refutes"] += 1
+        funnel_failure_map = {
+            stage: {
+                "refutes": v["refutes"],
+                "total": v["total"],
+                "refute_rate": round(v["refutes"] / v["total"] * 100, 0) if v["total"] > 0 else 0,
             }
-            for p in principles
-        ]
-
-        # ── Winning Hooks (creative_angle from validated hypotheses) ──────
-        hook_counts: dict[str, int] = defaultdict(int)
-        for h in all_hyps:
-            if h.status == "validated" and h.creative_angle:
-                hook_counts[h.creative_angle] += 1
-        winning_hooks = sorted(
-            [{"angle": k, "count": v} for k, v in hook_counts.items()],
-            key=lambda x: x["count"],
-            reverse=True,
-        )[:8]
-
-        # ── Rejected angles ───────────────────────────────────────────────
-        rejected_counts: dict[str, int] = defaultdict(int)
-        for h in all_hyps:
-            if h.status == "refuted" and h.creative_angle:
-                rejected_counts[h.creative_angle] += 1
-        rejected_angles = sorted(
-            [{"angle": k, "count": v} for k, v in rejected_counts.items()],
-            key=lambda x: x["count"],
-            reverse=True,
-        )[:5]
+            for stage, v in stage_stats.items()
+        }
 
         # ── Recent validated learnings ─────────────────────────────────────
         recent = sorted(
-            [h for h in all_hyps if h.status == "validated" and h.learning],
+            [h for h in concluded if h.status == "validated" and h.learning],
             key=lambda x: x.validated_at or x.created_at,
             reverse=True,
         )[:5]
@@ -596,6 +626,7 @@ def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[
                 "hypothesis_id": h.hypothesis_id,
                 "learning": h.learning,
                 "human_desire": h.human_desire,
+                "funnel_stage": h.funnel_stage,
                 "target_audience": h.target_audience,
                 "market": h.market,
                 "validated_at": h.validated_at.isoformat() if h.validated_at else None,
@@ -607,14 +638,15 @@ def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[
             "success": True,
             "data": {
                 "branch_name": branch_name,
-                "total_experiments": len(all_hyps),
-                "total_validated": sum(1 for h in all_hyps if h.status == "validated"),
-                "total_refuted": sum(1 for h in all_hyps if h.status == "refuted"),
+                "total_experiments": len(concluded),
+                "total_running": sum(1 for h in all_hyps if h.status == "running"),
+                "total_validated": sum(1 for h in concluded if h.status == "validated"),
+                "total_refuted": sum(1 for h in concluded if h.status == "refuted"),
+                "min_sample": MIN_SAMPLE,
                 "top_desires": top_desires,
                 "top_drivers": top_drivers,
-                "top_principles": top_principles,
-                "winning_hooks": winning_hooks,
-                "rejected_angles": rejected_angles,
+                "angle_win_rates": angle_win_rates,
+                "funnel_failure_map": funnel_failure_map,
                 "recent_learnings": recent_learnings,
             },
             "error": None,

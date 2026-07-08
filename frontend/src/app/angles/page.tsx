@@ -55,18 +55,25 @@ interface Hypothesis {
   research_question_id: string | null
   knowledge_links: string[]
   parent_hypothesis_id: string | null
+  // Layer A / B spec fields
+  funnel_stage: string | null  // Stop|Hold|Click|Downstream
+  format: string | null        // Image|Video
+  primary_metric: string | null
+  win_threshold: number | null
+  min_sample: number
+  layer_b_status: string | null  // pass|fail|insufficient
+  layer_b_notes: string | null
 }
 
 interface Account { id: string; account_name: string; platform: string }
 
 interface LearningDashboard {
-  branch_name: string; total_experiments: number; total_validated: number; total_refuted: number
-  top_desires: { desire: string; win_rate: number; experiments: number; wins: number }[]
-  top_drivers: { category: string; raw: string; win_rate: number; experiments: number }[]
-  top_principles: { principle_id: string; title: string; anti_principle: string | null; confidence_score: number; experiment_count: number; validated_count: number; human_desire: string | null }[]
-  winning_hooks: { angle: string; count: number }[]
-  rejected_angles: { angle: string; count: number }[]
-  recent_learnings: { hypothesis_id: string; learning: string; human_desire: string | null; target_audience: string | null; market: string | null; validated_at: string | null }[]
+  branch_name: string; total_experiments: number; total_running: number; total_validated: number; total_refuted: number; min_sample: number
+  top_desires: { desire: string; win_rate: number; experiments: number; wins: number; sufficient: boolean }[]
+  top_drivers: { category: string; raw: string; win_rate: number; experiments: number; sufficient: boolean }[]
+  angle_win_rates: { angle: string; wins: number; total: number; win_rate: number; sufficient: boolean }[]
+  funnel_failure_map: Record<string, { refutes: number; total: number; refute_rate: number }>
+  recent_learnings: { hypothesis_id: string; learning: string; human_desire: string | null; funnel_stage: string | null; target_audience: string | null; market: string | null; validated_at: string | null }[]
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -123,6 +130,14 @@ const DESIRE_DOT: Record<string, string> = {
   Fulfillment: 'bg-orange-400', Immersion: 'bg-rose-400', Curiosity: 'bg-amber-400',
 }
 
+// Spec §3: funnel stage → primary metric mapping
+const FUNNEL_METRICS: Record<string, Record<string, string>> = {
+  Stop:       { Video: 'hook_rate',       Image: 'thumb_stop_rate' },
+  Hold:       { Video: 'hold_rate',       Image: 'hold_rate' },
+  Click:      { Video: 'CTR',             Image: 'CTR' },
+  Downstream: { Video: 'booking_rate',    Image: 'booking_rate' },
+}
+
 type Tab = 'angles' | 'brand' | 'hypotheses' | 'dashboard'
 
 export default function AnglesPage() {
@@ -167,6 +182,8 @@ export default function AnglesPage() {
     target_audience: '', market: '', hypothesis: '',
     variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '',
     expected_outcome: '',
+    funnel_stage: '', format: '', primary_metric: '',
+    win_threshold: '', min_sample: '5',
   })
 
   // Learning dashboard state
@@ -301,7 +318,7 @@ export default function AnglesPage() {
     }).then(r => r.json()).then(d => {
       if (d.success) {
         setShowCreateHypo(false)
-        setHypoForm({ branch_name: '', human_desire: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '' })
+        setHypoForm({ branch_name: '', human_desire: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '', funnel_stage: '', format: '', primary_metric: '', win_threshold: '', min_sample: '5' })
         fetchHypotheses()
       }
     })
@@ -708,11 +725,80 @@ export default function AnglesPage() {
                       <option value="">— All —</option>
                       {['VN', 'TW', 'JP', 'SG', 'HK', 'AU', 'US', 'GB', 'DE', 'FR', 'KR', 'TH', 'PH', 'MY', 'ID'].map(m => <option key={m}>{m}</option>)}
                     </select></div>
-                  <div><label className="block text-xs text-gray-500 mb-1">Primary KPI</label>
+                  <div><label className="block text-xs text-gray-500 mb-1">Primary KPI (legacy)</label>
                     <select value={hypoForm.primary_kpi} onChange={e => setHypoForm(p => ({ ...p, primary_kpi: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
                       {['CTR', 'CVR', 'ROAS', 'LPV', 'Hook Rate', 'Thruplay'].map(k => <option key={k}>{k}</option>)}
                     </select></div>
                 </div>
+
+                {/* Layer A verdict spec fields */}
+                <div className="bg-blue-50 border border-blue-100 rounded-xl p-4">
+                  <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wider mb-3">Layer A — Creative Verdict Gate</p>
+                  <div className="grid grid-cols-4 gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Funnel Stage *</label>
+                      <select
+                        value={hypoForm.funnel_stage}
+                        onChange={e => {
+                          const stage = e.target.value
+                          const metric = FUNNEL_METRICS[stage]?.[hypoForm.format] || ''
+                          setHypoForm(p => ({ ...p, funnel_stage: stage, primary_metric: metric }))
+                        }}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                      >
+                        <option value="">Select...</option>
+                        {['Stop', 'Hold', 'Click', 'Downstream'].map(s => <option key={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Format *</label>
+                      <select
+                        value={hypoForm.format}
+                        onChange={e => {
+                          const fmt = e.target.value
+                          const metric = FUNNEL_METRICS[hypoForm.funnel_stage]?.[fmt] || ''
+                          setHypoForm(p => ({ ...p, format: fmt, primary_metric: metric }))
+                        }}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                      >
+                        <option value="">Select...</option>
+                        <option>Image</option>
+                        <option>Video</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Primary Metric</label>
+                      <input
+                        value={hypoForm.primary_metric}
+                        readOnly
+                        className="w-full px-3 py-2 border border-gray-100 rounded-lg text-sm bg-blue-100 text-blue-800 font-medium"
+                        placeholder="auto-set by stage + format"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Win Threshold</label>
+                      <input
+                        type="number"
+                        value={hypoForm.win_threshold}
+                        onChange={e => setHypoForm(p => ({ ...p, win_threshold: e.target.value }))}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                        placeholder="e.g. 3.5 (CTR%)"
+                        step="0.1"
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-2">
+                    <label className="block text-xs text-gray-500 mb-1">Min Sample (default 5 concluded ads)</label>
+                    <input
+                      type="number"
+                      value={hypoForm.min_sample}
+                      onChange={e => setHypoForm(p => ({ ...p, min_sample: e.target.value }))}
+                      className="w-32 px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
+                      min="1"
+                    />
+                  </div>
+                </div>
+
                 <div className="flex items-center gap-3">
                   <button
                     onClick={handleSuggest}
@@ -862,13 +948,16 @@ export default function AnglesPage() {
                     const clicksLeft = Math.max(0, 4500 - clicks)
                     const bookingsLeft = Math.max(0, 5 - bookings)
 
+                    const metric = h.primary_metric || h.primary_kpi || 'primary metric'
+                    const threshold = h.win_threshold ? ` (threshold: ${h.win_threshold})` : ''
                     const nextStep = (() => {
-                      if (h.status === 'validated') return { color: 'bg-green-50 border-green-200 text-green-800', icon: '🚀', text: 'Scale this angle — increase budget or duplicate combo to more markets.' }
-                      if (h.status === 'refuted') return { color: 'bg-red-50 border-red-200 text-red-800', icon: '🔄', text: `Pivot — this angle underperformed. Try a different desire or creative variable.` }
+                      if (h.status === 'validated') return { color: 'bg-green-50 border-green-200 text-green-800', icon: '✅', text: `Layer A validated — ${metric} cleared${threshold}. Check Layer B for downstream impact.` }
+                      if (h.status === 'refuted') return { color: 'bg-red-50 border-red-200 text-red-800', icon: '🔄', text: `Layer A refuted — ${metric} did not clear${threshold}. Pivot the creative variable.` }
                       if (h.status === 'inconclusive') return { color: 'bg-orange-50 border-orange-200 text-orange-800', icon: '⚠️', text: 'No spend detected on this combo. Check if the ad is active.' }
                       if (h.status === 'running') {
                         if (clicks === 0) return { color: 'bg-gray-50 border-gray-200 text-gray-600', icon: '⏳', text: 'No data yet — waiting for ad to run.' }
-                        return { color: 'bg-blue-50 border-blue-200 text-blue-700', icon: '📊', text: `Still running — needs ${clicksLeft.toLocaleString()} more clicks or ${bookingsLeft} more bookings to conclude.` }
+                        const minSample = h.min_sample || 5
+                        return { color: 'bg-blue-50 border-blue-200 text-blue-700', icon: '📊', text: `Running — needs ${minSample} concluded ads to reach verdict gate. Tracking: ${metric}.` }
                       }
                       return null
                     })()
@@ -886,9 +975,18 @@ export default function AnglesPage() {
                           )}
                           {h.human_desire && <span className="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">{h.human_desire}</span>}
                           {h.creative_angle && <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">{h.creative_angle}</span>}
+                          {h.funnel_stage && <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-medium">{h.funnel_stage}</span>}
+                          {h.format && <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{h.format}</span>}
                           {h.target_audience && <span className="text-xs text-gray-400">{h.target_audience}</span>}
                           {h.market && <span className="text-xs text-gray-400">{h.market}</span>}
-                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-600'}`}>{h.status}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-600'}`}>Layer A: {h.status}</span>
+                          {h.layer_b_status && (
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${
+                              h.layer_b_status === 'pass' ? 'bg-green-50 text-green-700 border-green-200' :
+                              h.layer_b_status === 'fail' ? 'bg-red-50 text-red-600 border-red-200' :
+                              'bg-gray-50 text-gray-500 border-gray-200'
+                            }`}>Layer B: {h.layer_b_status}</span>
+                          )}
                           {h.approval_status && (
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${
                               h.approval_status === 'APPROVED' ? 'bg-green-50 text-green-700 border-green-200' :
@@ -1089,9 +1187,10 @@ export default function AnglesPage() {
             </div>
           ) : (
             <div className="space-y-6">
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-4 gap-4">
                 {[
-                  { label: 'Total Experiments', value: learningDashboard.total_experiments, color: 'text-gray-800' },
+                  { label: 'Concluded', value: learningDashboard.total_experiments, color: 'text-gray-800' },
+                  { label: 'Running', value: learningDashboard.total_running, color: 'text-blue-600' },
                   { label: 'Validated', value: learningDashboard.total_validated, color: 'text-green-700' },
                   { label: 'Refuted', value: learningDashboard.total_refuted, color: 'text-red-600' },
                 ].map(s => (
@@ -1103,80 +1202,128 @@ export default function AnglesPage() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Desire Win Rate */}
                 <div className="bg-white rounded-xl border border-gray-200 p-5">
-                  <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4">Top Human Desires</h3>
+                  <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4">Desire Win Rate</h3>
                   {learningDashboard.top_desires.length === 0 ? <p className="text-xs text-gray-400">No data yet.</p> : (
                     <div className="space-y-3">
                       {learningDashboard.top_desires.map(d => (
-                        <div key={d.desire}>
+                        <div key={d.desire} className={d.sufficient ? '' : 'opacity-50'}>
                           <div className="flex items-center justify-between mb-1">
-                            <span className="text-sm font-medium text-gray-800">{d.desire}</span>
-                            <span className={`text-sm font-bold ${d.win_rate >= 60 ? 'text-green-600' : d.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>{d.win_rate}%</span>
+                            <span className={`text-sm font-medium ${d.sufficient ? 'text-gray-800' : 'text-gray-400'}`}>{d.desire}</span>
+                            <span className={`text-sm font-bold ${!d.sufficient ? 'text-gray-400' : d.win_rate >= 60 ? 'text-green-600' : d.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>
+                              {d.sufficient ? `${d.win_rate}%` : '—'}
+                            </span>
                           </div>
-                          <div className="h-1.5 bg-gray-100 rounded-full">
-                            <div className={`h-full rounded-full ${d.win_rate >= 60 ? 'bg-green-500' : d.win_rate >= 40 ? 'bg-amber-500' : 'bg-red-400'}`}
-                              style={{ width: `${d.win_rate}%` }} />
-                          </div>
-                          <p className="text-[10px] text-gray-400 mt-0.5">{d.wins}/{d.experiments} experiments</p>
+                          {d.sufficient && (
+                            <div className="h-1.5 bg-gray-100 rounded-full">
+                              <div className={`h-full rounded-full ${d.win_rate >= 60 ? 'bg-green-500' : d.win_rate >= 40 ? 'bg-amber-500' : 'bg-red-400'}`}
+                                style={{ width: `${d.win_rate}%` }} />
+                            </div>
+                          )}
+                          <p className="text-[10px] text-gray-400 mt-0.5">
+                            {d.wins}/{d.experiments} concluded
+                            {!d.sufficient && ` · needs ${learningDashboard.min_sample} min`}
+                          </p>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
 
+                {/* Decision Driver Win Rate */}
                 <div className="bg-white rounded-xl border border-gray-200 p-5">
-                  <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4">Top Decision Drivers</h3>
+                  <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4">Decision Driver Win Rate</h3>
                   {learningDashboard.top_drivers.length === 0 ? <p className="text-xs text-gray-400">No data yet.</p> : (
                     <div className="space-y-3">
                       {learningDashboard.top_drivers.map(d => (
-                        <div key={d.raw}>
+                        <div key={d.raw} className={d.sufficient ? '' : 'opacity-50'}>
                           <div className="flex items-center justify-between mb-1">
-                            <span className="text-sm font-medium text-gray-800">{d.category}</span>
-                            <span className={`text-sm font-bold ${d.win_rate >= 60 ? 'text-green-600' : d.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>{d.win_rate}%</span>
+                            <span className={`text-sm font-medium ${d.sufficient ? 'text-gray-800' : 'text-gray-400'}`}>{d.category}</span>
+                            <span className={`text-sm font-bold ${!d.sufficient ? 'text-gray-400' : d.win_rate >= 60 ? 'text-green-600' : d.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>
+                              {d.sufficient ? `${d.win_rate}%` : '—'}
+                            </span>
                           </div>
-                          <div className="h-1.5 bg-gray-100 rounded-full">
-                            <div className={`h-full rounded-full ${d.win_rate >= 60 ? 'bg-indigo-500' : d.win_rate >= 40 ? 'bg-amber-500' : 'bg-red-400'}`}
-                              style={{ width: `${d.win_rate}%` }} />
+                          {d.sufficient && (
+                            <div className="h-1.5 bg-gray-100 rounded-full">
+                              <div className={`h-full rounded-full ${d.win_rate >= 60 ? 'bg-indigo-500' : d.win_rate >= 40 ? 'bg-amber-500' : 'bg-red-400'}`}
+                                style={{ width: `${d.win_rate}%` }} />
+                            </div>
+                          )}
+                          <p className="text-[10px] text-gray-400 mt-0.5">
+                            {d.experiments} concluded{!d.sufficient && ` · needs ${learningDashboard.min_sample} min`}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Angle Win Rate — ONE table */}
+                <div className="bg-white rounded-xl border border-gray-200 p-5 lg:col-span-2">
+                  <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4">Angle Win Rate</h3>
+                  {learningDashboard.angle_win_rates.length === 0 ? <p className="text-xs text-gray-400">No concluded angles yet.</p> : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-[10px] text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                            <th className="text-left pb-2 font-medium">Angle</th>
+                            <th className="text-right pb-2 font-medium w-20">Wins</th>
+                            <th className="text-right pb-2 font-medium w-20">Total</th>
+                            <th className="text-right pb-2 font-medium w-24">Win Rate</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-50">
+                          {learningDashboard.angle_win_rates.map(a => (
+                            <tr key={a.angle} className={a.sufficient ? '' : 'opacity-45'}>
+                              <td className={`py-2 pr-4 font-medium ${a.sufficient ? 'text-gray-800' : 'text-gray-400'}`}>{a.angle}</td>
+                              <td className="py-2 text-right text-green-700 font-medium">{a.wins}</td>
+                              <td className="py-2 text-right text-gray-500">{a.total}</td>
+                              <td className="py-2 text-right">
+                                {a.sufficient ? (
+                                  <span className={`font-bold ${a.win_rate >= 60 ? 'text-green-600' : a.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>{a.win_rate}%</span>
+                                ) : (
+                                  <span className="text-gray-300 text-xs">insufficient</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Funnel-Stage Failure Map */}
+                <div className="bg-white rounded-xl border border-gray-200 p-5">
+                  <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-1">Funnel-Stage Failure Map</h3>
+                  <p className="text-[10px] text-gray-400 mb-4">Where do most hypotheses get refuted?</p>
+                  {Object.keys(learningDashboard.funnel_failure_map).length === 0 ? <p className="text-xs text-gray-400">No data yet — add funnel_stage to hypotheses first.</p> : (
+                    <div className="space-y-3">
+                      {(['Stop', 'Hold', 'Click', 'Downstream'] as const).map(stage => {
+                        const d = learningDashboard.funnel_failure_map[stage]
+                        if (!d) return null
+                        return (
+                          <div key={stage}>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-sm font-medium text-gray-700">{stage}</span>
+                              <span className={`text-sm font-bold ${d.refute_rate >= 60 ? 'text-red-600' : d.refute_rate >= 40 ? 'text-amber-600' : 'text-green-600'}`}>{d.refute_rate}% fail</span>
+                            </div>
+                            <div className="h-2 bg-gray-100 rounded-full">
+                              <div className={`h-full rounded-full ${d.refute_rate >= 60 ? 'bg-red-400' : d.refute_rate >= 40 ? 'bg-amber-400' : 'bg-green-400'}`}
+                                style={{ width: `${d.refute_rate}%` }} />
+                            </div>
+                            <p className="text-[10px] text-gray-400 mt-0.5">{d.refutes}/{d.total} refuted</p>
                           </div>
-                          <p className="text-[10px] text-gray-400 mt-0.5">{d.experiments} experiments</p>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   )}
                 </div>
 
-                <div className="bg-white rounded-xl border border-green-100 p-5">
-                  <h3 className="text-sm font-bold text-green-700 uppercase tracking-wider mb-4">Winning Creative Angles</h3>
-                  {learningDashboard.winning_hooks.length === 0 ? <p className="text-xs text-gray-400">No validated angles yet.</p> : (
-                    <div className="space-y-2">
-                      {learningDashboard.winning_hooks.map((h, i) => (
-                        <div key={h.angle} className="flex items-center gap-3">
-                          <span className="text-[10px] text-gray-400 w-4 shrink-0">{i + 1}</span>
-                          <div className="flex-1 text-sm text-gray-800 font-medium">{h.angle}</div>
-                          <span className="text-xs text-green-600 font-bold">{h.count}×</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="bg-white rounded-xl border border-red-100 p-5">
-                  <h3 className="text-sm font-bold text-red-600 uppercase tracking-wider mb-4">Rejected Angles</h3>
-                  {learningDashboard.rejected_angles.length === 0 ? <p className="text-xs text-gray-400">No refuted angles yet.</p> : (
-                    <div className="space-y-2">
-                      {learningDashboard.rejected_angles.map((h, i) => (
-                        <div key={h.angle} className="flex items-center gap-3">
-                          <span className="text-[10px] text-gray-400 w-4 shrink-0">{i + 1}</span>
-                          <div className="flex-1 text-sm text-gray-500 line-through">{h.angle}</div>
-                          <span className="text-xs text-red-500 font-bold">{h.count}×</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
+                {/* Recent Learnings */}
                 {learningDashboard.recent_learnings.length > 0 && (
-                  <div className="bg-violet-50 rounded-xl border border-violet-100 p-5 lg:col-span-2">
+                  <div className="bg-violet-50 rounded-xl border border-violet-100 p-5">
                     <h3 className="text-sm font-bold text-violet-700 uppercase tracking-wider mb-4">Recent Learnings</h3>
                     <div className="space-y-2">
                       {learningDashboard.recent_learnings.map(l => (
@@ -1185,7 +1332,7 @@ export default function AnglesPage() {
                           <div className="flex-1 min-w-0">
                             <p className="text-sm text-violet-900">{l.learning}</p>
                             <p className="text-[10px] text-violet-400 mt-0.5">
-                              {[l.human_desire, l.target_audience, l.market].filter(Boolean).join(' · ')}
+                              {[l.funnel_stage, l.human_desire, l.target_audience, l.market].filter(Boolean).join(' · ')}
                               {l.validated_at && ` · ${new Date(l.validated_at).toLocaleDateString()}`}
                             </p>
                           </div>
