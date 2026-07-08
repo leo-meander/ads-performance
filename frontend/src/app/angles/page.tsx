@@ -36,6 +36,7 @@ interface Hypothesis {
   id: string; hypothesis_id: string; branch_name: string
   combo_id: string | null; ad_name: string | null
   combo_clicks: number | null; combo_conversions: number | null
+  hypothesis_category: string | null; customer_insight: string | null
   human_desire: string | null; creative_angle: string | null
   target_audience: string | null; market: string | null
   hypothesis: string; variable_tested: string | null
@@ -81,6 +82,18 @@ const VISUAL_PATTERNS = [
 ]
 const BRANCH_NAMES = ['Meander Taipei', 'Oani', 'Meander Osaka', 'Meander Saigon', 'Meander 1948']
 
+const HYPOTHESIS_CATEGORIES: { value: string; label: string; desc: string; color: string }[] = [
+  { value: 'identity', label: '🪞 Identity', desc: 'Who does the guest want to become?', color: 'bg-purple-50 text-purple-700 border-purple-200' },
+  { value: 'decision_driver', label: '🎯 Decision Driver', desc: 'What makes them book NOW?', color: 'bg-orange-50 text-orange-700 border-orange-200' },
+  { value: 'emotional_trigger', label: '❤️ Emotional Trigger', desc: 'Which emotion closes the booking?', color: 'bg-rose-50 text-rose-700 border-rose-200' },
+  { value: 'travel_moment', label: '🗓️ Travel Moment', desc: 'Which stage of the journey?', color: 'bg-sky-50 text-sky-700 border-sky-200' },
+  { value: 'social_proof', label: '👥 Social Proof', desc: 'Who do they trust?', color: 'bg-teal-50 text-teal-700 border-teal-200' },
+  { value: 'experience', label: '✨ Experience', desc: 'What moment will they remember?', color: 'bg-amber-50 text-amber-700 border-amber-200' },
+  { value: 'value_perception', label: '💰 Value Perception', desc: 'Is it worth the price?', color: 'bg-green-50 text-green-700 border-green-200' },
+  { value: 'brand_territory', label: '🏔️ Brand Territory', desc: 'What only this hotel owns?', color: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+]
+const CAT_COLOR: Record<string, string> = Object.fromEntries(HYPOTHESIS_CATEGORIES.map(c => [c.value, c.color]))
+
 const DESIRE_COLOR: Record<string, string> = {
   Belonging: 'bg-purple-50 border-purple-200 text-purple-800',
   Discovery: 'bg-amber-50 border-amber-200 text-amber-800',
@@ -114,6 +127,13 @@ export default function AnglesPage() {
   const [expandedAngle, setExpandedAngle] = useState<string | null>(null)
   const [collapsedDesires, setCollapsedDesires] = useState<Set<string>>(new Set())
 
+  // Hypothesis filters (client-side)
+  const [fHypoBranch, setFHypoBranch] = useState('')
+  const [fHypoStatus, setFHypoStatus] = useState('')
+  const [fHypoCategory, setFHypoCategory] = useState('')
+  const [fHypoTA, setFHypoTA] = useState('')
+  const [fHypoMarket, setFHypoMarket] = useState('')
+
   // Create angle form
   const [formType, setFormType] = useState('')
   const [formExplain, setFormExplain] = useState('')
@@ -127,6 +147,7 @@ export default function AnglesPage() {
   // Create hypothesis form
   const [hypoForm, setHypoForm] = useState({
     branch_name: '', human_desire: '', creative_angle: '',
+    hypothesis_category: '', customer_insight: '',
     target_audience: '', market: '', hypothesis: '',
     variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '',
     expected_outcome: '',
@@ -176,6 +197,8 @@ export default function AnglesPage() {
       body: JSON.stringify({
         branch_name: hypoForm.branch_name,
         human_desire: hypoForm.human_desire,
+        hypothesis_category: hypoForm.hypothesis_category || null,
+        customer_insight: hypoForm.customer_insight || null,
         creative_angle: hypoForm.creative_angle || null,
         target_audience: hypoForm.target_audience || null,
         market: hypoForm.market || null,
@@ -251,7 +274,7 @@ export default function AnglesPage() {
     }).then(r => r.json()).then(d => {
       if (d.success) {
         setShowCreateHypo(false)
-        setHypoForm({ branch_name: '', human_desire: '', creative_angle: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '' })
+        setHypoForm({ branch_name: '', human_desire: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '' })
         fetchHypotheses()
       }
     })
@@ -575,8 +598,8 @@ export default function AnglesPage() {
                 <button onClick={() => setShowCreateHypo(false)}><X className="w-5 h-5 text-gray-400" /></button>
               </div>
               <div className="space-y-3">
-                {/* Row 1: Branch → auto-populates desires */}
-                <div className="grid grid-cols-3 gap-3">
+                {/* Row 1: Branch + Desire */}
+                <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs text-gray-500 mb-1">Branch *</label>
                     <select
@@ -603,6 +626,39 @@ export default function AnglesPage() {
                       {branchDesires.map(d => <option key={d}>{d}</option>)}
                     </select>
                   </div>
+                </div>
+
+                {/* Row 1b: Hypothesis Category */}
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Booking Decision Category</label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {HYPOTHESIS_CATEGORIES.map(cat => (
+                      <button
+                        key={cat.value}
+                        type="button"
+                        onClick={() => setHypoForm(p => ({ ...p, hypothesis_category: p.hypothesis_category === cat.value ? '' : cat.value }))}
+                        className={`text-left px-2.5 py-2 rounded-lg border text-xs transition-all ${
+                          hypoForm.hypothesis_category === cat.value
+                            ? cat.color + ' ring-1 ring-current'
+                            : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                        }`}
+                      >
+                        <div className="font-medium leading-tight">{cat.label}</div>
+                        <div className="text-[9px] opacity-70 mt-0.5 leading-tight">{cat.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Customer Insight */}
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Customer Insight <span className="text-gray-300">(the belief underneath)</span></label>
+                  <input
+                    value={hypoForm.customer_insight}
+                    onChange={e => setHypoForm(p => ({ ...p, customer_insight: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                    placeholder="e.g. Couples in their 30s don't want a 'luxurious' hotel — they want to feel like they made the right call."
+                  />
                 </div>
                 {/* Row 2: Angle + TA + Market + KPI */}
                 <div className="grid grid-cols-4 gap-3">
@@ -684,6 +740,40 @@ export default function AnglesPage() {
             </div>
           )}
 
+          {/* Hypothesis filter bar */}
+          <div className="flex flex-wrap gap-2 mb-4">
+            <select value={fHypoBranch} onChange={e => setFHypoBranch(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+              <option value="">All Branches</option>
+              {BRANCH_NAMES.map(b => <option key={b}>{b}</option>)}
+            </select>
+            <select value={fHypoStatus} onChange={e => setFHypoStatus(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+              <option value="">All Status</option>
+              <option value="pending">Pending</option>
+              <option value="running">Running</option>
+              <option value="validated">Validated</option>
+              <option value="refuted">Refuted</option>
+              <option value="inconclusive">Inconclusive</option>
+            </select>
+            <select value={fHypoCategory} onChange={e => setFHypoCategory(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+              <option value="">All Categories</option>
+              {HYPOTHESIS_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+            <select value={fHypoTA} onChange={e => setFHypoTA(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+              <option value="">All TA</option>
+              {['Solo', 'Couple', 'Friend', 'Group', 'Business'].map(t => <option key={t}>{t}</option>)}
+            </select>
+            <select value={fHypoMarket} onChange={e => setFHypoMarket(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+              <option value="">All Markets</option>
+              {['VN', 'TW', 'JP', 'SG', 'HK', 'AU', 'US', 'GB', 'DE', 'FR', 'KR', 'TH'].map(m => <option key={m}>{m}</option>)}
+            </select>
+            {(fHypoBranch || fHypoStatus || fHypoCategory || fHypoTA || fHypoMarket) && (
+              <button onClick={() => { setFHypoBranch(''); setFHypoStatus(''); setFHypoCategory(''); setFHypoTA(''); setFHypoMarket('') }}
+                className="px-3 py-1.5 text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-lg">
+                Clear filters
+              </button>
+            )}
+          </div>
+
           {hypotheses.length === 0 ? (
             <div className="bg-white rounded-xl border p-8 text-center text-gray-400">
               <FlaskConical className="w-8 h-8 mx-auto mb-2 opacity-30" />
@@ -691,11 +781,18 @@ export default function AnglesPage() {
               <p className="text-xs mt-1">Each ad idea should have a hypothesis before it runs.</p>
             </div>
           ) : (() => {
+            // Apply client-side filters
+            const filtered = hypotheses
+              .filter(h => !fHypoBranch || h.branch_name === fHypoBranch)
+              .filter(h => !fHypoStatus || h.status === fHypoStatus)
+              .filter(h => !fHypoCategory || h.hypothesis_category === fHypoCategory)
+              .filter(h => !fHypoTA || h.target_audience === fHypoTA)
+              .filter(h => !fHypoMarket || h.market === fHypoMarket)
+
             // Summary stats
-            const concluded = hypotheses.filter(h => ['validated','refuted'].includes(h.status))
-            const running = hypotheses.filter(h => h.status === 'running')
-            const pending = hypotheses.filter(h => h.status === 'pending')
-            const validated = hypotheses.filter(h => h.status === 'validated')
+            const concluded = filtered.filter(h => ['validated','refuted'].includes(h.status))
+            const running = filtered.filter(h => h.status === 'running')
+            const validated = filtered.filter(h => h.status === 'validated')
             // Group learnings by desire
             const learningsByDesire: Record<string, Hypothesis[]> = {}
             concluded.filter(h => h.learning).forEach(h => {
@@ -707,10 +804,10 @@ export default function AnglesPage() {
                 {/* Summary bar */}
                 <div className="grid grid-cols-4 gap-3">
                   {[
-                    { label: 'Total', value: hypotheses.length, cls: 'text-gray-800' },
+                    { label: 'Total', value: filtered.length, cls: 'text-gray-800' },
                     { label: 'Running', value: running.length, cls: 'text-blue-700' },
                     { label: 'Validated', value: validated.length, cls: 'text-green-700' },
-                    { label: 'Refuted', value: hypotheses.filter(h=>h.status==='refuted').length, cls: 'text-red-600' },
+                    { label: 'Refuted', value: filtered.filter(h=>h.status==='refuted').length, cls: 'text-red-600' },
                   ].map(s => (
                     <div key={s.label} className="bg-white rounded-xl border border-gray-200 p-4 text-center">
                       <p className={`text-2xl font-bold ${s.cls}`}>{s.value}</p>
@@ -741,7 +838,10 @@ export default function AnglesPage() {
 
                 {/* Hypothesis list */}
                 <div className="space-y-3">
-                  {hypotheses.map(h => {
+                  {filtered.length === 0 && (fHypoBranch || fHypoStatus || fHypoCategory || fHypoTA || fHypoMarket) && (
+                    <div className="text-center text-gray-400 py-8 text-sm">No hypotheses match the current filters.</div>
+                  )}
+                  {filtered.map(h => {
                     const hasResult = h.actual_roas !== null || h.actual_ctr !== null
                     const clicks = h.combo_clicks ?? 0
                     const bookings = h.combo_conversions ?? 0
@@ -766,6 +866,11 @@ export default function AnglesPage() {
                         <div className="flex items-center gap-2 flex-wrap mb-2">
                           <span className="font-mono text-xs text-gray-400">{h.hypothesis_id}</span>
                           <span className="text-xs text-gray-500">{h.branch_name}</span>
+                          {h.hypothesis_category && (
+                            <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${CAT_COLOR[h.hypothesis_category] || 'bg-gray-50 text-gray-600 border-gray-200'}`}>
+                              {HYPOTHESIS_CATEGORIES.find(c => c.value === h.hypothesis_category)?.label || h.hypothesis_category}
+                            </span>
+                          )}
                           {h.human_desire && <span className="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">{h.human_desire}</span>}
                           {h.creative_angle && <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">{h.creative_angle}</span>}
                           {h.target_audience && <span className="text-xs text-gray-400">{h.target_audience}</span>}
@@ -793,6 +898,9 @@ export default function AnglesPage() {
                           </a>
                         )}
 
+                        {h.customer_insight && (
+                          <p className="text-[11px] text-gray-400 italic mb-1">"{h.customer_insight}"</p>
+                        )}
                         <p className="text-sm font-medium text-gray-800 mb-3">{h.hypothesis}</p>
 
                         {/* Expected vs Actual */}

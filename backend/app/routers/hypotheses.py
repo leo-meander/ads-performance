@@ -24,6 +24,8 @@ HYPOTHESIS_STATUSES = ["pending", "running", "validated", "refuted", "inconclusi
 class HypothesisSuggestRequest(BaseModel):
     branch_name: str
     human_desire: str
+    hypothesis_category: Optional[str] = None
+    customer_insight: Optional[str] = None
     creative_angle: Optional[str] = None
     target_audience: Optional[str] = None
     market: Optional[str] = None
@@ -34,6 +36,8 @@ class HypothesisCreate(BaseModel):
     branch_name: str
     combo_id: Optional[str] = None
     angle_id: Optional[str] = None
+    hypothesis_category: Optional[str] = None
+    customer_insight: Optional[str] = None
     human_desire: Optional[str] = None
     creative_angle: Optional[str] = None
     target_audience: Optional[str] = None
@@ -94,6 +98,8 @@ def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_sta
         "combo_clicks": clicks,
         "combo_conversions": conversions,
         "angle_id": str(h.angle_id) if h.angle_id else None,
+        "hypothesis_category": h.hypothesis_category,
+        "customer_insight": h.customer_insight,
         "human_desire": h.human_desire,
         "creative_angle": h.creative_angle,
         "target_audience": h.target_audience,
@@ -191,18 +197,41 @@ Never say: {', '.join(brand.never_say or [])}"""
                 f"- [{h.status.upper()}] {h.learning}" for h in past
             )
 
-        prompt = f"""You are a performance marketing strategist for a boutique hotel brand.
+        # Category guidance for the booking-decision framework
+        category_guidance = {
+            "identity": "Focus on WHO the guest becomes by staying here. The ad must answer 'Is this hotel for someone like me?' Hypothesis should test identity signals: solo adventurer, romantic couple, design-conscious traveler, etc.",
+            "decision_driver": "Focus on the rational tipping point that makes someone book NOW vs keep looking. Test price anchoring, urgency, comparison positioning, or risk-removal (free cancellation, best price guarantee).",
+            "emotional_trigger": "Focus on the specific emotion that closes the booking decision. Test which feeling — romance, nostalgia, excitement, escape, pride — drives higher conversion for this TA.",
+            "travel_moment": "Focus on the specific stage in the guest's travel planning journey. Test whether speaking to 'inspiration' (dreaming), 'planning' (comparing), or 'deciding' (ready to book) lifts performance.",
+            "social_proof": "Focus on WHOSE voice the guest trusts most. Test peer reviews vs expert endorsements vs influencer vs staff recommendations vs user-generated content.",
+            "experience": "Focus on the specific memorable moment the guest will carry away. Test which experience detail (breakfast view, pillow menu, rooftop sunset) resonates most as the reason to choose this hotel.",
+            "value_perception": "Focus on whether the price feels WORTH IT. Test how the ad frames value: premium experience justification, comparison to alternatives, or tangible value-adds (included breakfast, late checkout).",
+            "brand_territory": "Focus on the brand's ownable position. Test which distinct characteristic of the hotel (design philosophy, location story, founder values) guests can't get anywhere else.",
+        }
+        cat_ctx = ""
+        if payload.hypothesis_category:
+            cat_label = payload.hypothesis_category.replace("_", " ").title()
+            guidance = category_guidance.get(payload.hypothesis_category, "")
+            cat_ctx = f"\nHYPOTHESIS CATEGORY: {cat_label}\n{guidance}"
+        insight_ctx = f"\nCUSTOMER INSIGHT (underlying belief): {payload.customer_insight}" if payload.customer_insight else ""
+
+        prompt = f"""You are a hotel performance marketing strategist who thinks in terms of the Booking Decision framework.
+Hotel guests ask 6 questions before booking: Can I trust this place? Is this for someone like me? Will I remember this? Is it worth the price? Is the location right? Will I regret not booking?
+Your hypotheses must address one of these questions — NOT generic creative variations.
+
 Generate exactly 3 creative hypothesis variants for an upcoming ad creative test.
 Return a JSON array of 3 objects, each with these fields:
-- hypothesis: one clear sentence stating the belief being tested (start with "We believe..." or "If we...")
-- variable_tested: the specific creative element being changed (e.g. "Social scene vs Room scene")
-- expected_outcome: measurable prediction (e.g. "+15% CTR vs control")
-- rationale: one sentence WHY this hypothesis aligns with the brand and what the winning/losing ads suggest
+- hypothesis: one clear sentence stating the booking-decision belief being tested (start with "We believe..." or "If we show...")
+- variable_tested: the specific creative element being changed (e.g. "Social proof type: guest review vs staff story")
+- expected_outcome: measurable prediction tied to the booking question (e.g. "+15% CTR among Couple TA")
+- rationale: one sentence WHY this hypothesis addresses a real booking hesitation for this brand/TA
 
-CONTEXT:
+BRAND CONTEXT:
 {brand_ctx}
 {combo_ctx}
 {past_ctx}
+{cat_ctx}
+{insight_ctx}
 
 THIS TEST:
 Human Desire: {payload.human_desire}
@@ -239,6 +268,9 @@ def list_hypotheses(
     branch_name: Optional[str] = None,
     status: Optional[str] = None,
     human_desire: Optional[str] = None,
+    hypothesis_category: Optional[str] = None,
+    target_audience: Optional[str] = None,
+    market: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -251,6 +283,12 @@ def list_hypotheses(
             q = q.filter(CreativeHypothesis.status == status)
         if human_desire:
             q = q.filter(CreativeHypothesis.human_desire == human_desire)
+        if hypothesis_category:
+            q = q.filter(CreativeHypothesis.hypothesis_category == hypothesis_category)
+        if target_audience:
+            q = q.filter(CreativeHypothesis.target_audience == target_audience)
+        if market:
+            q = q.filter(CreativeHypothesis.market == market)
         total = q.count()
         rows = q.order_by(desc(CreativeHypothesis.created_at)).offset(offset).limit(limit).all()
         combo_ids = [r.combo_id for r in rows if r.combo_id]
