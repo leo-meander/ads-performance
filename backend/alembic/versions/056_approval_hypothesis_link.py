@@ -14,23 +14,18 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column(
-        "combo_approvals",
-        sa.Column("hypothesis_id", sa.String(20), nullable=True),
-    )
-    op.create_foreign_key(
-        "fk_combo_approvals_hypothesis_id",
-        "combo_approvals",
-        "creative_hypotheses",
-        ["hypothesis_id"],
-        ["hypothesis_id"],
-        ondelete="SET NULL",
-    )
-    op.create_index(
-        "ix_combo_approvals_hypothesis_id",
-        "combo_approvals",
-        ["hypothesis_id"],
-    )
+    op.execute("ALTER TABLE combo_approvals ADD COLUMN IF NOT EXISTS hypothesis_id VARCHAR(20)")
+    op.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'fk_combo_approvals_hypothesis_id'
+            ) THEN
+                ALTER TABLE combo_approvals ADD CONSTRAINT fk_combo_approvals_hypothesis_id
+                FOREIGN KEY (hypothesis_id) REFERENCES creative_hypotheses(hypothesis_id) ON DELETE SET NULL;
+            END IF;
+        END $$;
+    """)
+    op.execute("CREATE INDEX IF NOT EXISTS ix_combo_approvals_hypothesis_id ON combo_approvals(hypothesis_id)")
 
 
 def downgrade():
