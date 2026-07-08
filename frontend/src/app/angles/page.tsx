@@ -238,7 +238,7 @@ export default function AnglesPage() {
   }
 
   // AI suggestion state
-  const [suggestions, setSuggestions] = useState<{hypothesis: string; variable_tested: string; expected_outcome: string; rationale: string}[]>([])
+  const [suggestions, setSuggestions] = useState<{hypothesis: string; variable_tested: string; expected_outcome: string; customer_insight?: string; rationale: string}[]>([])
   const [suggestLoading, setSuggestLoading] = useState(false)
 
   const handleSuggest = () => {
@@ -257,6 +257,11 @@ export default function AnglesPage() {
         target_audience: hypoForm.target_audience || null,
         market: hypoForm.market || null,
         primary_kpi: hypoForm.primary_kpi,
+        // Layer A binding constraints — AI writes to these, not primary_kpi
+        funnel_stage: hypoForm.funnel_stage || null,
+        format: hypoForm.format || null,
+        primary_metric: hypoForm.primary_metric || null,
+        win_threshold: hypoForm.win_threshold ? parseFloat(hypoForm.win_threshold) : null,
       }),
     }).then(r => r.json()).then(d => {
       if (d.success) setSuggestions(d.data.suggestions)
@@ -264,7 +269,13 @@ export default function AnglesPage() {
   }
 
   const applySuggestion = (s: typeof suggestions[0]) => {
-    setHypoForm(p => ({ ...p, hypothesis: s.hypothesis, variable_tested: s.variable_tested, expected_outcome: s.expected_outcome }))
+    setHypoForm(p => ({
+      ...p,
+      hypothesis: s.hypothesis,
+      variable_tested: s.variable_tested,
+      expected_outcome: s.expected_outcome,
+      customer_insight: s.customer_insight || p.customer_insight,
+    }))
     setSuggestions([])
   }
 
@@ -824,14 +835,16 @@ export default function AnglesPage() {
                 <div className="flex items-center gap-3">
                   <button
                     onClick={handleSuggest}
-                    disabled={!hypoForm.branch_name || !hypoForm.human_desire || suggestLoading}
+                    disabled={!hypoForm.branch_name || !hypoForm.human_desire || !hypoForm.funnel_stage || !hypoForm.format || suggestLoading}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-50 text-violet-700 border border-violet-200 rounded-lg text-xs font-medium hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {suggestLoading
                       ? <><span className="animate-spin inline-block w-3 h-3 border border-violet-400 border-t-transparent rounded-full" />Generating...</>
-                      : <>✨ Suggest hypotheses with AI</>}
+                      : <>✨ Suggest hypotheses with AI{hypoForm.primary_metric && <span className="ml-1 text-violet-400">→ {hypoForm.primary_metric}</span>}</>}
                   </button>
-                  {!hypoForm.human_desire && <span className="text-xs text-gray-400">Pick branch + desire first</span>}
+                  {(!hypoForm.funnel_stage || !hypoForm.format)
+                    ? <span className="text-xs text-gray-400">Pick Funnel Stage + Format first — AI writes to that metric</span>
+                    : !hypoForm.human_desire && <span className="text-xs text-gray-400">Pick branch + desire first</span>}
                 </div>
 
                 {suggestions.length > 0 && (

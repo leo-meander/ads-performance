@@ -30,6 +30,11 @@ class HypothesisSuggestRequest(BaseModel):
     target_audience: Optional[str] = None
     market: Optional[str] = None
     primary_kpi: Optional[str] = None
+    # Layer A spec fields — if present, AI writes to these instead of primary_kpi
+    funnel_stage: Optional[str] = None    # Stop|Hold|Click|Downstream
+    format: Optional[str] = None          # Image|Video
+    primary_metric: Optional[str] = None  # auto-derived from stage+format
+    win_threshold: Optional[float] = None # benchmark value for context
 
 
 class HypothesisCreate(BaseModel):
@@ -168,54 +173,81 @@ def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_sta
 
 @router.post("/suggest")
 def suggest_hypotheses(payload: HypothesisSuggestRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Use Claude to generate 3 hypothesis variants based on brand context."""
+    """Generate 3 hypothesis variants. When funnel_stage + format are set, all output is
+    written exclusively to that stage's primary metric — never falls back to CTR."""
     try:
+        from collections import defaultdict
         from anthropic import Anthropic
         from app.config import settings
-        from app.models.account import AdAccount
-        from app.models.ad_combo import AdCombo
 
+        # ── 1. Determine the binding metric ──────────────────────────────
+        FUNNEL_METRICS = {
+            "Stop":       {"Video": "hook_rate",    "Image": "thumb_stop_rate"},
+            "Hold":       {"Video": "hold_rate",    "Image": "hold_rate"},
+            "Click":      {"Video": "CTR",          "Image": "CTR"},
+            "Downstream": {"Video": "booking_rate", "Image": "booking_rate"},
+        }
+        STAGE_SURFACE = {
+            "Stop":       "the first 3 seconds / opening frame of the ad",
+            "Hold":       "the body, pacing, or length of the video",
+            "Click":      "the call-to-action, end-card, or offer framing",
+            "Downstream": "the proof, price, or offer (Layer B — booking intent)",
+        }
+
+        active_metric: str
+        if payload.funnel_stage and payload.format:
+            active_metric = FUNNEL_METRICS.get(payload.funnel_stage, {}).get(payload.format, "")
+        else:
+            active_metric = payload.primary_metric or payload.primary_kpi or "CTR"
+
+        stage = payload.funnel_stage or "—"
+        fmt = payload.format or "—"
+        surface = STAGE_SURFACE.get(payload.funnel_stage or "", "")
+
+        # ── 2. Brand context (never say = hard constraint) ────────────────
         brand = db.query(BrandIdentity).filter(
             BrandIdentity.branch_name == payload.branch_name
         ).first()
-
-        # Brand context
+        never_say = brand.never_say if brand else []
         brand_ctx = ""
         if brand:
-            brand_ctx = f"""BRAND: {brand.branch_name}
-Territory: {brand.brand_territory or "—"}
-Promise: {brand.brand_promise or "—"}
-Feeling target: {brand.feeling_target or "—"}
-Always say: {', '.join(brand.always_say or [])}
-Never say: {', '.join(brand.never_say or [])}"""
+            brand_ctx = (
+                f"Branch: {brand.branch_name}\n"
+                f"Territory: {brand.brand_territory or '—'}\n"
+                f"Promise: {brand.brand_promise or '—'}\n"
+                f"Feeling target: {brand.feeling_target or '—'}\n"
+                f"Always say: {', '.join(brand.always_say or [])}\n"
+                f"NEVER SAY (hard exclusion — drop any suggestion that uses these): "
+                f"{', '.join(never_say) if never_say else 'none'}"
+            )
 
-        # WIN/LOSE combos for this branch — gives AI grounding in what actually worked
-        account = db.query(AdAccount).filter(
-            AdAccount.account_name == payload.branch_name,
-            AdAccount.platform == "meta",
-        ).first()
-        combo_ctx = ""
-        if account:
-            wins = db.query(AdCombo).filter(
-                AdCombo.branch_id == account.id,
-                AdCombo.verdict == "WIN",
-                AdCombo.spend > 0,
-            ).order_by(AdCombo.roas.desc()).limit(3).all()
-            loses = db.query(AdCombo).filter(
-                AdCombo.branch_id == account.id,
-                AdCombo.verdict == "LOSE",
-                AdCombo.spend > 0,
-            ).order_by(AdCombo.roas.asc()).limit(3).all()
-            if wins:
-                combo_ctx += "\nWINNING ADS (high ROAS):\n" + "\n".join(
-                    f"- {c.ad_name or c.combo_id} | TA:{c.target_audience} | ROAS:{float(c.roas or 0):.2f}x"
-                    for c in wins
-                )
-            if loses:
-                combo_ctx += "\nLOSING ADS (low ROAS):\n" + "\n".join(
-                    f"- {c.ad_name or c.combo_id} | TA:{c.target_audience} | ROAS:{float(c.roas or 0):.2f}x"
-                    for c in loses
-                )
+        # ── 3. Dashboard learnings — angle win rates + top desires ────────
+        MIN_SAMPLE = 5
+        concluded = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.branch_name == payload.branch_name,
+            CreativeHypothesis.status.in_(["validated", "refuted"]),
+        ).all()
+
+        angle_stats: dict[str, dict] = defaultdict(lambda: {"wins": 0, "total": 0})
+        for h in concluded:
+            if h.creative_angle:
+                angle_stats[h.creative_angle]["total"] += 1
+                if h.status == "validated":
+                    angle_stats[h.creative_angle]["wins"] += 1
+        proven_angles = sorted(
+            [(a, v) for a, v in angle_stats.items() if v["total"] >= MIN_SAMPLE],
+            key=lambda x: x[1]["wins"] / x[1]["total"],
+            reverse=True,
+        )[:5]
+        exploratory = len(concluded) < MIN_SAMPLE
+
+        learning_ctx = ""
+        if proven_angles:
+            lines = [f"  - \"{a}\" — {v['wins']}/{v['total']} win rate ({round(v['wins']/v['total']*100)}%)"
+                     for a, v in proven_angles]
+            learning_ctx += "PROVEN ANGLES (prefer building on these, cite win rate):\n" + "\n".join(lines) + "\n"
+        if exploratory:
+            learning_ctx += f"NOTE: fewer than {MIN_SAMPLE} concluded tests — mark suggestions as EXPLORATORY.\n"
 
         # Past learnings for this desire
         past = db.query(CreativeHypothesis).filter(
@@ -223,72 +255,116 @@ Never say: {', '.join(brand.never_say or [])}"""
             CreativeHypothesis.human_desire == payload.human_desire,
             CreativeHypothesis.status.in_(["validated", "refuted"]),
             CreativeHypothesis.learning.isnot(None),
-        ).order_by(desc(CreativeHypothesis.validated_at)).limit(3).all()
-        past_ctx = ""
+        ).order_by(desc(CreativeHypothesis.validated_at)).limit(4).all()
         if past:
-            past_ctx = "\nPAST LEARNINGS FOR THIS DESIRE:\n" + "\n".join(
-                f"- [{h.status.upper()}] {h.learning}" for h in past
+            learning_ctx += "PAST LEARNINGS FOR THIS DESIRE:\n" + "\n".join(
+                f"  - [{h.status.upper()}] {h.learning}" for h in past
+            ) + "\n"
+
+        # ── 4. Benchmark band for the active metric ───────────────────────
+        benchmark_ctx = ""
+        if payload.win_threshold:
+            benchmark_ctx = (
+                f"60-day benchmark for {active_metric} on {payload.branch_name}: "
+                f"{payload.win_threshold}% average. "
+                f"Set Expected Outcome threshold near this band — do not invent fantasy deltas."
             )
 
-        # Category guidance for the booking-decision framework
+        # ── 5. Category guidance ──────────────────────────────────────────
         category_guidance = {
-            "identity": "Focus on WHO the guest becomes by staying here. The ad must answer 'Is this hotel for someone like me?' Hypothesis should test identity signals: solo adventurer, romantic couple, design-conscious traveler, etc.",
-            "decision_driver": "Focus on the rational tipping point that makes someone book NOW vs keep looking. Test price anchoring, urgency, comparison positioning, or risk-removal (free cancellation, best price guarantee).",
-            "emotional_trigger": "Focus on the specific emotion that closes the booking decision. Test which feeling — romance, nostalgia, excitement, escape, pride — drives higher conversion for this TA.",
-            "travel_moment": "Focus on the specific stage in the guest's travel planning journey. Test whether speaking to 'inspiration' (dreaming), 'planning' (comparing), or 'deciding' (ready to book) lifts performance.",
-            "social_proof": "Focus on WHOSE voice the guest trusts most. Test peer reviews vs expert endorsements vs influencer vs staff recommendations vs user-generated content.",
-            "experience": "Focus on the specific memorable moment the guest will carry away. Test which experience detail (breakfast view, pillow menu, rooftop sunset) resonates most as the reason to choose this hotel.",
-            "value_perception": "Focus on whether the price feels WORTH IT. Test how the ad frames value: premium experience justification, comparison to alternatives, or tangible value-adds (included breakfast, late checkout).",
-            "brand_territory": "Focus on the brand's ownable position. Test which distinct characteristic of the hotel (design philosophy, location story, founder values) guests can't get anywhere else.",
+            "identity":        "Test identity signals — WHO does the guest become? Solo adventurer, romantic couple, design-conscious traveler.",
+            "decision_driver": "Test the rational tipping point — price anchoring, urgency, risk-removal.",
+            "emotional_trigger": "Test which emotion closes the booking — romance, nostalgia, excitement, escape, pride.",
+            "travel_moment":   "Test which planning stage the ad speaks to — dreaming, comparing, or ready-to-book.",
+            "social_proof":    "Test whose voice the guest trusts — peer review, expert endorsement, UGC, staff.",
+            "experience":      "Test which memorable moment detail resonates — breakfast view, rooftop sunset, unique ritual.",
+            "value_perception":"Test how value is framed — premium justification, comparison, or tangible add-ons.",
+            "brand_territory": "Test which ownable brand characteristic only this hotel has.",
         }
         cat_ctx = ""
         if payload.hypothesis_category:
-            cat_label = payload.hypothesis_category.replace("_", " ").title()
-            guidance = category_guidance.get(payload.hypothesis_category, "")
-            cat_ctx = f"\nHYPOTHESIS CATEGORY: {cat_label}\n{guidance}"
-        insight_ctx = f"\nCUSTOMER INSIGHT (underlying belief): {payload.customer_insight}" if payload.customer_insight else ""
+            cat_ctx = (
+                f"Booking Decision Category: {payload.hypothesis_category.replace('_',' ').title()}\n"
+                f"{category_guidance.get(payload.hypothesis_category, '')}"
+            )
+        insight_ctx = f"Customer Insight (underlying belief): {payload.customer_insight}" if payload.customer_insight else ""
 
-        prompt = f"""You are a hotel performance marketing strategist who thinks in terms of the Booking Decision framework.
-Hotel guests ask 6 questions before booking: Can I trust this place? Is this for someone like me? Will I remember this? Is it worth the price? Is the location right? Will I regret not booking?
-Your hypotheses must address one of these questions — NOT generic creative variations.
+        # ── 6. Build the prompt ───────────────────────────────────────────
+        prompt = f"""You are a hotel performance marketing strategist. Generate exactly 3 creative hypothesis variants.
 
-Generate exactly 3 creative hypothesis variants for an upcoming ad creative test.
-Return a JSON array of 3 objects, each with these fields:
-- hypothesis: one clear sentence stating the booking-decision belief being tested (start with "We believe..." or "If we show...")
-- variable_tested: the specific creative element being changed (e.g. "Social proof type: guest review vs staff story")
-- expected_outcome: measurable prediction tied to the booking question (e.g. "+15% CTR among Couple TA")
-- rationale: one sentence WHY this hypothesis addresses a real booking hesitation for this brand/TA
+═══ BINDING CONSTRAINT — READ THIS FIRST ═══
+Funnel Stage: {stage}
+Format: {fmt}
+PRIMARY METRIC: {active_metric}
+
+Every hypothesis, variable, and expected outcome MUST be written in terms of {active_metric} ONLY.
+Do NOT mention CTR, ROAS, CVR, or any other metric.
+The variable may ONLY touch: {surface or 'the surface appropriate for this stage'}.
+If stage is Stop → the variable must be about the OPENING FRAME, not the CTA or offer.
+If stage is Click → the variable must be about the CTA or offer, not the opening.
+Expected Outcome must name {active_metric} and nothing else.
+════════════════════════════════════════════
 
 BRAND CONTEXT:
 {brand_ctx}
-{combo_ctx}
-{past_ctx}
-{cat_ctx}
-{insight_ctx}
+
+{learning_ctx}
+{benchmark_ctx}
 
 THIS TEST:
 Human Desire: {payload.human_desire}
-Creative Angle: {payload.creative_angle or "—"}
-Target Audience: {payload.target_audience or "—"}
-Market: {payload.market or "—"}
-Primary KPI: {payload.primary_kpi or "ROAS"}
+Creative Angle: {payload.creative_angle or '—'}
+Target Audience: {payload.target_audience or '—'}
+Market: {payload.market or '—'}
+{cat_ctx}
+{insight_ctx}
+
+OUTPUT FORMAT — JSON array of exactly 3 objects:
+{{
+  "hypothesis": "We believe... [references {active_metric}, no other metric]",
+  "variable_tested": "[exactly one X vs Y pair about {surface or 'the right surface'}]",
+  "expected_outcome": "[{active_metric} ≥ X% or +X pp vs baseline — no other metric]",
+  "customer_insight": "[the belief underneath — one sentence]",
+  "rationale": "[why this addresses a real booking hesitation for {payload.branch_name} {payload.target_audience or ''}]"
+}}
+
+Self-check before responding:
+1. Does expected_outcome name ONLY {active_metric}? If not → rewrite.
+2. Is variable_tested exactly one vs pair about {surface or 'the correct surface'}? If not → rewrite.
+3. Does any suggestion use a NEVER SAY word ({', '.join(never_say) if never_say else 'none'})? If yes → drop and replace.
+{('4. Mark all suggestions as EXPLORATORY if history is thin.' if exploratory else '')}
 
 Return ONLY valid JSON array. No markdown, no explanation."""
 
         client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
         msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=800,
+            model="claude-sonnet-5",
+            max_tokens=1200,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = msg.content[0].text.strip()
-        # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
         suggestions = json.loads(raw.strip())
-        return {"success": True, "data": {"suggestions": suggestions},
+
+        # ── 7. Server-side self-check: drop suggestions that mention wrong metrics ──
+        wrong_metrics = {"CTR", "ROAS", "CVR", "LPV", "CPA"}
+        if active_metric in wrong_metrics:
+            wrong_metrics.discard(active_metric)
+        cleaned = []
+        for s in suggestions:
+            outcome = s.get("expected_outcome", "")
+            bad = [m for m in wrong_metrics if m.lower() in outcome.lower()]
+            if not bad:
+                cleaned.append(s)
+            else:
+                logger.warning("[suggest] dropped suggestion mentioning %s in outcome: %s", bad, outcome)
+        # Fall back to full list if all were dropped (shouldn't happen)
+        suggestions = cleaned or suggestions
+
+        return {"success": True, "data": {"suggestions": suggestions, "active_metric": active_metric},
                 "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
         logger.exception("[hypothesis-suggest] failed")
