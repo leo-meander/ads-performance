@@ -12,6 +12,10 @@ class CreativeHypothesis(TimestampMixin, Base):
     angle_id = Column(String(20), ForeignKey("ad_angles.angle_id", ondelete="SET NULL"), nullable=True)
 
     # Strategy context
+    hypothesis_category = Column(String(50), nullable=True, index=True)
+    # identity | decision_driver | emotional_trigger | travel_moment |
+    # social_proof | experience | value_perception | brand_territory
+    customer_insight = Column(Text, nullable=True)  # underlying belief from the pyramid
     human_desire = Column(String(100), nullable=True, index=True)
     creative_angle = Column(String(200), nullable=True)
     target_audience = Column(String(100), nullable=True)
