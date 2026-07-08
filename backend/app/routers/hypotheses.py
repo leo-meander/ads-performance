@@ -48,6 +48,10 @@ class HypothesisCreate(BaseModel):
     secondary_kpi: Optional[str] = None
     expected_outcome: Optional[str] = None
     created_by: Optional[str] = None
+    # 4-tier links (optional at creation)
+    research_question_id: Optional[str] = None  # UUID string
+    knowledge_links: Optional[list[str]] = None
+    parent_hypothesis_id: Optional[str] = None  # UUID string
 
 
 class BriefAnalysisRequest(BaseModel):
@@ -67,8 +71,13 @@ class HypothesisResultUpdate(BaseModel):
     actual_spend: Optional[float] = None
     confounding_factors: Optional[list[str]] = None
     confidence_level: Optional[str] = None
+    confidence_score: Optional[float] = None
     learning: Optional[str] = None
     result_notes: Optional[str] = None
+    # 4-tier links
+    principle_id: Optional[str] = None   # UUID string
+    research_question_id: Optional[str] = None
+    knowledge_links: Optional[list[str]] = None
 
 
 def _next_hypothesis_id(db: Session) -> str:
@@ -86,7 +95,7 @@ def _next_hypothesis_id(db: Session) -> str:
     return f"HYP-{num:03d}"
 
 
-def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_status: Optional[str] = None) -> dict:
+def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_status: Optional[str] = None, principle_title: Optional[str] = None) -> dict:
     clicks = int(combo.clicks or 0) if combo else None
     conversions = int(combo.conversions or 0) if combo else None
     return {
@@ -130,6 +139,13 @@ def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_sta
         "human_moment": h.human_moment,
         # Approval linkage — latest approval status for this hypothesis
         "approval_status": approval_status,
+        # 4-tier knowledge system
+        "confidence_score": float(h.confidence_score) if h.confidence_score is not None else None,
+        "principle_id": str(h.principle_id) if h.principle_id else None,
+        "principle_title": principle_title,
+        "research_question_id": str(h.research_question_id) if h.research_question_id else None,
+        "knowledge_links": h.knowledge_links or [],
+        "parent_hypothesis_id": str(h.parent_hypothesis_id) if h.parent_hypothesis_id else None,
     }
 
 
@@ -474,5 +490,137 @@ def hypothesis_summary(branch_name: str, db: Session = Depends(get_db)) -> dict[
                 "total_validated": len(rows)},
                 "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@router.get("/learning-dashboard/{branch_name}")
+def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Structured knowledge dashboard — Top Desires, Decision Drivers, Principles, Hooks, Rejected."""
+    try:
+        from collections import defaultdict
+        from app.models.creative_principle import CreativePrinciple
+
+        all_hyps = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.branch_name == branch_name,
+            CreativeHypothesis.status.in_(["validated", "refuted", "inconclusive"]),
+        ).all()
+
+        # ── Top Human Desires by win rate ─────────────────────────────────
+        desire_stats: dict[str, dict] = defaultdict(lambda: {"win": 0, "total": 0})
+        for h in all_hyps:
+            if not h.human_desire:
+                continue
+            desire_stats[h.human_desire]["total"] += 1
+            if h.status == "validated":
+                desire_stats[h.human_desire]["win"] += 1
+        top_desires = sorted(
+            [
+                {"desire": d, "win_rate": round(v["win"] / v["total"] * 100, 0),
+                 "experiments": v["total"], "wins": v["win"]}
+                for d, v in desire_stats.items() if v["total"] > 0
+            ],
+            key=lambda x: x["win_rate"],
+            reverse=True,
+        )[:8]
+
+        # ── Top Decision Drivers by win rate (hypothesis_category) ────────
+        cat_stats: dict[str, dict] = defaultdict(lambda: {"win": 0, "total": 0})
+        for h in all_hyps:
+            if not h.hypothesis_category:
+                continue
+            cat_stats[h.hypothesis_category]["total"] += 1
+            if h.status == "validated":
+                cat_stats[h.hypothesis_category]["win"] += 1
+        top_drivers = sorted(
+            [
+                {"category": c.replace("_", " ").title(), "raw": c,
+                 "win_rate": round(v["win"] / v["total"] * 100, 0),
+                 "experiments": v["total"]}
+                for c, v in cat_stats.items() if v["total"] > 0
+            ],
+            key=lambda x: x["win_rate"],
+            reverse=True,
+        )
+
+        # ── Creative Principles for this branch ───────────────────────────
+        principles = db.query(CreativePrinciple).filter(
+            (CreativePrinciple.branch_name == branch_name) |
+            (CreativePrinciple.branch_name.is_(None)),
+            CreativePrinciple.is_active == True,
+        ).order_by(desc(CreativePrinciple.confidence_score)).all()
+
+        top_principles = [
+            {
+                "principle_id": p.principle_id,
+                "title": p.title,
+                "anti_principle": p.anti_principle,
+                "confidence_score": float(p.confidence_score) if p.confidence_score else 0,
+                "experiment_count": p.experiment_count or 0,
+                "validated_count": p.validated_count or 0,
+                "human_desire": p.human_desire,
+            }
+            for p in principles
+        ]
+
+        # ── Winning Hooks (creative_angle from validated hypotheses) ──────
+        hook_counts: dict[str, int] = defaultdict(int)
+        for h in all_hyps:
+            if h.status == "validated" and h.creative_angle:
+                hook_counts[h.creative_angle] += 1
+        winning_hooks = sorted(
+            [{"angle": k, "count": v} for k, v in hook_counts.items()],
+            key=lambda x: x["count"],
+            reverse=True,
+        )[:8]
+
+        # ── Rejected angles ───────────────────────────────────────────────
+        rejected_counts: dict[str, int] = defaultdict(int)
+        for h in all_hyps:
+            if h.status == "refuted" and h.creative_angle:
+                rejected_counts[h.creative_angle] += 1
+        rejected_angles = sorted(
+            [{"angle": k, "count": v} for k, v in rejected_counts.items()],
+            key=lambda x: x["count"],
+            reverse=True,
+        )[:5]
+
+        # ── Recent validated learnings ─────────────────────────────────────
+        recent = sorted(
+            [h for h in all_hyps if h.status == "validated" and h.learning],
+            key=lambda x: x.validated_at or x.created_at,
+            reverse=True,
+        )[:5]
+        recent_learnings = [
+            {
+                "hypothesis_id": h.hypothesis_id,
+                "learning": h.learning,
+                "human_desire": h.human_desire,
+                "target_audience": h.target_audience,
+                "market": h.market,
+                "validated_at": h.validated_at.isoformat() if h.validated_at else None,
+            }
+            for h in recent
+        ]
+
+        return {
+            "success": True,
+            "data": {
+                "branch_name": branch_name,
+                "total_experiments": len(all_hyps),
+                "total_validated": sum(1 for h in all_hyps if h.status == "validated"),
+                "total_refuted": sum(1 for h in all_hyps if h.status == "refuted"),
+                "top_desires": top_desires,
+                "top_drivers": top_drivers,
+                "top_principles": top_principles,
+                "winning_hooks": winning_hooks,
+                "rejected_angles": rejected_angles,
+                "recent_learnings": recent_learnings,
+            },
+            "error": None,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        logger.exception("[learning-dashboard] failed")
         return {"success": False, "data": None, "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()}

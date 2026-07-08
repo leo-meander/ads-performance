@@ -1,6 +1,7 @@
 from sqlalchemy import Column, DateTime, ForeignKey, Numeric, String, Text
 
 from app.models.base import Base, JSONType, TimestampMixin, UUIDType
+import uuid
 
 
 class CreativeHypothesis(TimestampMixin, Base):
@@ -37,6 +38,13 @@ class CreativeHypothesis(TimestampMixin, Base):
     # Statistical integrity
     confounding_factors = Column(JSONType, nullable=True)
     confidence_level = Column(String(10), nullable=True)  # low/medium/high
+    confidence_score = Column(Numeric(5, 2), nullable=True)  # 0-100 numeric
+
+    # 4-tier knowledge links
+    principle_id = Column(UUIDType, ForeignKey("creative_principles.id", ondelete="SET NULL"), nullable=True, index=True)
+    research_question_id = Column(UUIDType, ForeignKey("research_questions.id", ondelete="SET NULL"), nullable=True, index=True)
+    knowledge_links = Column(JSONType, nullable=True, default=list)   # list of hypothesis_ids
+    parent_hypothesis_id = Column(UUIDType, ForeignKey("creative_hypotheses.id", ondelete="SET NULL"), nullable=True)
 
     # Brief + script input for AI analysis
     brief_text = Column(Text, nullable=True)
