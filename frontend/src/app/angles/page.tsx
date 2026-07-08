@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Plus, X, ChevronDown, ChevronRight, Brain, Lightbulb, FlaskConical, Layers, BarChart3 } from 'lucide-react'
+import { Plus, X, ChevronDown, ChevronRight, Brain, Lightbulb, FlaskConical, BarChart3 } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -49,7 +49,6 @@ interface Hypothesis {
   evidence: string | null; creative_principle: string | null
   why_it_worked: string | null; human_moment: string | null
   approval_status: string | null
-  // 4-tier knowledge fields
   confidence_score: number | null
   principle_id: string | null
   principle_title: string | null
@@ -59,15 +58,6 @@ interface Hypothesis {
 }
 
 interface Account { id: string; account_name: string; platform: string }
-
-interface CreativePrinciple {
-  id: string; principle_id: string; branch_name: string | null
-  title: string; description: string | null; anti_principle: string | null
-  human_desire: string | null; applicable_markets: string[]; applicable_ta: string[]
-  confidence_score: number; experiment_count: number; validated_count: number; refuted_count: number
-  is_active: boolean; created_by: string | null; created_at: string | null
-  linked_hypotheses?: { hypothesis_id: string; hypothesis: string; status: string; branch_name: string; target_audience: string | null; market: string | null; actual_roas: number | null; confidence_score: number | null }[]
-}
 
 interface LearningDashboard {
   branch_name: string; total_experiments: number; total_validated: number; total_refuted: number
@@ -133,7 +123,7 @@ const DESIRE_DOT: Record<string, string> = {
   Fulfillment: 'bg-orange-400', Immersion: 'bg-rose-400', Curiosity: 'bg-amber-400',
 }
 
-type Tab = 'angles' | 'brand' | 'hypotheses' | 'beliefs' | 'dashboard'
+type Tab = 'angles' | 'brand' | 'hypotheses' | 'dashboard'
 
 export default function AnglesPage() {
   const { canEditSection } = useAuth()
@@ -179,24 +169,16 @@ export default function AnglesPage() {
     expected_outcome: '',
   })
 
-  // Knowledge system state
-  const [principles, setPrinciples] = useState<CreativePrinciple[]>([])
+  // Learning dashboard state
   const [learningDashboard, setLearningDashboard] = useState<LearningDashboard | null>(null)
   const [ldBranch, setLdBranch] = useState('Meander Taipei')
   const [ldLoading, setLdLoading] = useState(false)
-  const [fPrincipleBranch, setFPrincipleBranch] = useState('')
-  const [showCreatePrinciple, setShowCreatePrinciple] = useState(false)
-  const [principleForm, setPrincipleForm] = useState({ branch_name: '', title: '', description: '', anti_principle: '', human_desire: '' })
-  const [aiExtractLoading, setAiExtractLoading] = useState(false)
-  const [aiExtractResult, setAiExtractResult] = useState<{ title: string; description: string; anti_principle: string; human_desire: string } | null>(null)
-  const [selectedForExtract, setSelectedForExtract] = useState<string[]>([])
-  const [expandedPrinciple, setExpandedPrinciple] = useState<string | null>(null)
 
   // Analyze brief state
-  const [analyzeTarget, setAnalyzeTarget] = useState<string | null>(null) // hypothesis_id
+  const [analyzeTarget, setAnalyzeTarget] = useState<string | null>(null)
   const [analyzeMode, setAnalyzeMode] = useState<'brief' | 'vision'>('brief')
   const [analyzeForm, setAnalyzeForm] = useState({ brief_text: '', script_text: '' })
-  const [visionUrls, setVisionUrls] = useState('') // newline-separated image URLs
+  const [visionUrls, setVisionUrls] = useState('')
   const [analyzeLoading, setAnalyzeLoading] = useState(false)
 
   const handleAnalyzeBrief = (hypId: string) => {
@@ -253,16 +235,8 @@ export default function AnglesPage() {
     setSuggestions([])
   }
 
-  // Derived: desires for selected branch
   const selectedBrand = brandIdentities.find(b => b.branch_name === hypoForm.branch_name)
   const branchDesires = selectedBrand ? selectedBrand.human_desires : HUMAN_DESIRES
-
-  const fetchPrinciples = (branch?: string) => {
-    const p = new URLSearchParams()
-    if (branch) p.set('branch_name', branch)
-    fetch(`${API_BASE}/api/principles?${p}`, { credentials: 'include' })
-      .then(r => r.json()).then(d => { if (d.success) setPrinciples(d.data) }).catch(() => {})
-  }
 
   const fetchLearningDashboard = (branch: string) => {
     setLdLoading(true)
@@ -294,12 +268,9 @@ export default function AnglesPage() {
       .then(r => r.json()).then(d => { if (d.success) setAccounts(d.data.filter((a: Account) => a.platform === 'meta')) }).catch(() => {})
     fetchBrandIdentities()
     fetchHypotheses()
-    fetchPrinciples()
   }, [])
 
   useEffect(() => { if (tab === 'dashboard') fetchLearningDashboard(ldBranch) }, [tab, ldBranch])
-  useEffect(() => { if (tab === 'beliefs') fetchPrinciples(fPrincipleBranch || undefined) }, [tab, fPrincipleBranch])
-
   useEffect(() => { fetchAngles() }, [fStatus, fBranch])
 
   const handleCreate = () => {
@@ -351,7 +322,6 @@ export default function AnglesPage() {
     })
   }
 
-  // Group angles by Human Desire
   const filtered = angles.filter(a => !fDesire || a.human_desire === fDesire)
   const byDesire: Record<string, Angle[]> = {}
   filtered.forEach(a => {
@@ -378,11 +348,6 @@ export default function AnglesPage() {
               <Plus className="w-4 h-4" /> New Hypothesis
             </button>
           )}
-          {canEdit && tab === 'beliefs' && (
-            <button onClick={() => setShowCreatePrinciple(true)} className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">
-              <Plus className="w-4 h-4" /> New Belief
-            </button>
-          )}
         </div>
       </div>
 
@@ -392,7 +357,6 @@ export default function AnglesPage() {
           { key: 'angles', label: 'Creative Angles', icon: Lightbulb },
           { key: 'brand', label: 'Brand Intelligence', icon: Brain },
           { key: 'hypotheses', label: 'Hypotheses', icon: FlaskConical },
-          { key: 'beliefs', label: 'Beliefs', icon: Layers },
           { key: 'dashboard', label: 'Learning Dashboard', icon: BarChart3 },
         ] as const).map(({ key, label, icon: Icon }) => (
           <button key={key} onClick={() => setTab(key)}
@@ -477,7 +441,6 @@ export default function AnglesPage() {
                 const colorCls = DESIRE_COLOR[desire] || 'bg-gray-50 border-gray-200 text-gray-700'
                 const dotCls = DESIRE_DOT[desire] || 'bg-gray-400'
                 const isCollapsed = collapsedDesires.has(desire)
-                // Group by emotional theme within desire
                 const byTheme: Record<string, Angle[]> = {}
                 desireAngles.forEach(a => {
                   const t = a.emotional_theme || 'General'
@@ -661,7 +624,6 @@ export default function AnglesPage() {
                 <button onClick={() => setShowCreateHypo(false)}><X className="w-5 h-5 text-gray-400" /></button>
               </div>
               <div className="space-y-3">
-                {/* Row 1: Branch + Desire */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs text-gray-500 mb-1">Branch *</label>
@@ -691,7 +653,6 @@ export default function AnglesPage() {
                   </div>
                 </div>
 
-                {/* Row 1b: Hypothesis Category */}
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Booking Decision Category</label>
                   <div className="grid grid-cols-4 gap-2">
@@ -713,7 +674,6 @@ export default function AnglesPage() {
                   </div>
                 </div>
 
-                {/* Customer Insight */}
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Customer Insight <span className="text-gray-300">(the belief underneath)</span></label>
                   <input
@@ -723,7 +683,6 @@ export default function AnglesPage() {
                     placeholder="e.g. Couples in their 30s don't want a 'luxurious' hotel — they want to feel like they made the right call."
                   />
                 </div>
-                {/* Row 2: Angle + TA + Market + KPI */}
                 <div className="grid grid-cols-4 gap-3">
                   <div><label className="block text-xs text-gray-500 mb-1">Creative Angle</label>
                     <select
@@ -754,7 +713,6 @@ export default function AnglesPage() {
                       {['CTR', 'CVR', 'ROAS', 'LPV', 'Hook Rate', 'Thruplay'].map(k => <option key={k}>{k}</option>)}
                     </select></div>
                 </div>
-                {/* AI Suggest */}
                 <div className="flex items-center gap-3">
                   <button
                     onClick={handleSuggest}
@@ -768,7 +726,6 @@ export default function AnglesPage() {
                   {!hypoForm.human_desire && <span className="text-xs text-gray-400">Pick branch + desire first</span>}
                 </div>
 
-                {/* Suggestions panel */}
                 {suggestions.length > 0 && (
                   <div className="border border-violet-200 rounded-xl bg-violet-50 p-4 space-y-3">
                     <p className="text-xs font-semibold text-violet-700 uppercase tracking-wider">AI Suggestions — click to use</p>
@@ -844,19 +801,16 @@ export default function AnglesPage() {
               <p className="text-xs mt-1">Each ad idea should have a hypothesis before it runs.</p>
             </div>
           ) : (() => {
-            // Apply client-side filters
-            const filtered = hypotheses
+            const filteredHypos = hypotheses
               .filter(h => !fHypoBranch || h.branch_name === fHypoBranch)
               .filter(h => !fHypoStatus || h.status === fHypoStatus)
               .filter(h => !fHypoCategory || h.hypothesis_category === fHypoCategory)
               .filter(h => !fHypoTA || h.target_audience === fHypoTA)
               .filter(h => !fHypoMarket || h.market === fHypoMarket)
 
-            // Summary stats
-            const concluded = filtered.filter(h => ['validated','refuted'].includes(h.status))
-            const running = filtered.filter(h => h.status === 'running')
-            const validated = filtered.filter(h => h.status === 'validated')
-            // Group learnings by desire
+            const concluded = filteredHypos.filter(h => ['validated','refuted'].includes(h.status))
+            const running = filteredHypos.filter(h => h.status === 'running')
+            const validated = filteredHypos.filter(h => h.status === 'validated')
             const learningsByDesire: Record<string, Hypothesis[]> = {}
             concluded.filter(h => h.learning).forEach(h => {
               const k = h.human_desire || 'General'
@@ -864,13 +818,12 @@ export default function AnglesPage() {
             })
             return (
               <div className="space-y-6">
-                {/* Summary bar */}
                 <div className="grid grid-cols-4 gap-3">
                   {[
-                    { label: 'Total', value: filtered.length, cls: 'text-gray-800' },
+                    { label: 'Total', value: filteredHypos.length, cls: 'text-gray-800' },
                     { label: 'Running', value: running.length, cls: 'text-blue-700' },
                     { label: 'Validated', value: validated.length, cls: 'text-green-700' },
-                    { label: 'Refuted', value: filtered.filter(h=>h.status==='refuted').length, cls: 'text-red-600' },
+                    { label: 'Refuted', value: filteredHypos.filter(h=>h.status==='refuted').length, cls: 'text-red-600' },
                   ].map(s => (
                     <div key={s.label} className="bg-white rounded-xl border border-gray-200 p-4 text-center">
                       <p className={`text-2xl font-bold ${s.cls}`}>{s.value}</p>
@@ -879,7 +832,6 @@ export default function AnglesPage() {
                   ))}
                 </div>
 
-                {/* Learnings by Desire */}
                 {Object.keys(learningsByDesire).length > 0 && (
                   <div className="bg-violet-50 rounded-xl border border-violet-100 p-5">
                     <p className="text-xs font-semibold text-violet-700 uppercase tracking-wider mb-3">Validated Learnings</p>
@@ -899,12 +851,11 @@ export default function AnglesPage() {
                   </div>
                 )}
 
-                {/* Hypothesis list */}
                 <div className="space-y-3">
-                  {filtered.length === 0 && (fHypoBranch || fHypoStatus || fHypoCategory || fHypoTA || fHypoMarket) && (
+                  {filteredHypos.length === 0 && (fHypoBranch || fHypoStatus || fHypoCategory || fHypoTA || fHypoMarket) && (
                     <div className="text-center text-gray-400 py-8 text-sm">No hypotheses match the current filters.</div>
                   )}
-                  {filtered.map(h => {
+                  {filteredHypos.map(h => {
                     const hasResult = h.actual_roas !== null || h.actual_ctr !== null
                     const clicks = h.combo_clicks ?? 0
                     const bookings = h.combo_conversions ?? 0
@@ -925,7 +876,6 @@ export default function AnglesPage() {
                     return (
                     <div key={h.id} className={`bg-white rounded-xl border p-5 ${h.status === 'validated' ? 'border-green-200' : h.status === 'refuted' ? 'border-red-200' : 'border-gray-200'}`}>
                       <div className="flex-1 min-w-0">
-                        {/* Header */}
                         <div className="flex items-center gap-2 flex-wrap mb-2">
                           <span className="font-mono text-xs text-gray-400">{h.hypothesis_id}</span>
                           <span className="text-xs text-gray-500">{h.branch_name}</span>
@@ -949,7 +899,6 @@ export default function AnglesPage() {
                           )}
                         </div>
 
-                        {/* Linked combo */}
                         {h.combo_id && (
                           <a
                             href={`/creative?combo=${h.combo_id}`}
@@ -966,7 +915,6 @@ export default function AnglesPage() {
                         )}
                         <p className="text-sm font-medium text-gray-800 mb-3">{h.hypothesis}</p>
 
-                        {/* Expected vs Actual */}
                         {(h.variable_tested || h.expected_outcome || hasResult) && (
                           <div className="grid grid-cols-2 gap-3 mb-3">
                             <div className="bg-gray-50 rounded-lg p-3">
@@ -986,7 +934,6 @@ export default function AnglesPage() {
                           </div>
                         )}
 
-                        {/* Learning */}
                         {h.learning && (
                           <div className={`rounded-lg px-3 py-2 mb-3 ${h.status === 'validated' ? 'bg-green-50' : 'bg-orange-50'}`}>
                             <p className={`text-[10px] font-semibold uppercase tracking-wider mb-0.5 ${h.status === 'validated' ? 'text-green-600' : 'text-orange-600'}`}>Learning</p>
@@ -994,7 +941,6 @@ export default function AnglesPage() {
                           </div>
                         )}
 
-                        {/* Deep analysis — evidence + principle */}
                         {(h.evidence || h.creative_principle) && (
                           <div className="border border-indigo-100 rounded-xl bg-indigo-50 p-4 mb-3 space-y-2">
                             {h.human_moment && (
@@ -1021,11 +967,9 @@ export default function AnglesPage() {
                           </div>
                         )}
 
-                        {/* Analyze panel */}
                         {analyzeTarget === h.hypothesis_id ? (
                           <div className="border border-indigo-200 rounded-xl bg-white p-4 mb-3">
                             <div className="flex justify-between items-center mb-3">
-                              {/* Mode toggle */}
                               <div className="flex gap-1 bg-indigo-50 rounded-lg p-0.5">
                                 <button
                                   onClick={() => setAnalyzeMode('brief')}
@@ -1113,7 +1057,6 @@ export default function AnglesPage() {
                           </button>
                         )}
 
-                        {/* Next step */}
                         {nextStep && (
                           <div className={`rounded-lg px-3 py-2 border text-xs ${nextStep.color}`}>
                             <span className="mr-1">{nextStep.icon}</span>
@@ -1127,198 +1070,6 @@ export default function AnglesPage() {
               </div>
             )
           })()}
-        </>
-      )}
-      {/* ── TAB: BELIEFS ── */}
-      {tab === 'beliefs' && (
-        <>
-          <div className="flex flex-wrap gap-2 mb-4">
-            <select value={fPrincipleBranch} onChange={e => setFPrincipleBranch(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
-              <option value="">All Branches</option>
-              {BRANCH_NAMES.map(b => <option key={b}>{b}</option>)}
-            </select>
-            {fPrincipleBranch && <button onClick={() => setFPrincipleBranch('')} className="px-2 py-1.5 text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-lg">Clear</button>}
-          </div>
-
-          {/* AI Extract banner */}
-          {selectedForExtract.length >= 2 && (
-            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 mb-4 flex items-center gap-3">
-              <span className="text-sm text-indigo-700 flex-1">{selectedForExtract.length} hypotheses selected — extract a belief?</span>
-              <button
-                onClick={() => {
-                  if (!fPrincipleBranch) return
-                  setAiExtractLoading(true)
-                  setAiExtractResult(null)
-                  fetch(`${API_BASE}/api/principles/ai-extract`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-                    body: JSON.stringify({ branch_name: fPrincipleBranch, hypothesis_ids: selectedForExtract }),
-                  }).then(r => r.json()).then(d => { if (d.success) setAiExtractResult(d.data) }).catch(() => {}).finally(() => setAiExtractLoading(false))
-                }}
-                disabled={aiExtractLoading || !fPrincipleBranch}
-                className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
-              >
-                {aiExtractLoading ? '✨ Extracting...' : '✨ AI Extract Belief'}
-              </button>
-              <button onClick={() => setSelectedForExtract([])} className="text-indigo-400 hover:text-indigo-600"><X className="w-4 h-4" /></button>
-            </div>
-          )}
-          {!fPrincipleBranch && selectedForExtract.length >= 2 && (
-            <p className="text-xs text-amber-600 mb-3">Select a branch filter first to extract a principle.</p>
-          )}
-
-          {/* AI result preview */}
-          {aiExtractResult && (
-            <div className="bg-indigo-50 border border-indigo-300 rounded-xl p-5 mb-4">
-              <p className="text-xs font-semibold text-indigo-600 uppercase tracking-wider mb-2">AI Extracted Belief</p>
-              <p className="text-lg font-bold text-indigo-900 mb-1">"{aiExtractResult.title}"</p>
-              {aiExtractResult.description && <p className="text-sm text-indigo-700 mb-2">{aiExtractResult.description}</p>}
-              {aiExtractResult.anti_principle && <p className="text-xs text-red-600 mb-2">✗ Anti-principle: {aiExtractResult.anti_principle}</p>}
-              <div className="flex gap-2 mt-3">
-                <button
-                  onClick={() => {
-                    fetch(`${API_BASE}/api/principles`, {
-                      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-                      body: JSON.stringify({ ...aiExtractResult, branch_name: fPrincipleBranch || null }),
-                    }).then(r => r.json()).then(d => {
-                      if (d.success) {
-                        // auto-assign selected hypotheses
-                        fetch(`${API_BASE}/api/principles/${d.data.principle_id}/assign`, {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-                          body: JSON.stringify({ hypothesis_ids: selectedForExtract }),
-                        }).finally(() => { setAiExtractResult(null); setSelectedForExtract([]); fetchPrinciples(fPrincipleBranch || undefined) })
-                      }
-                    })
-                  }}
-                  className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700"
-                >Save &amp; Link</button>
-                <button onClick={() => setAiExtractResult(null)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 hover:bg-gray-50">Discard</button>
-              </div>
-            </div>
-          )}
-
-          {/* Create form */}
-          {showCreatePrinciple && (
-            <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-              <div className="flex justify-between mb-4">
-                <h2 className="text-lg font-semibold">New Belief</h2>
-                <button onClick={() => setShowCreatePrinciple(false)}><X className="w-5 h-5 text-gray-400" /></button>
-              </div>
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div><label className="block text-xs text-gray-500 mb-1">Branch</label>
-                    <select value={principleForm.branch_name} onChange={e => setPrincipleForm(p => ({...p, branch_name: e.target.value}))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                      <option value="">Universal</option>{BRANCH_NAMES.map(b => <option key={b}>{b}</option>)}
-                    </select></div>
-                  <div><label className="block text-xs text-gray-500 mb-1">Human Desire</label>
-                    <select value={principleForm.human_desire} onChange={e => setPrincipleForm(p => ({...p, human_desire: e.target.value}))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                      <option value="">—</option>{HUMAN_DESIRES.map(d => <option key={d}>{d}</option>)}
-                    </select></div>
-                </div>
-                <div><label className="block text-xs text-gray-500 mb-1">Belief Statement *</label>
-                  <input value={principleForm.title} onChange={e => setPrincipleForm(p => ({...p, title: e.target.value}))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="e.g. People buy a Japan trip, not an Osaka hotel." /></div>
-                <div><label className="block text-xs text-gray-500 mb-1">Why this belief holds</label>
-                  <textarea value={principleForm.description} onChange={e => setPrincipleForm(p => ({...p, description: e.target.value}))} rows={2} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="The psychological or behavioral reason..." /></div>
-                <div><label className="block text-xs text-gray-500 mb-1">Counter-belief (what we thought before)</label>
-                  <input value={principleForm.anti_principle} onChange={e => setPrincipleForm(p => ({...p, anti_principle: e.target.value}))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="e.g. Location and amenities drive booking decisions." /></div>
-                <button onClick={() => {
-                  fetch(`${API_BASE}/api/principles`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-                    body: JSON.stringify({ ...principleForm, branch_name: principleForm.branch_name || null, human_desire: principleForm.human_desire || null }),
-                  }).then(r => r.json()).then(d => {
-                    if (d.success) { setShowCreatePrinciple(false); setPrincipleForm({ branch_name: '', title: '', description: '', anti_principle: '', human_desire: '' }); fetchPrinciples(fPrincipleBranch || undefined) }
-                  })
-                }} disabled={!principleForm.title} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50">Save Belief</button>
-              </div>
-            </div>
-          )}
-
-          {/* Hypotheses selector for AI extract */}
-          {fPrincipleBranch && (
-            <div className="bg-gray-50 rounded-xl border border-gray-200 p-4 mb-4">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Select hypotheses to extract a belief from:</p>
-              <div className="flex flex-wrap gap-2 max-h-40 overflow-auto">
-                {hypotheses.filter(h => h.branch_name === fPrincipleBranch && ['validated','refuted'].includes(h.status)).map(h => (
-                  <label key={h.hypothesis_id} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs cursor-pointer transition-all ${selectedForExtract.includes(h.hypothesis_id) ? 'bg-indigo-100 border-indigo-400 text-indigo-700' : 'bg-white border-gray-200 text-gray-600 hover:border-indigo-200'}`}>
-                    <input type="checkbox" className="hidden" checked={selectedForExtract.includes(h.hypothesis_id)}
-                      onChange={e => setSelectedForExtract(prev => e.target.checked ? [...prev, h.hypothesis_id] : prev.filter(x => x !== h.hypothesis_id))} />
-                    <span className={`w-1.5 h-1.5 rounded-full ${h.status === 'validated' ? 'bg-green-500' : 'bg-red-400'}`} />
-                    {h.hypothesis_id}
-                  </label>
-                ))}
-                {hypotheses.filter(h => h.branch_name === fPrincipleBranch && ['validated','refuted'].includes(h.status)).length === 0 && (
-                  <p className="text-xs text-gray-400">No concluded hypotheses for {fPrincipleBranch} yet.</p>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Principles list */}
-          {principles.length === 0 ? (
-            <div className="bg-white rounded-xl border p-8 text-center text-gray-400">
-              <Layers className="w-8 h-8 mx-auto mb-2 opacity-30" />
-              <p>No beliefs yet.</p>
-              <p className="text-xs mt-1">Add your first belief manually, or select validated hypotheses above and use AI Extract.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {principles.map(p => (
-                <div key={p.id} className={`bg-white rounded-xl border p-5 ${p.confidence_score >= 70 ? 'border-indigo-200' : p.confidence_score >= 40 ? 'border-amber-200' : 'border-gray-200'}`}>
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap mb-1">
-                        <span className="font-mono text-xs text-gray-400">{p.principle_id}</span>
-                        {p.branch_name && <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">{p.branch_name}</span>}
-                        {p.human_desire && <span className="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">{p.human_desire}</span>}
-                      </div>
-                      <p className="text-base font-bold text-gray-900 mb-1">"{p.title}"</p>
-                      {p.anti_principle && <p className="text-xs text-red-500 mb-1">✗ {p.anti_principle}</p>}
-                      {p.description && <p className="text-xs text-gray-600 mb-2">{p.description}</p>}
-                    </div>
-                    {/* Confidence ring */}
-                    <div className="shrink-0 text-center">
-                      <div className={`text-2xl font-bold ${p.confidence_score >= 70 ? 'text-indigo-600' : p.confidence_score >= 40 ? 'text-amber-600' : 'text-gray-400'}`}>
-                        {Math.round(p.confidence_score)}%
-                      </div>
-                      <p className="text-[9px] text-gray-400 uppercase tracking-wider">confidence</p>
-                    </div>
-                  </div>
-
-                  {/* Confidence bar */}
-                  <div className="h-1.5 bg-gray-100 rounded-full mb-3">
-                    <div className={`h-full rounded-full transition-all ${p.confidence_score >= 70 ? 'bg-indigo-500' : p.confidence_score >= 40 ? 'bg-amber-500' : 'bg-gray-300'}`}
-                      style={{ width: `${Math.min(100, p.confidence_score)}%` }} />
-                  </div>
-
-                  <div className="flex items-center gap-4 text-xs text-gray-500">
-                    <span>{p.experiment_count} experiments</span>
-                    <span className="text-green-600">✓ {p.validated_count} validated</span>
-                    <span className="text-red-500">✗ {p.refuted_count} refuted</span>
-                    <button onClick={() => setExpandedPrinciple(expandedPrinciple === p.principle_id ? null : p.principle_id)}
-                      className="ml-auto text-indigo-500 hover:text-indigo-700 underline underline-offset-2">
-                      {expandedPrinciple === p.principle_id ? 'Hide experiments' : `View ${p.experiment_count} experiments ▸`}
-                    </button>
-                  </div>
-
-                  {expandedPrinciple === p.principle_id && (
-                    <div className="mt-3 border-t border-gray-100 pt-3 space-y-1.5">
-                      {hypotheses.filter(h => h.principle_id === p.id).map(h => (
-                        <div key={h.hypothesis_id} className="flex items-center gap-2 text-xs bg-gray-50 rounded-lg px-3 py-2">
-                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${h.status === 'validated' ? 'bg-green-500' : h.status === 'refuted' ? 'bg-red-400' : 'bg-gray-300'}`} />
-                          <span className="font-mono text-gray-400 shrink-0">{h.hypothesis_id}</span>
-                          <span className="text-gray-600 truncate">{h.hypothesis}</span>
-                          {h.target_audience && <span className="text-gray-400 shrink-0">{h.target_audience}</span>}
-                          {h.market && <span className="text-gray-400 shrink-0">{h.market}</span>}
-                        </div>
-                      ))}
-                      {hypotheses.filter(h => h.principle_id === p.id).length === 0 && (
-                        <p className="text-xs text-gray-400">No hypotheses linked yet. Select hypotheses above and use AI Extract, or assign manually.</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
         </>
       )}
 
@@ -1338,7 +1089,6 @@ export default function AnglesPage() {
             </div>
           ) : (
             <div className="space-y-6">
-              {/* Summary row */}
               <div className="grid grid-cols-3 gap-4">
                 {[
                   { label: 'Total Experiments', value: learningDashboard.total_experiments, color: 'text-gray-800' },
@@ -1353,12 +1103,11 @@ export default function AnglesPage() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Top Human Desires */}
                 <div className="bg-white rounded-xl border border-gray-200 p-5">
                   <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4">Top Human Desires</h3>
                   {learningDashboard.top_desires.length === 0 ? <p className="text-xs text-gray-400">No data yet.</p> : (
                     <div className="space-y-3">
-                      {learningDashboard.top_desires.map((d, i) => (
+                      {learningDashboard.top_desires.map(d => (
                         <div key={d.desire}>
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-sm font-medium text-gray-800">{d.desire}</span>
@@ -1375,7 +1124,6 @@ export default function AnglesPage() {
                   )}
                 </div>
 
-                {/* Top Decision Drivers */}
                 <div className="bg-white rounded-xl border border-gray-200 p-5">
                   <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider mb-4">Top Decision Drivers</h3>
                   {learningDashboard.top_drivers.length === 0 ? <p className="text-xs text-gray-400">No data yet.</p> : (
@@ -1397,34 +1145,6 @@ export default function AnglesPage() {
                   )}
                 </div>
 
-                {/* Creative Principles */}
-                <div className="bg-white rounded-xl border border-indigo-100 p-5 lg:col-span-2">
-                  <h3 className="text-sm font-bold text-indigo-700 uppercase tracking-wider mb-4">Proven Beliefs</h3>
-                  {learningDashboard.top_principles.length === 0 ? (
-                    <p className="text-xs text-gray-400">No beliefs yet. Go to the Beliefs tab to extract some from validated hypotheses.</p>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {learningDashboard.top_principles.map(p => (
-                        <div key={p.principle_id} className={`rounded-xl border p-4 ${p.confidence_score >= 70 ? 'bg-indigo-50 border-indigo-200' : 'bg-gray-50 border-gray-200'}`}>
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="flex-1">
-                              <p className={`text-sm font-bold mb-0.5 ${p.confidence_score >= 70 ? 'text-indigo-900' : 'text-gray-800'}`}>"{p.title}"</p>
-                              {p.anti_principle && <p className="text-xs text-red-500">✗ {p.anti_principle}</p>}
-                              {p.human_desire && <p className="text-[10px] text-gray-400 mt-1">{p.human_desire}</p>}
-                            </div>
-                            <div className="shrink-0 text-center">
-                              <span className={`text-xl font-bold ${p.confidence_score >= 70 ? 'text-indigo-600' : 'text-gray-500'}`}>{Math.round(p.confidence_score)}%</span>
-                              <p className="text-[9px] text-gray-400">conf.</p>
-                            </div>
-                          </div>
-                          <p className="text-[10px] text-gray-400 mt-2">{p.experiment_count} experiments · {p.validated_count} validated</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Winning Hooks */}
                 <div className="bg-white rounded-xl border border-green-100 p-5">
                   <h3 className="text-sm font-bold text-green-700 uppercase tracking-wider mb-4">Winning Creative Angles</h3>
                   {learningDashboard.winning_hooks.length === 0 ? <p className="text-xs text-gray-400">No validated angles yet.</p> : (
@@ -1440,7 +1160,6 @@ export default function AnglesPage() {
                   )}
                 </div>
 
-                {/* Rejected */}
                 <div className="bg-white rounded-xl border border-red-100 p-5">
                   <h3 className="text-sm font-bold text-red-600 uppercase tracking-wider mb-4">Rejected Angles</h3>
                   {learningDashboard.rejected_angles.length === 0 ? <p className="text-xs text-gray-400">No refuted angles yet.</p> : (
@@ -1456,7 +1175,6 @@ export default function AnglesPage() {
                   )}
                 </div>
 
-                {/* Recent Learnings */}
                 {learningDashboard.recent_learnings.length > 0 && (
                   <div className="bg-violet-50 rounded-xl border border-violet-100 p-5 lg:col-span-2">
                     <h3 className="text-sm font-bold text-violet-700 uppercase tracking-wider mb-4">Recent Learnings</h3>
@@ -1481,7 +1199,6 @@ export default function AnglesPage() {
           )}
         </>
       )}
-
     </div>
   )
 }
