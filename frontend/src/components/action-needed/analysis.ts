@@ -92,40 +92,49 @@ export function verdictOf(row: CampaignRow): Verdict {
 
 // Each entry is keyed by the step you LAND on; the leak is the transition into
 // it from the previous step.
+//
+// Root causes are grounded in hotel-booking funnel mechanics:
+// - Impression→Click is a pure ad problem (creative/audience/offer/fatigue), not website.
+// - Click→Search is a landing page problem (load speed, hero, message-match).
+// - Search→Add to Cart is room selection (availability, pricing, presentation).
+// - Add to Cart→Checkout is booking intent — users are evaluating, not "abandoning checkout".
+//   This step is NOT traditional checkout abandonment. Users pick a room to see the total
+//   price, then may leave to compare OTAs or check with travel companions.
+// - Checkout→Booking is payment/form friction (the actual checkout experience).
 const STEP_FIX: Record<string, { what: string; fixes: string[] }> = {
   clicks: {
-    what: "people see the ad but don't click",
+    what: "users see the ad but don't click — this is an ad problem, not a website one",
     fixes: [
-      'Refresh the ad creative/hook and tighten targeting — this is an ad-relevance problem, not a landing-page one.',
-      'Pause the audiences/placements with the lowest CTR.',
+      'Refresh creative hook (first 3s of video / thumbnail) and sharpen the offer — Best Price Guarantee, Free Breakfast, Free Cancellation. This step has nothing to do with the landing page.',
+      'Check audience: wrong market or no travel intent → ad fatigue or mismatched ICP. Pause lowest-CTR placements/audiences.',
     ],
   },
   searches: {
-    what: 'they click the ad but leave before browsing rooms',
+    what: 'they clicked the ad but left before searching for rooms — landing page experience failed',
     fixes: [
-      'Check landing-page load speed (mobile first) and that the ad → landing-page message matches.',
-      'Send them to a relevant room/offer page, not a generic homepage.',
+      'Check load speed on mobile and that the ad message matches the landing page (e.g. an ad about "Things to do in Saigon" should not open a booking engine).',
+      'Strengthen the hero: add USP, social proof, best-price guarantee, and a clear CTA — users must immediately see a reason to search for rooms.',
     ],
   },
   add_to_cart: {
-    what: "they browse but don't select a room",
+    what: 'they searched dates but selected no room — offer or availability issue',
     fixes: [
-      'Check availability and rates for the searched dates — sold-out or overpriced kills this step.',
-      'Improve room photos/descriptions and make the "select room" CTA obvious.',
+      'Check availability and pricing for the searched dates — sold-out inventory or uncompetitive rates block this step most often.',
+      'Improve room listing: more photos, clearer descriptions, capacity/view/breakfast callouts, and easier comparison between room types.',
     ],
   },
   checkouts: {
-    what: 'they pick a room but bail before starting checkout',
+    what: 'they selected a room but did not tap Book Now — booking intent is low, not a checkout bug',
     fixes: [
-      'Hunt for price shock — taxes/fees/deposit appearing only here. Show all-in pricing earlier.',
-      'Test the cart → checkout step on mobile for bugs; add trust signals (free cancellation, secure payment).',
+      'This is normal hotel-booking behaviour: users pick a room to see the total price, then compare OTAs or check travel plans. Add Best Price Guarantee, Free Cancellation, and limited-availability signals to Reservation Summary to nudge them to commit.',
+      'Clarify the CTA label: "Continue to Guest Details" converts better than "Book Now" (reduces the perceived commitment). Ensure no price surprises (taxes/fees) appear only at this step.',
     ],
   },
   bookings: {
-    what: "they start checkout but don't finish paying",
+    what: 'they started checkout but did not complete payment — form or payment failure',
     fixes: [
-      'Check payment methods and for errors on the final step (card declines, form validation).',
-      'Cut required fields and confirm price/availability does not change at the last step.',
+      'Audit payment methods: add Apple Pay, Google Pay, QR, and local payment options. Card declines, OTP failures, and timeout errors are the most common culprits — check payment gateway logs.',
+      'Cut required fields (address, passport number are rarely needed at booking). Validate inline, not on submit, to reduce frustration and retries.',
     ],
   },
 }
