@@ -35,6 +35,7 @@ from app.routers import (
     country,
     creative,
     creative_intelligence,
+    creative_principles,
     export,
     figma,
     funnel_recommendations,
@@ -48,6 +49,7 @@ from app.routers import (
     meta_recommendations,
     notifications,
     public_landing,
+    research_questions,
     rules,
     settings as settings_router,
     sync,
@@ -165,6 +167,8 @@ app.include_router(changelog.router, prefix="/api", tags=["changelog"])
 app.include_router(winning_ads.router, prefix="/api", tags=["winning-ads"])
 app.include_router(brand_intelligence.router)
 app.include_router(hypotheses.router)
+app.include_router(creative_principles.router)
+app.include_router(research_questions.router)
 
 # MCP server — no /api prefix; OAuth and MCP paths must live at server root
 app.include_router(mcp_router)
