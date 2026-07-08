@@ -14,12 +14,13 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column("creative_hypotheses", sa.Column("brief_text", sa.Text(), nullable=True))
-    op.add_column("creative_hypotheses", sa.Column("script_text", sa.Text(), nullable=True))
-    op.add_column("creative_hypotheses", sa.Column("evidence", sa.Text(), nullable=True))
-    op.add_column("creative_hypotheses", sa.Column("creative_principle", sa.Text(), nullable=True))
-    op.add_column("creative_hypotheses", sa.Column("why_it_worked", sa.Text(), nullable=True))
-    op.add_column("creative_hypotheses", sa.Column("human_moment", sa.String(200), nullable=True))
+    # Use IF NOT EXISTS — columns may already exist if added manually on prod before this migration ran.
+    op.execute("ALTER TABLE creative_hypotheses ADD COLUMN IF NOT EXISTS brief_text TEXT")
+    op.execute("ALTER TABLE creative_hypotheses ADD COLUMN IF NOT EXISTS script_text TEXT")
+    op.execute("ALTER TABLE creative_hypotheses ADD COLUMN IF NOT EXISTS evidence TEXT")
+    op.execute("ALTER TABLE creative_hypotheses ADD COLUMN IF NOT EXISTS creative_principle TEXT")
+    op.execute("ALTER TABLE creative_hypotheses ADD COLUMN IF NOT EXISTS why_it_worked TEXT")
+    op.execute("ALTER TABLE creative_hypotheses ADD COLUMN IF NOT EXISTS human_moment VARCHAR(200)")
 
 
 def downgrade():
