@@ -138,7 +138,7 @@ const FUNNEL_METRICS: Record<string, Record<string, string>> = {
   Stop:       { Video: 'hook_rate',       Image: 'thumb_stop_rate' },
   Hold:       { Video: 'hold_rate',       Image: 'hold_rate' },
   Click:      { Video: 'CTR',             Image: 'CTR' },
-  Downstream: { Video: 'booking_rate',    Image: 'booking_rate' },
+  Downstream: { Video: 'roas',            Image: 'roas' },
 }
 
 type Tab = 'angles' | 'brand' | 'hypotheses' | 'dashboard'

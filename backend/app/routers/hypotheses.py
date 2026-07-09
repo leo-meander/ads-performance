@@ -612,7 +612,7 @@ def metric_benchmark(
         from app.models.campaign import Campaign
         from app.models.ad_set import AdSet
 
-        SUPPORTED = {"hook_rate", "thumb_stop_rate", "hold_rate", "CTR", "ctr", "booking_rate"}
+        SUPPORTED = {"hook_rate", "thumb_stop_rate", "hold_rate", "CTR", "ctr", "booking_rate", "roas"}
         if metric not in SUPPORTED:
             return {"success": False, "data": None,
                     "error": f"Unsupported metric '{metric}'. Supported: {sorted(SUPPORTED)}",
@@ -670,6 +670,9 @@ def metric_benchmark(
                 # conversions / clicks
                 if r.clicks and r.conversions:
                     values.append(float(r.conversions) / r.clicks * 100)
+            elif metric == "roas":
+                if r.roas:
+                    values.append(float(r.roas))
 
         if not values:
             return {"success": True, "data": {"branch_name": branch_name, "metric": metric,
@@ -684,7 +687,7 @@ def metric_benchmark(
                 "metric": metric,
                 "average": average,
                 "sample_size": len(values),
-                "unit": "percent",
+                "unit": "x" if metric == "roas" else "percent",
                 "period_days": 60,
                 "ta": ta or None,
                 "country": country or None,
