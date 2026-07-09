@@ -1793,9 +1793,17 @@ function AnglesPageInner() {
                             <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-medium ${catMeta.color}`}>{catMeta.label}</span>
                           )}
                         </div>
-                        <p className="text-sm text-gray-800 font-medium mb-1">{p.hypothesis}</p>
-                        {p.customer_insight && <p className="text-xs text-gray-400 italic mb-1">"{p.customer_insight}"</p>}
-                        <p className="text-xs text-gray-500">{p.expected_outcome}</p>
+                        <p className="text-[9px] font-semibold text-gray-400 uppercase tracking-widest mb-0.5">Hypothesis</p>
+                        <p className="text-sm text-gray-900 font-semibold mb-2">{p.hypothesis}</p>
+                        {p.customer_insight && (
+                          <p className="text-xs text-blue-600 italic mb-2">"{p.customer_insight}"</p>
+                        )}
+                        {(p as BulkProposal & {variable_tested?: string}).variable_tested && (
+                          <p className="text-xs text-violet-600 font-medium mb-1.5">
+                            🔬 {(p as BulkProposal & {variable_tested?: string}).variable_tested}
+                          </p>
+                        )}
+                        <p className="text-xs font-mono text-amber-700 bg-amber-50 rounded px-2 py-1">{p.expected_outcome}</p>
                         <div className="flex flex-wrap gap-1 mt-2">
                           {p.combo_ids.slice(0, 6).map(cid => (
                             <span key={cid} className="font-mono text-[9px] bg-gray-100 text-gray-400 px-1.5 py-0.5 rounded">{cid}</span>

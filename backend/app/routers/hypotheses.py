@@ -489,34 +489,18 @@ Top performers:
 Bottom performers:
 {bottom_lines}
 
-Study the gap between winners and losers. Write a 4-part hypothesis using this exact structure:
-
-1. BELIEF — the enduring behavioral insight. What do these guests fundamentally care about? One sentence. Starts with the guest. Lives for 5 years.
-   ✓ "Solo travelers care more about how the trip feels than where they sleep."
-   ✗ "Guests respond to social proof content." (too vague, not behavioral)
-
-2. WHY — the assumption you are testing. One sentence. Mark it as unconfirmed. Plain language.
-   ✓ "Because they want experiences that feel like 'someone like me' — unconfirmed until isolated."
-   ✗ "Because social proof drives higher engagement metrics for this segment."
-
-3. TEST — the specific creative swap. One variable only. One sentence.
-   ✓ "KOL city exploration vs room showcase. Stage: Stop · Format: Video"
-   ✗ "AI-generated or KOL content with aspirational hotel + location combinations"
-
-4. SUCCESS — what a win looks like. Primary metric + threshold + baseline. Secondary metrics listed briefly.
-   ✓ "Primary: {metric} ≥ [X] (baseline ~{avg_fmt}). Secondary: CTR, watch time."
-   ✗ "We expect the winning creative to outperform the cohort average significantly."
+Find what separates winners from losers. Write ONE clean hypothesis.
 
 Return JSON in English:
 {{
-  "customer_insight": "[BELIEF — one sentence, starts with the guest]",
-  "hypothesis": "[WHY — the assumption being tested, one sentence, plain language]",
-  "variable_tested": "[TEST — the exact swap, one variable, include Stage and Format if known]",
-  "expected_outcome": "Primary: {metric} ≥ [X] (baseline ~{avg_fmt}). Secondary: [list 1-2 metrics]",
+  "customer_insight": "What this guest fundamentally wants — one plain sentence, starts with the guest, no brand jargon.",
+  "hypothesis": "The one thing we think drives {metric} here — one sentence, simple English. NO 'A or B', NO 'and', NO two ideas at once. Pick the single strongest variable.",
+  "variable_tested": "X vs Y — the exact creative swap. One pair only.",
+  "expected_outcome": "{metric} ≥ [number] (baseline ~{avg_fmt})",
   "hypothesis_category": "[identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory]"
 }}
 
-Return ONLY valid JSON. No markdown. All fields in English."""
+Return ONLY valid JSON. No markdown. All values in English."""
 
             try:
                 msg = client.messages.create(
