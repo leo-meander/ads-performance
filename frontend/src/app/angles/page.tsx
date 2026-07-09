@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef, Suspense } from 'react'
+import { useEffect, useState, useRef, Suspense, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Plus, X, ChevronDown, ChevronRight, Brain, Lightbulb, FlaskConical, BarChart3, HelpCircle } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
@@ -52,10 +52,13 @@ interface BrandIdentity {
   feeling_target: string | null
 }
 
+interface LinkedCombo { combo_id: string; ad_name: string | null; verdict: string | null; roas: number | null }
+
 interface Hypothesis {
   id: string; hypothesis_id: string; branch_name: string
   combo_id: string | null; ad_name: string | null
   combo_clicks: number | null; combo_conversions: number | null
+  linked_combos?: LinkedCombo[]
   hypothesis_category: string | null; customer_insight: string | null
   human_desire: string | null; creative_angle: string | null
   target_audience: string | null; market: string | null
@@ -138,7 +141,7 @@ const FUNNEL_METRICS: Record<string, Record<string, string>> = {
   Stop:       { Video: 'hook_rate',       Image: 'thumb_stop_rate' },
   Hold:       { Video: 'hold_rate',       Image: 'hold_rate' },
   Click:      { Video: 'CTR',             Image: 'CTR' },
-  Downstream: { Video: 'booking_rate',    Image: 'booking_rate' },
+  Downstream: { Video: 'roas',            Image: 'roas' },
 }
 
 type Tab = 'angles' | 'brand' | 'hypotheses' | 'dashboard'
@@ -190,6 +193,7 @@ function AnglesPageInner() {
     win_threshold: '', min_sample: '5',
     combo_id: '', baseline: '',
   })
+  const [selectedComboIds, setSelectedComboIds] = useState<string[]>([])
 
   // Learning dashboard state
   const [learningDashboard, setLearningDashboard] = useState<LearningDashboard | null>(null)
@@ -315,6 +319,39 @@ function AnglesPageInner() {
   const selectedBrand = brandIdentities.find(b => b.branch_name === hypoForm.branch_name)
   const branchDesires = selectedBrand?.human_desires ?? []
 
+  // Cohort rankings: group by (branch + TA + market + primary_metric), rank by actual metric desc
+  const cohortRankMap = useMemo(() => {
+    const metricVal = (h: Hypothesis): number | null => {
+      const m = h.primary_metric || h.primary_kpi || ''
+      if (m === 'roas' || m === 'ROAS') return h.actual_roas ?? null
+      if (m === 'CTR' || m === 'ctr') return h.actual_ctr ?? null
+      if (m === 'hook_rate') return h.actual_ctr ?? null  // best proxy available
+      return h.actual_roas ?? h.actual_ctr ?? null
+    }
+    const groups: Record<string, Hypothesis[]> = {}
+    hypotheses.forEach(h => {
+      if (metricVal(h) === null) return
+      const key = [h.branch_name, h.target_audience || '', h.market || '', h.primary_metric || h.primary_kpi || ''].join('|')
+      ;(groups[key] = groups[key] || []).push(h)
+    })
+    const map: Record<string, { rank: number; total: number; label: string; value: number; metric: string }> = {}
+    Object.entries(groups).forEach(([, members]) => {
+      const sorted = [...members].sort((a, b) => (metricVal(b) ?? 0) - (metricVal(a) ?? 0))
+      sorted.forEach((h, i) => {
+        const m = h.primary_metric || h.primary_kpi || ''
+        const parts = [h.market || h.target_audience ? `${h.market}` : '', h.target_audience || ''].filter(Boolean)
+        map[h.hypothesis_id] = {
+          rank: i + 1,
+          total: sorted.length,
+          label: parts.join(' · '),
+          value: metricVal(h) ?? 0,
+          metric: m,
+        }
+      })
+    })
+    return map
+  }, [hypotheses])
+
   const fetchLearningDashboard = (branch: string) => {
     setLdLoading(true)
     fetch(`${API_BASE}/api/hypotheses/learning-dashboard/${encodeURIComponent(branch)}`, { credentials: 'include' })
@@ -356,7 +393,7 @@ function AnglesPageInner() {
     if (paramTab === 'hypotheses') {
       setTab('hypotheses')
       setShowCreateHypo(true)
-      if (paramCombo) setHypoForm(p => ({ ...p, combo_id: paramCombo }))
+      if (paramCombo) setSelectedComboIds([paramCombo])
     }
   }, [searchParams])
   useEffect(() => { fetchAngles() }, [fStatus, fBranch])
@@ -382,14 +419,16 @@ function AnglesPageInner() {
   }
 
   const handleCreateHypo = () => {
+    const { combo_id: _ignored, ...rest } = hypoForm
     fetch(`${API_BASE}/api/hypotheses`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ ...hypoForm, combo_id: hypoForm.combo_id || null }),
+      body: JSON.stringify({ ...rest, combo_ids: selectedComboIds.length ? selectedComboIds : null }),
     }).then(r => r.json()).then(d => {
       if (d.success) {
         setShowCreateHypo(false)
         setHypoForm({ branch_name: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '', funnel_stage: '', format: '', primary_metric: '', win_threshold: '', min_sample: '5', combo_id: '', baseline: '' })
+        setSelectedComboIds([])
         setComboSearch(''); setComboResults([])
         fetchHypotheses()
       }
@@ -776,20 +815,7 @@ function AnglesPageInner() {
                     placeholder="e.g. Couples in their 30s don't want a 'luxurious' hotel — they want to feel like they made the right call."
                   />
                 </div>
-                <div className="grid grid-cols-4 gap-3">
-                  <div><label className="block text-xs text-gray-500 mb-1">Creative Angle</label>
-                    <select
-                      value={hypoForm.creative_angle}
-                      onChange={e => setHypoForm(p => ({ ...p, creative_angle: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                    >
-                      <option value="">— Any angle —</option>
-                      {angles
-                        .filter(a => !a.applicable_to?.length || a.applicable_to.includes(hypoForm.branch_name))
-                        .map(a => <option key={a.angle_id} value={a.angle_type}>{a.angle_type}</option>)
-                      }
-                    </select>
-                  </div>
+                <div className="grid grid-cols-3 gap-3">
                   <div><label className="block text-xs text-gray-500 mb-1">Target Audience</label>
                     <select value={hypoForm.target_audience} onChange={e => setHypoForm(p => ({ ...p, target_audience: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
                       <option value="">— All —</option>
@@ -950,45 +976,56 @@ function AnglesPageInner() {
                     placeholder="Auto-fills when you pick Stage + Format above…"
                   />
                 </div>
-                {/* Link to Creative Library combo */}
+                {/* Link to Creative Library combos (multi-select) */}
                 <div>
                   <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
-                    Link to Creative
-                    <Tip text="Search and select an ad from the Creative Library to link this hypothesis to a specific combo. The combo's metrics will appear on this hypothesis card." wide />
+                    Link to Creatives
+                    <Tip text="Link one or more ads from the Creative Library. The hypothesis will aggregate metrics across all linked combos." wide />
                   </label>
-                  {hypoForm.combo_id ? (
-                    <div className="flex items-center gap-2 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
-                      <span className="font-mono text-xs text-violet-700">{hypoForm.combo_id}</span>
-                      <button onClick={() => { setHypoForm(p => ({ ...p, combo_id: '' })); setComboSearch(''); setComboResults([]) }}
-                        className="ml-auto text-violet-400 hover:text-violet-700"><X className="w-3 h-3" /></button>
+                  {selectedComboIds.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {selectedComboIds.map(cid => (
+                        <div key={cid} className="flex items-center gap-1.5 bg-violet-50 border border-violet-200 rounded-lg px-2.5 py-1">
+                          <span className="font-mono text-xs text-violet-700">{cid}</span>
+                          <button onClick={() => setSelectedComboIds(p => p.filter(id => id !== cid))}
+                            className="text-violet-400 hover:text-violet-700"><X className="w-3 h-3" /></button>
+                        </div>
+                      ))}
                     </div>
-                  ) : (
-                    <div className="relative">
-                      <input
-                        value={comboSearch}
-                        onChange={e => { setComboSearch(e.target.value); searchCombos(e.target.value, accounts.find(a => a.account_name === hypoForm.branch_name)?.id) }}
-                        onFocus={() => { if (!comboSearch && hypoForm.branch_name) searchCombos('', accounts.find(a => a.account_name === hypoForm.branch_name)?.id) }}
-                        placeholder="Search by ad name or combo ID…"
-                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                      />
-                      {comboSearchLoading && <span className="absolute right-3 top-2 text-xs text-gray-400 animate-pulse">searching…</span>}
-                      {comboResults.length > 0 && (
-                        <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-52 overflow-auto">
-                          {comboResults.map(r => (
-                            <button key={r.combo_id} onClick={() => { setHypoForm(p => ({ ...p, combo_id: r.combo_id })); setComboSearch(''); setComboResults([]) }}
-                              className="w-full text-left px-3 py-2 hover:bg-violet-50 border-b border-gray-50 last:border-0">
+                  )}
+                  <div className="relative">
+                    <input
+                      value={comboSearch}
+                      onChange={e => { setComboSearch(e.target.value); searchCombos(e.target.value, accounts.find(a => a.account_name === hypoForm.branch_name)?.id) }}
+                      onFocus={() => { if (!comboSearch && hypoForm.branch_name) searchCombos('', accounts.find(a => a.account_name === hypoForm.branch_name)?.id) }}
+                      placeholder="Search by ad name or combo ID…"
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                    />
+                    {comboSearchLoading && <span className="absolute right-3 top-2 text-xs text-gray-400 animate-pulse">searching…</span>}
+                    {comboResults.length > 0 && (
+                      <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-52 overflow-auto">
+                        {comboResults.map(r => {
+                          const isSelected = selectedComboIds.includes(r.combo_id)
+                          return (
+                            <button key={r.combo_id} onClick={() => {
+                              setSelectedComboIds(p => isSelected ? p.filter(id => id !== r.combo_id) : [...p, r.combo_id])
+                              setComboSearch('')
+                              setComboResults([])
+                            }}
+                              className={`w-full text-left px-3 py-2 border-b border-gray-50 last:border-0 ${isSelected ? 'bg-violet-50' : 'hover:bg-violet-50'}`}>
                               <div className="flex items-center gap-2">
+                                {isSelected && <span className="text-violet-500 text-xs font-bold">✓</span>}
                                 <span className="font-mono text-[10px] text-gray-400">{r.combo_id}</span>
                                 <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${r.verdict === 'WIN' ? 'bg-green-100 text-green-700' : r.verdict === 'LOSE' ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'}`}>{r.verdict}</span>
                                 {r.roas && <span className="text-[10px] text-gray-500">{r.roas.toFixed(2)}x</span>}
                               </div>
                               <p className="text-xs text-gray-700 truncate mt-0.5">{r.ad_name || '(no name)'}</p>
                             </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <button onClick={handleCreateHypo} disabled={!hypoForm.branch_name || !hypoForm.hypothesis}
@@ -1144,6 +1181,16 @@ function AnglesPageInner() {
                               <Tip text="Layer B = downstream verdict (ROAS, booking rate). Independent of Layer A — a creative can pass Layer A (great hook) but fail Layer B (weak offer/landing page)." wide />
                             </span>
                           )}
+                          {cohortRankMap[h.hypothesis_id] && (() => {
+                            const r = cohortRankMap[h.hypothesis_id]
+                            const medal = r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `#${r.rank}`
+                            const parts = [r.label, r.metric].filter(Boolean).join(' · ')
+                            return (
+                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${r.rank === 1 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                                {medal}{parts ? ` in ${parts}` : ''}
+                              </span>
+                            )
+                          })()}
                           {h.approval_status && (
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${
                               h.approval_status === 'APPROVED' ? 'bg-green-50 text-green-700 border-green-200' :
@@ -1154,7 +1201,19 @@ function AnglesPageInner() {
                           )}
                         </div>
 
-                        {h.combo_id && (
+                        {(h.linked_combos && h.linked_combos.length > 0) ? (
+                          <div className="flex flex-wrap gap-1.5 mb-2">
+                            {h.linked_combos.map(lc => (
+                              <a key={lc.combo_id} href={`/creative?combo=${lc.combo_id}`}
+                                className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-lg px-2.5 py-1 transition-colors">
+                                <span className="font-mono text-gray-400">{lc.combo_id}</span>
+                                {lc.ad_name && <span className="truncate max-w-[200px]">{lc.ad_name}</span>}
+                                {lc.verdict && <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${lc.verdict === 'WIN' ? 'bg-green-100 text-green-700' : lc.verdict === 'LOSE' ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'}`}>{lc.verdict}</span>}
+                                {lc.roas && <span className="text-gray-400">{lc.roas.toFixed(2)}x</span>}
+                              </a>
+                            ))}
+                          </div>
+                        ) : h.combo_id ? (
                           <a
                             href={`/creative?combo=${h.combo_id}`}
                             className="inline-flex items-center gap-1.5 mb-2 text-xs text-gray-500 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-lg px-2.5 py-1 transition-colors"
@@ -1163,7 +1222,7 @@ function AnglesPageInner() {
                             {h.ad_name && <span className="truncate max-w-[300px]">{h.ad_name}</span>}
                             <span className="text-gray-300">→ Creative Library</span>
                           </a>
-                        )}
+                        ) : null}
 
                         {h.customer_insight && (
                           <p className="text-[11px] text-gray-400 italic mb-1">"{h.customer_insight}"</p>
@@ -1514,6 +1573,80 @@ function AnglesPageInner() {
                   </div>
                 )}
               </div>
+
+              {/* ── COHORT BATTLES ── */}
+              {(() => {
+                const metricVal = (h: Hypothesis): number | null => {
+                  const m = h.primary_metric || h.primary_kpi || ''
+                  if (m === 'roas' || m === 'ROAS') return h.actual_roas ?? null
+                  if (m === 'CTR' || m === 'ctr') return h.actual_ctr ?? null
+                  return h.actual_roas ?? h.actual_ctr ?? null
+                }
+                const branchHypos = hypotheses.filter(h => h.branch_name === ldBranch && metricVal(h) !== null)
+                if (branchHypos.length === 0) return null
+
+                const groups: Record<string, Hypothesis[]> = {}
+                branchHypos.forEach(h => {
+                  const key = [h.target_audience || 'All TA', h.market || 'All', h.primary_metric || h.primary_kpi || 'metric'].join(' · ')
+                  ;(groups[key] = groups[key] || []).push(h)
+                })
+                // Only show cohorts with ≥2 hypotheses
+                const battles = Object.entries(groups)
+                  .filter(([, members]) => members.length >= 2)
+                  .map(([key, members]) => ({
+                    key,
+                    members: [...members].sort((a, b) => (metricVal(b) ?? 0) - (metricVal(a) ?? 0)),
+                  }))
+                if (battles.length === 0) return null
+
+                return (
+                  <div className="bg-white rounded-xl border border-gray-200 p-5">
+                    <div className="flex items-center gap-2 mb-4">
+                      <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Cohort Battles</h3>
+                      <Tip wide text="Hypotheses ranked head-to-head within the same TA · Market · Metric cohort. Same playing field = fair comparison. 🥇 = highest metric value in that cohort." />
+                    </div>
+                    <div className="space-y-6">
+                      {battles.map(({ key, members }) => {
+                        const metric = members[0].primary_metric || members[0].primary_kpi || ''
+                        const isRoas = metric === 'roas' || metric === 'ROAS'
+                        return (
+                          <div key={key}>
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">{key}</p>
+                            <div className="space-y-1.5">
+                              {members.map((h, i) => {
+                                const val = metricVal(h) ?? 0
+                                const best = metricVal(members[0]) ?? 1
+                                const pct = best > 0 ? (val / best) * 100 : 0
+                                const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`
+                                const catLabel = HYPOTHESIS_CATEGORIES.find(c => c.value === h.hypothesis_category)?.label || ''
+                                return (
+                                  <div key={h.hypothesis_id} className="flex items-center gap-3">
+                                    <span className="text-sm w-7 shrink-0 text-center">{medal}</span>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <span className="font-mono text-[10px] text-gray-400">{h.hypothesis_id}</span>
+                                        {catLabel && <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-medium ${CAT_COLOR[h.hypothesis_category!] || 'bg-gray-50 text-gray-500 border-gray-200'}`}>{catLabel}</span>}
+                                        <span className={`text-xs font-bold ml-auto shrink-0 ${i === 0 ? 'text-amber-600' : 'text-gray-500'}`}>
+                                          {isRoas ? `${val.toFixed(2)}x` : `${(val * 100).toFixed(2)}%`}
+                                        </span>
+                                      </div>
+                                      <p className="text-xs text-gray-700 truncate mb-1">{h.hypothesis}</p>
+                                      <div className="h-1.5 bg-gray-100 rounded-full">
+                                        <div className={`h-full rounded-full transition-all ${i === 0 ? 'bg-amber-400' : 'bg-gray-300'}`}
+                                          style={{ width: `${pct}%` }} />
+                                      </div>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
           )}
         </>
