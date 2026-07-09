@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef, Suspense } from 'react'
+import { useEffect, useState, useRef, Suspense, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Plus, X, ChevronDown, ChevronRight, Brain, Lightbulb, FlaskConical, BarChart3, HelpCircle } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
@@ -318,6 +318,39 @@ function AnglesPageInner() {
 
   const selectedBrand = brandIdentities.find(b => b.branch_name === hypoForm.branch_name)
   const branchDesires = selectedBrand?.human_desires ?? []
+
+  // Cohort rankings: group by (branch + TA + market + primary_metric), rank by actual metric desc
+  const cohortRankMap = useMemo(() => {
+    const metricVal = (h: Hypothesis): number | null => {
+      const m = h.primary_metric || h.primary_kpi || ''
+      if (m === 'roas' || m === 'ROAS') return h.actual_roas ?? null
+      if (m === 'CTR' || m === 'ctr') return h.actual_ctr ?? null
+      if (m === 'hook_rate') return h.actual_ctr ?? null  // best proxy available
+      return h.actual_roas ?? h.actual_ctr ?? null
+    }
+    const groups: Record<string, Hypothesis[]> = {}
+    hypotheses.forEach(h => {
+      if (metricVal(h) === null) return
+      const key = [h.branch_name, h.target_audience || '', h.market || '', h.primary_metric || h.primary_kpi || ''].join('|')
+      ;(groups[key] = groups[key] || []).push(h)
+    })
+    const map: Record<string, { rank: number; total: number; label: string; value: number; metric: string }> = {}
+    Object.entries(groups).forEach(([, members]) => {
+      const sorted = [...members].sort((a, b) => (metricVal(b) ?? 0) - (metricVal(a) ?? 0))
+      sorted.forEach((h, i) => {
+        const m = h.primary_metric || h.primary_kpi || ''
+        const parts = [h.market || h.target_audience ? `${h.market}` : '', h.target_audience || ''].filter(Boolean)
+        map[h.hypothesis_id] = {
+          rank: i + 1,
+          total: sorted.length,
+          label: parts.join(' · '),
+          value: metricVal(h) ?? 0,
+          metric: m,
+        }
+      })
+    })
+    return map
+  }, [hypotheses])
 
   const fetchLearningDashboard = (branch: string) => {
     setLdLoading(true)
@@ -1148,6 +1181,16 @@ function AnglesPageInner() {
                               <Tip text="Layer B = downstream verdict (ROAS, booking rate). Independent of Layer A — a creative can pass Layer A (great hook) but fail Layer B (weak offer/landing page)." wide />
                             </span>
                           )}
+                          {cohortRankMap[h.hypothesis_id] && (() => {
+                            const r = cohortRankMap[h.hypothesis_id]
+                            const medal = r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `#${r.rank}`
+                            const parts = [r.label, r.metric].filter(Boolean).join(' · ')
+                            return (
+                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${r.rank === 1 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                                {medal}{parts ? ` in ${parts}` : ''}
+                              </span>
+                            )
+                          })()}
                           {h.approval_status && (
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${
                               h.approval_status === 'APPROVED' ? 'bg-green-50 text-green-700 border-green-200' :
@@ -1530,6 +1573,80 @@ function AnglesPageInner() {
                   </div>
                 )}
               </div>
+
+              {/* ── COHORT BATTLES ── */}
+              {(() => {
+                const metricVal = (h: Hypothesis): number | null => {
+                  const m = h.primary_metric || h.primary_kpi || ''
+                  if (m === 'roas' || m === 'ROAS') return h.actual_roas ?? null
+                  if (m === 'CTR' || m === 'ctr') return h.actual_ctr ?? null
+                  return h.actual_roas ?? h.actual_ctr ?? null
+                }
+                const branchHypos = hypotheses.filter(h => h.branch_name === ldBranch && metricVal(h) !== null)
+                if (branchHypos.length === 0) return null
+
+                const groups: Record<string, Hypothesis[]> = {}
+                branchHypos.forEach(h => {
+                  const key = [h.target_audience || 'All TA', h.market || 'All', h.primary_metric || h.primary_kpi || 'metric'].join(' · ')
+                  ;(groups[key] = groups[key] || []).push(h)
+                })
+                // Only show cohorts with ≥2 hypotheses
+                const battles = Object.entries(groups)
+                  .filter(([, members]) => members.length >= 2)
+                  .map(([key, members]) => ({
+                    key,
+                    members: [...members].sort((a, b) => (metricVal(b) ?? 0) - (metricVal(a) ?? 0)),
+                  }))
+                if (battles.length === 0) return null
+
+                return (
+                  <div className="bg-white rounded-xl border border-gray-200 p-5">
+                    <div className="flex items-center gap-2 mb-4">
+                      <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Cohort Battles</h3>
+                      <Tip wide text="Hypotheses ranked head-to-head within the same TA · Market · Metric cohort. Same playing field = fair comparison. 🥇 = highest metric value in that cohort." />
+                    </div>
+                    <div className="space-y-6">
+                      {battles.map(({ key, members }) => {
+                        const metric = members[0].primary_metric || members[0].primary_kpi || ''
+                        const isRoas = metric === 'roas' || metric === 'ROAS'
+                        return (
+                          <div key={key}>
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">{key}</p>
+                            <div className="space-y-1.5">
+                              {members.map((h, i) => {
+                                const val = metricVal(h) ?? 0
+                                const best = metricVal(members[0]) ?? 1
+                                const pct = best > 0 ? (val / best) * 100 : 0
+                                const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`
+                                const catLabel = HYPOTHESIS_CATEGORIES.find(c => c.value === h.hypothesis_category)?.label || ''
+                                return (
+                                  <div key={h.hypothesis_id} className="flex items-center gap-3">
+                                    <span className="text-sm w-7 shrink-0 text-center">{medal}</span>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <span className="font-mono text-[10px] text-gray-400">{h.hypothesis_id}</span>
+                                        {catLabel && <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-medium ${CAT_COLOR[h.hypothesis_category!] || 'bg-gray-50 text-gray-500 border-gray-200'}`}>{catLabel}</span>}
+                                        <span className={`text-xs font-bold ml-auto shrink-0 ${i === 0 ? 'text-amber-600' : 'text-gray-500'}`}>
+                                          {isRoas ? `${val.toFixed(2)}x` : `${(val * 100).toFixed(2)}%`}
+                                        </span>
+                                      </div>
+                                      <p className="text-xs text-gray-700 truncate mb-1">{h.hypothesis}</p>
+                                      <div className="h-1.5 bg-gray-100 rounded-full">
+                                        <div className={`h-full rounded-full transition-all ${i === 0 ? 'bg-amber-400' : 'bg-gray-300'}`}
+                                          style={{ width: `${pct}%` }} />
+                                      </div>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
           )}
         </>
