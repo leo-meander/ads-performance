@@ -489,26 +489,28 @@ Top performers:
 Bottom performers:
 {bottom_lines}
 
-Find the ONE creative difference that separates winners from losers. Then write a hypothesis.
+Find the ONE creative difference between winners and losers. Output exactly 3 fields — nothing more.
 
-STRICT RULES — violating any rule means you must rewrite:
-1. hypothesis: MAXIMUM 20 words. Exactly ONE variable changed (one "vs" or one swap). NO "because", NO "and", NO "or". Plain language, no jargon.
-   Good: "Opening with a guest face beats opening with room footage for {ta} traveler hook rate."
-   Bad: "AI-generated or high-production KOL content featuring aspirational hotel + location combinations drives higher hook_rate because solo travelers seek social proof..."
-   If you cannot say it in 20 words → the hypothesis has multiple variables → split and pick the strongest one only.
-2. customer_insight: ONE sentence. This is the guest belief, not a restatement of the hypothesis. Plain language.
-3. expected_outcome: "{metric} ≥ [number] vs cohort avg {avg_fmt}" — numbers only, no prose.
-4. hypothesis_category: one of [identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory]
-
-Return JSON:
+OUTPUT FORMAT (follow exactly):
 {{
-  "hypothesis": "...",
-  "hypothesis_category": "...",
-  "customer_insight": "...",
-  "expected_outcome": "...",
-  "rationale": "one sentence — why this specific swap affects booking psychology"
+  "hypothesis": "[What changes] beats [what it replaces] for {ta} {metric}.",
+  "customer_insight": "[One sentence: what the guest believes or wants — starts with the guest, not the brand.]",
+  "expected_outcome": "{metric} ≥ [X] (baseline ~{avg_fmt})",
+  "hypothesis_category": "[one of: identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory]"
 }}
-Return ONLY valid JSON. No markdown. Self-check: count the words in hypothesis — if > 20, rewrite."""
+
+RULES — rewrite if violated:
+- hypothesis: max 15 words, exactly ONE swap (one thing vs another), no "because", no "and", no "or", no jargon. Read it aloud in one breath — if you can't, it's too long.
+  ✓ "Opening with a guest face beats room footage for Solo hook rate."
+  ✗ "AI-generated or high-production KOL content featuring aspirational hotel + location combinations drives higher hook_rate because..."
+- customer_insight: one plain sentence. The guest's belief, not a restatement of the hypothesis.
+  ✓ "Solo travelers book places worth showing off, not places to be alone."
+  ✗ "Solo travelers seek social proof that the destination choice itself is impressive and worth sharing to peers."
+- expected_outcome: metric + number + baseline only. No prose.
+  ✓ "hook_rate ≥ 25% (baseline ~{avg_fmt})"
+  ✗ "We expect the hook rate of the winning creative to exceed the cohort average..."
+
+Return ONLY valid JSON. No markdown. Self-check before returning: is hypothesis ≤ 15 words? Does it have exactly one swap? If not — rewrite."""
 
             try:
                 msg = client.messages.create(
