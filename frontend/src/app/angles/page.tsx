@@ -52,10 +52,13 @@ interface BrandIdentity {
   feeling_target: string | null
 }
 
+interface LinkedCombo { combo_id: string; ad_name: string | null; verdict: string | null; roas: number | null }
+
 interface Hypothesis {
   id: string; hypothesis_id: string; branch_name: string
   combo_id: string | null; ad_name: string | null
   combo_clicks: number | null; combo_conversions: number | null
+  linked_combos?: LinkedCombo[]
   hypothesis_category: string | null; customer_insight: string | null
   human_desire: string | null; creative_angle: string | null
   target_audience: string | null; market: string | null
@@ -190,6 +193,7 @@ function AnglesPageInner() {
     win_threshold: '', min_sample: '5',
     combo_id: '', baseline: '',
   })
+  const [selectedComboIds, setSelectedComboIds] = useState<string[]>([])
 
   // Learning dashboard state
   const [learningDashboard, setLearningDashboard] = useState<LearningDashboard | null>(null)
@@ -356,7 +360,7 @@ function AnglesPageInner() {
     if (paramTab === 'hypotheses') {
       setTab('hypotheses')
       setShowCreateHypo(true)
-      if (paramCombo) setHypoForm(p => ({ ...p, combo_id: paramCombo }))
+      if (paramCombo) setSelectedComboIds([paramCombo])
     }
   }, [searchParams])
   useEffect(() => { fetchAngles() }, [fStatus, fBranch])
@@ -382,14 +386,16 @@ function AnglesPageInner() {
   }
 
   const handleCreateHypo = () => {
+    const { combo_id: _ignored, ...rest } = hypoForm
     fetch(`${API_BASE}/api/hypotheses`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ ...hypoForm, combo_id: hypoForm.combo_id || null }),
+      body: JSON.stringify({ ...rest, combo_ids: selectedComboIds.length ? selectedComboIds : null }),
     }).then(r => r.json()).then(d => {
       if (d.success) {
         setShowCreateHypo(false)
         setHypoForm({ branch_name: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '', funnel_stage: '', format: '', primary_metric: '', win_threshold: '', min_sample: '5', combo_id: '', baseline: '' })
+        setSelectedComboIds([])
         setComboSearch(''); setComboResults([])
         fetchHypotheses()
       }
@@ -937,45 +943,56 @@ function AnglesPageInner() {
                     placeholder="Auto-fills when you pick Stage + Format above…"
                   />
                 </div>
-                {/* Link to Creative Library combo */}
+                {/* Link to Creative Library combos (multi-select) */}
                 <div>
                   <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
-                    Link to Creative
-                    <Tip text="Search and select an ad from the Creative Library to link this hypothesis to a specific combo. The combo's metrics will appear on this hypothesis card." wide />
+                    Link to Creatives
+                    <Tip text="Link one or more ads from the Creative Library. The hypothesis will aggregate metrics across all linked combos." wide />
                   </label>
-                  {hypoForm.combo_id ? (
-                    <div className="flex items-center gap-2 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
-                      <span className="font-mono text-xs text-violet-700">{hypoForm.combo_id}</span>
-                      <button onClick={() => { setHypoForm(p => ({ ...p, combo_id: '' })); setComboSearch(''); setComboResults([]) }}
-                        className="ml-auto text-violet-400 hover:text-violet-700"><X className="w-3 h-3" /></button>
+                  {selectedComboIds.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {selectedComboIds.map(cid => (
+                        <div key={cid} className="flex items-center gap-1.5 bg-violet-50 border border-violet-200 rounded-lg px-2.5 py-1">
+                          <span className="font-mono text-xs text-violet-700">{cid}</span>
+                          <button onClick={() => setSelectedComboIds(p => p.filter(id => id !== cid))}
+                            className="text-violet-400 hover:text-violet-700"><X className="w-3 h-3" /></button>
+                        </div>
+                      ))}
                     </div>
-                  ) : (
-                    <div className="relative">
-                      <input
-                        value={comboSearch}
-                        onChange={e => { setComboSearch(e.target.value); searchCombos(e.target.value, accounts.find(a => a.account_name === hypoForm.branch_name)?.id) }}
-                        onFocus={() => { if (!comboSearch && hypoForm.branch_name) searchCombos('', accounts.find(a => a.account_name === hypoForm.branch_name)?.id) }}
-                        placeholder="Search by ad name or combo ID…"
-                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                      />
-                      {comboSearchLoading && <span className="absolute right-3 top-2 text-xs text-gray-400 animate-pulse">searching…</span>}
-                      {comboResults.length > 0 && (
-                        <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-52 overflow-auto">
-                          {comboResults.map(r => (
-                            <button key={r.combo_id} onClick={() => { setHypoForm(p => ({ ...p, combo_id: r.combo_id })); setComboSearch(''); setComboResults([]) }}
-                              className="w-full text-left px-3 py-2 hover:bg-violet-50 border-b border-gray-50 last:border-0">
+                  )}
+                  <div className="relative">
+                    <input
+                      value={comboSearch}
+                      onChange={e => { setComboSearch(e.target.value); searchCombos(e.target.value, accounts.find(a => a.account_name === hypoForm.branch_name)?.id) }}
+                      onFocus={() => { if (!comboSearch && hypoForm.branch_name) searchCombos('', accounts.find(a => a.account_name === hypoForm.branch_name)?.id) }}
+                      placeholder="Search by ad name or combo ID…"
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                    />
+                    {comboSearchLoading && <span className="absolute right-3 top-2 text-xs text-gray-400 animate-pulse">searching…</span>}
+                    {comboResults.length > 0 && (
+                      <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-52 overflow-auto">
+                        {comboResults.map(r => {
+                          const isSelected = selectedComboIds.includes(r.combo_id)
+                          return (
+                            <button key={r.combo_id} onClick={() => {
+                              setSelectedComboIds(p => isSelected ? p.filter(id => id !== r.combo_id) : [...p, r.combo_id])
+                              setComboSearch('')
+                              setComboResults([])
+                            }}
+                              className={`w-full text-left px-3 py-2 border-b border-gray-50 last:border-0 ${isSelected ? 'bg-violet-50' : 'hover:bg-violet-50'}`}>
                               <div className="flex items-center gap-2">
+                                {isSelected && <span className="text-violet-500 text-xs font-bold">✓</span>}
                                 <span className="font-mono text-[10px] text-gray-400">{r.combo_id}</span>
                                 <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${r.verdict === 'WIN' ? 'bg-green-100 text-green-700' : r.verdict === 'LOSE' ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'}`}>{r.verdict}</span>
                                 {r.roas && <span className="text-[10px] text-gray-500">{r.roas.toFixed(2)}x</span>}
                               </div>
                               <p className="text-xs text-gray-700 truncate mt-0.5">{r.ad_name || '(no name)'}</p>
                             </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <button onClick={handleCreateHypo} disabled={!hypoForm.branch_name || !hypoForm.hypothesis}
@@ -1141,7 +1158,19 @@ function AnglesPageInner() {
                           )}
                         </div>
 
-                        {h.combo_id && (
+                        {(h.linked_combos && h.linked_combos.length > 0) ? (
+                          <div className="flex flex-wrap gap-1.5 mb-2">
+                            {h.linked_combos.map(lc => (
+                              <a key={lc.combo_id} href={`/creative?combo=${lc.combo_id}`}
+                                className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-lg px-2.5 py-1 transition-colors">
+                                <span className="font-mono text-gray-400">{lc.combo_id}</span>
+                                {lc.ad_name && <span className="truncate max-w-[200px]">{lc.ad_name}</span>}
+                                {lc.verdict && <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${lc.verdict === 'WIN' ? 'bg-green-100 text-green-700' : lc.verdict === 'LOSE' ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'}`}>{lc.verdict}</span>}
+                                {lc.roas && <span className="text-gray-400">{lc.roas.toFixed(2)}x</span>}
+                              </a>
+                            ))}
+                          </div>
+                        ) : h.combo_id ? (
                           <a
                             href={`/creative?combo=${h.combo_id}`}
                             className="inline-flex items-center gap-1.5 mb-2 text-xs text-gray-500 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-lg px-2.5 py-1 transition-colors"
@@ -1150,7 +1179,7 @@ function AnglesPageInner() {
                             {h.ad_name && <span className="truncate max-w-[300px]">{h.ad_name}</span>}
                             <span className="text-gray-300">→ Creative Library</span>
                           </a>
-                        )}
+                        ) : null}
 
                         {h.customer_insight && (
                           <p className="text-[11px] text-gray-400 italic mb-1">"{h.customer_insight}"</p>

@@ -13,6 +13,7 @@ from app.database import get_db
 from app.models.ad_combo import AdCombo
 from app.models.brand_identity import BrandIdentity
 from app.models.creative_hypothesis import CreativeHypothesis
+from app.models.hypothesis_combo_link import HypothesisComboLink
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,8 @@ class HypothesisSuggestRequest(BaseModel):
 
 class HypothesisCreate(BaseModel):
     branch_name: str
-    combo_id: Optional[str] = None
+    combo_id: Optional[str] = None          # legacy single-link (kept for compat)
+    combo_ids: Optional[list[str]] = None   # multi-link (preferred)
     angle_id: Optional[str] = None
     hypothesis_category: Optional[str] = None
     customer_insight: Optional[str] = None
@@ -110,7 +112,7 @@ def _next_hypothesis_id(db: Session) -> str:
     return f"HYP-{num:03d}"
 
 
-def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_status: Optional[str] = None, principle_title: Optional[str] = None) -> dict:
+def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_status: Optional[str] = None, principle_title: Optional[str] = None, linked_combos: list[AdCombo] | None = None) -> dict:
     clicks = int(combo.clicks or 0) if combo else None
     conversions = int(combo.conversions or 0) if combo else None
     return {
@@ -121,6 +123,12 @@ def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_sta
         "ad_name": combo.ad_name if combo else None,
         "combo_clicks": clicks,
         "combo_conversions": conversions,
+        "linked_combos": [
+            {"combo_id": c.combo_id, "ad_name": c.ad_name, "verdict": c.verdict,
+             "roas": float(c.roas) if c.roas else None, "hook_rate": float(c.hook_rate) if c.hook_rate else None,
+             "ctr": float(c.ctr) if c.ctr else None}
+            for c in (linked_combos or [])
+        ],
         "angle_id": str(h.angle_id) if h.angle_id else None,
         "hypothesis_category": h.hypothesis_category,
         "customer_insight": h.customer_insight,
@@ -405,9 +413,20 @@ def list_hypotheses(
         combo_ids = [r.combo_id for r in rows if r.combo_id]
         combos = {c.combo_id: c for c in db.query(AdCombo).filter(AdCombo.combo_id.in_(combo_ids)).all()}
 
+        # Bulk-fetch junction links
+        hyp_ids = [r.hypothesis_id for r in rows if r.hypothesis_id]
+        links = db.query(HypothesisComboLink).filter(HypothesisComboLink.hypothesis_id.in_(hyp_ids)).all()
+        linked_combo_ids = list({lk.combo_id for lk in links} - set(combo_ids))
+        extra_combos = {c.combo_id: c for c in db.query(AdCombo).filter(AdCombo.combo_id.in_(linked_combo_ids)).all()}
+        all_combos = {**combos, **extra_combos}
+        links_by_hyp: dict[str, list[AdCombo]] = {}
+        for lk in links:
+            c = all_combos.get(lk.combo_id)
+            if c:
+                links_by_hyp.setdefault(lk.hypothesis_id, []).append(c)
+
         # Bulk-fetch latest approval status per hypothesis_id
         from app.models.approval import ComboApproval as _CA
-        hyp_ids = [r.hypothesis_id for r in rows if r.hypothesis_id]
         approval_statuses: dict[str, str] = {}
         if hyp_ids:
             approvals = db.query(_CA.hypothesis_id, _CA.status, _CA.submitted_at).filter(
@@ -418,7 +437,7 @@ def list_hypotheses(
                     approval_statuses[a.hypothesis_id] = a.status
 
         return {"success": True, "data": {"items": [
-            _serialize(r, combos.get(r.combo_id), approval_statuses.get(r.hypothesis_id))
+            _serialize(r, combos.get(r.combo_id), approval_statuses.get(r.hypothesis_id), linked_combos=links_by_hyp.get(r.hypothesis_id, []))
             for r in rows
         ], "total": total}, "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
@@ -429,19 +448,64 @@ def list_hypotheses(
 @router.post("")
 def create_hypothesis(payload: HypothesisCreate, db: Session = Depends(get_db)) -> dict[str, Any]:
     try:
-        hyp = CreativeHypothesis(
-            hypothesis_id=_next_hypothesis_id(db),
-            **payload.model_dump(),
-        )
+        data = payload.model_dump()
+        combo_ids_to_link: list[str] = data.pop("combo_ids", None) or []
+        if data.get("combo_id"):
+            combo_ids_to_link = list({data["combo_id"], *combo_ids_to_link})
+
+        # Auto-fill human_desire from branch brand identity
+        if not data.get("human_desire") and data.get("branch_name"):
+            brand = db.query(BrandIdentity).filter(BrandIdentity.branch_name == data["branch_name"]).first()
+            if brand and brand.human_desires:
+                desires = brand.human_desires if isinstance(brand.human_desires, list) else []
+                data["human_desire"] = ", ".join(desires) if desires else None
+
+        hyp = CreativeHypothesis(hypothesis_id=_next_hypothesis_id(db), **data)
         db.add(hyp)
+        db.flush()
+
+        for cid in combo_ids_to_link:
+            db.add(HypothesisComboLink(hypothesis_id=hyp.hypothesis_id, combo_id=cid))
+
         db.commit()
         db.refresh(hyp)
-        return {"success": True, "data": _serialize(hyp), "error": None,
+        linked = db.query(AdCombo).filter(AdCombo.combo_id.in_(combo_ids_to_link)).all() if combo_ids_to_link else []
+        return {"success": True, "data": _serialize(hyp, linked_combos=linked), "error": None,
                 "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
         db.rollback()
         return {"success": False, "data": None, "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@router.post("/{hypothesis_id}/combos")
+def link_combos(hypothesis_id: str, payload: dict, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Add or remove combo links. Body: { combo_ids: [...], action: 'add'|'remove' }"""
+    try:
+        action = payload.get("action", "add")
+        ids = payload.get("combo_ids", [])
+        if action == "add":
+            for cid in ids:
+                existing = db.query(HypothesisComboLink).filter_by(hypothesis_id=hypothesis_id, combo_id=cid).first()
+                if not existing:
+                    db.add(HypothesisComboLink(hypothesis_id=hypothesis_id, combo_id=cid))
+        elif action == "remove":
+            db.query(HypothesisComboLink).filter(
+                HypothesisComboLink.hypothesis_id == hypothesis_id,
+                HypothesisComboLink.combo_id.in_(ids)
+            ).delete(synchronize_session=False)
+        db.commit()
+        linked = db.query(AdCombo).join(
+            HypothesisComboLink, HypothesisComboLink.combo_id == AdCombo.combo_id
+        ).filter(HypothesisComboLink.hypothesis_id == hypothesis_id).all()
+        return {"success": True, "data": {"linked_combos": [
+            {"combo_id": c.combo_id, "ad_name": c.ad_name, "verdict": c.verdict,
+             "roas": float(c.roas) if c.roas else None}
+            for c in linked
+        ]}, "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "data": None, "error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
 @router.patch("/{hypothesis_id}/result")
