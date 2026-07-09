@@ -382,6 +382,146 @@ Return ONLY valid JSON array. No markdown, no explanation."""
                 "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+class BulkGenerateRequest(BaseModel):
+    branch_name: str
+
+
+@router.post("/bulk-generate")
+def bulk_generate_hypotheses(payload: BulkGenerateRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Group combos by (TA + country + dominant_metric), generate one hypothesis per cohort via Claude."""
+    try:
+        from anthropic import Anthropic
+        from app.config import settings
+        from app.models.ad_account import AdAccount
+
+        # Fetch combos for branch via account join
+        combos = (
+            db.query(AdCombo)
+            .join(AdAccount, AdAccount.id == AdCombo.branch_id)
+            .filter(AdAccount.account_name == payload.branch_name)
+            .all()
+        )
+        if not combos:
+            return {"success": True, "data": {"proposals": []}, "error": None,
+                    "timestamp": datetime.now(timezone.utc).isoformat()}
+
+        # Exclude combos already linked to a hypothesis
+        linked_ids = {
+            lk.combo_id for lk in db.query(HypothesisComboLink.combo_id).all()
+        }
+        # Also exclude combos referenced via legacy combo_id column
+        legacy_ids = {
+            r.combo_id for r in db.query(CreativeHypothesis.combo_id)
+            .filter(CreativeHypothesis.combo_id.isnot(None)).all()
+        }
+        already_linked = linked_ids | legacy_ids
+        combos = [c for c in combos if c.combo_id not in already_linked]
+
+        if not combos:
+            return {"success": True, "data": {"proposals": [], "total_combos": 0,
+                    "skipped": len(already_linked), "total_cohorts": 0}, "error": None,
+                    "timestamp": datetime.now(timezone.utc).isoformat()}
+
+        # Group by (TA, country, dominant_metric)
+        def dominant_metric(c: AdCombo) -> str:
+            if c.hook_rate and float(c.hook_rate) > 0:
+                return "hook_rate"
+            if c.ctr and float(c.ctr) > 0:
+                return "CTR"
+            if c.roas and float(c.roas) > 0:
+                return "roas"
+            return "CTR"
+
+        from collections import defaultdict
+        groups: dict[tuple, list[AdCombo]] = defaultdict(list)
+        for c in combos:
+            key = (c.target_audience or "Unknown", c.country or "Unknown", dominant_metric(c))
+            groups[key].append(c)
+
+        # Only cohorts with ≥2 combos are interesting
+        groups = {k: v for k, v in groups.items() if len(v) >= 2}
+
+        # Brand context
+        brand = db.query(BrandIdentity).filter(BrandIdentity.branch_name == payload.branch_name).first()
+        never_say = (brand.never_say if isinstance(brand.never_say, list) else []) if brand else []
+        brand_promise = brand.brand_promise or "" if brand else ""
+
+        client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        proposals = []
+
+        for (ta, country, metric), members in list(groups.items())[:20]:  # cap at 20 cohorts
+            # Sort: WIN first, then by metric desc
+            def sort_key(c: AdCombo):
+                val = float(getattr(c, "hook_rate" if metric == "hook_rate" else "ctr" if metric == "CTR" else "roas") or 0)
+                verdict_score = 2 if c.verdict == "WIN" else 1 if c.verdict == "TEST" else 0
+                return (verdict_score, val)
+            sorted_m = sorted(members, key=sort_key, reverse=True)
+            top = sorted_m[:3]
+            bottom = sorted_m[-2:]
+
+            def fmt(c: AdCombo) -> str:
+                val = float(getattr(c, "hook_rate" if metric == "hook_rate" else "ctr" if metric == "CTR" else "roas") or 0)
+                fmt_val = f"{val:.2%}" if metric != "roas" else f"{val:.2f}x"
+                return f"- [{c.verdict}] {c.ad_name or c.combo_id}: {metric}={fmt_val}"
+
+            top_lines = "\n".join(fmt(c) for c in top)
+            bottom_lines = "\n".join(fmt(c) for c in bottom)
+
+            prompt = f"""You are a creative strategist for {payload.branch_name}, a hotel/restaurant brand.
+
+Cohort: TA={ta}, Market={country}, Primary Metric={metric}
+Brand promise: {brand_promise}
+Never say: {', '.join(never_say) or 'none'}
+
+Top performers:
+{top_lines}
+
+Bottom performers:
+{bottom_lines}
+
+Based on what's winning vs losing in this cohort, generate ONE sharp hypothesis that explains the pattern.
+Return JSON:
+{{
+  "hypothesis": "We believe that [specific creative element] drives higher {metric} for {ta} travelers in {country} because [psychological reason]",
+  "hypothesis_category": one of [identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory],
+  "customer_insight": "[the underlying guest belief — one sentence]",
+  "expected_outcome": "{metric} of winning creative ≥ [X] vs cohort average",
+  "rationale": "[one sentence connecting ad pattern to booking psychology]"
+}}
+Return ONLY valid JSON. No markdown."""
+
+            try:
+                msg = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=400,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                raw = msg.content[0].text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+                proposed = json.loads(raw)
+                proposals.append({
+                    **proposed,
+                    "branch_name": payload.branch_name,
+                    "target_audience": ta if ta != "Unknown" else None,
+                    "market": country if country != "Unknown" else None,
+                    "primary_metric": metric,
+                    "combo_ids": [c.combo_id for c in members],
+                    "cohort_label": f"{ta} · {country} · {metric}",
+                    "cohort_size": len(members),
+                    "top_combo": top[0].combo_id if top else None,
+                })
+            except Exception:
+                logger.warning("[bulk-generate] failed for cohort %s", (ta, country, metric))
+                continue
+
+        return {"success": True, "data": {"proposals": proposals, "total_combos": len(combos),
+                "skipped": len(already_linked), "total_cohorts": len(groups)}, "error": None,
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+    except Exception as e:
+        logger.exception("[bulk-generate] failed")
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
 @router.get("")
 def list_hypotheses(
     branch_name: Optional[str] = None,

@@ -195,6 +195,69 @@ function AnglesPageInner() {
   })
   const [selectedComboIds, setSelectedComboIds] = useState<string[]>([])
 
+  // Bulk generate modal
+  interface BulkProposal {
+    hypothesis: string; hypothesis_category: string; customer_insight: string
+    expected_outcome: string; rationale: string; branch_name: string
+    target_audience: string | null; market: string | null; primary_metric: string
+    combo_ids: string[]; cohort_label: string; cohort_size: number; top_combo: string | null
+  }
+  const [showBulkGen, setShowBulkGen] = useState(false)
+  const [bulkBranch, setBulkBranch] = useState('')
+  const [bulkLoading, setBulkLoading] = useState(false)
+  const [bulkProposals, setBulkProposals] = useState<BulkProposal[]>([])
+  const [bulkSelected, setBulkSelected] = useState<Set<number>>(new Set())
+  const [bulkSaving, setBulkSaving] = useState(false)
+  const [bulkDone, setBulkDone] = useState(0)
+  const [bulkSkipped, setBulkSkipped] = useState<number | null>(null)
+
+  const handleBulkGenerate = () => {
+    if (!bulkBranch) return
+    setBulkLoading(true); setBulkProposals([]); setBulkSelected(new Set()); setBulkDone(0)
+    fetch(`${API_BASE}/api/hypotheses/bulk-generate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ branch_name: bulkBranch }),
+    }).then(r => r.json()).then(d => {
+      if (d.success) {
+        setBulkProposals(d.data.proposals)
+        setBulkSkipped(d.data.skipped ?? null)
+        setBulkSelected(new Set(d.data.proposals.map((_: BulkProposal, i: number) => i)))
+      }
+    }).catch(() => {}).finally(() => setBulkLoading(false))
+  }
+
+  const handleBulkSave = async () => {
+    setBulkSaving(true)
+    const toCreate = bulkProposals.filter((_, i) => bulkSelected.has(i))
+    let done = 0
+    for (const p of toCreate) {
+      await fetch(`${API_BASE}/api/hypotheses`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          branch_name: p.branch_name,
+          hypothesis: p.hypothesis,
+          hypothesis_category: p.hypothesis_category,
+          customer_insight: p.customer_insight,
+          expected_outcome: p.expected_outcome,
+          target_audience: p.target_audience,
+          market: p.market,
+          primary_metric: p.primary_metric,
+          primary_kpi: p.primary_metric,
+          combo_ids: p.combo_ids,
+          status: 'pending',
+        }),
+      })
+      done++
+      setBulkDone(done)
+    }
+    setBulkSaving(false)
+    setShowBulkGen(false)
+    setBulkProposals([])
+    fetchHypotheses()
+  }
+
   // Learning dashboard state
   const [learningDashboard, setLearningDashboard] = useState<LearningDashboard | null>(null)
   const [ldBranch, setLdBranch] = useState('Meander Taipei')
@@ -472,9 +535,14 @@ function AnglesPageInner() {
             </button>
           )}
           {canEdit && tab === 'hypotheses' && (
-            <button onClick={() => setShowCreateHypo(true)} className="inline-flex items-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700">
-              <Plus className="w-4 h-4" /> New Hypothesis
-            </button>
+            <>
+              <button onClick={() => setShowBulkGen(true)} className="inline-flex items-center gap-2 px-4 py-2 bg-violet-50 text-violet-700 border border-violet-200 rounded-lg text-sm font-medium hover:bg-violet-100">
+                ✨ Generate
+              </button>
+              <button onClick={() => setShowCreateHypo(true)} className="inline-flex items-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700">
+                <Plus className="w-4 h-4" /> New Hypothesis
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -1650,6 +1718,106 @@ function AnglesPageInner() {
             </div>
           )}
         </>
+      )}
+      {/* ── BULK GENERATE MODAL ── */}
+      {showBulkGen && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div>
+                <h2 className="text-base font-bold text-gray-900">✨ Generate Hypotheses</h2>
+                <p className="text-xs text-gray-400 mt-0.5">Groups combos by TA · Market · Metric and proposes one hypothesis per cohort</p>
+              </div>
+              <button onClick={() => { setShowBulkGen(false); setBulkProposals([]) }}
+                className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+            </div>
+
+            {/* Branch picker + generate */}
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-3">
+              <select value={bulkBranch} onChange={e => setBulkBranch(e.target.value)}
+                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                <option value="">Select branch…</option>
+                {BRANCH_NAMES.map(b => <option key={b}>{b}</option>)}
+              </select>
+              <button onClick={handleBulkGenerate} disabled={!bulkBranch || bulkLoading}
+                className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 disabled:opacity-50 flex items-center gap-2">
+                {bulkLoading
+                  ? <><span className="animate-spin w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full inline-block" />Analyzing combos…</>
+                  : '→ Generate'}
+              </button>
+            </div>
+
+            {/* Proposals list */}
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+              {bulkSkipped !== null && bulkSkipped > 0 && (
+                <div className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                  <span className="text-green-500">✓</span>
+                  {bulkSkipped} combos already covered by existing hypotheses — skipped
+                </div>
+              )}
+              {bulkProposals.length === 0 && !bulkLoading && (
+                <p className="text-sm text-gray-400 text-center py-8">
+                  {bulkBranch ? 'Click Generate to analyse combos and propose hypotheses.' : 'Select a branch first.'}
+                </p>
+              )}
+              {bulkProposals.map((p, i) => {
+                const checked = bulkSelected.has(i)
+                const catMeta = HYPOTHESIS_CATEGORIES.find(c => c.value === p.hypothesis_category)
+                return (
+                  <div key={i} onClick={() => setBulkSelected(prev => {
+                    const n = new Set(prev); if (n.has(i)) n.delete(i); else n.add(i); return n
+                  })}
+                    className={`rounded-xl border p-4 cursor-pointer transition-colors ${checked ? 'border-violet-300 bg-violet-50' : 'border-gray-200 bg-white hover:bg-gray-50'}`}>
+                    <div className="flex items-start gap-3">
+                      <div className={`mt-0.5 w-4 h-4 rounded border-2 shrink-0 flex items-center justify-center ${checked ? 'bg-violet-600 border-violet-600' : 'border-gray-300'}`}>
+                        {checked && <span className="text-white text-[10px] font-bold">✓</span>}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
+                          <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{p.cohort_label}</span>
+                          <span className="text-[10px] text-gray-300">·</span>
+                          <span className="text-[10px] text-gray-400">{p.cohort_size} combos</span>
+                          {catMeta && (
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-medium ${catMeta.color}`}>{catMeta.label}</span>
+                          )}
+                        </div>
+                        <p className="text-sm text-gray-800 font-medium mb-1">{p.hypothesis}</p>
+                        {p.customer_insight && <p className="text-xs text-gray-400 italic mb-1">"{p.customer_insight}"</p>}
+                        <p className="text-xs text-gray-500">{p.expected_outcome}</p>
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {p.combo_ids.slice(0, 6).map(cid => (
+                            <span key={cid} className="font-mono text-[9px] bg-gray-100 text-gray-400 px-1.5 py-0.5 rounded">{cid}</span>
+                          ))}
+                          {p.combo_ids.length > 6 && <span className="text-[9px] text-gray-400">+{p.combo_ids.length - 6} more</span>}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Footer */}
+            {bulkProposals.length > 0 && (
+              <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-gray-500">{bulkSelected.size} / {bulkProposals.length} selected</span>
+                  <button onClick={() => setBulkSelected(new Set(bulkProposals.map((_, i) => i)))}
+                    className="text-xs text-violet-500 hover:text-violet-700">Select all</button>
+                  <button onClick={() => setBulkSelected(new Set())}
+                    className="text-xs text-gray-400 hover:text-gray-600">Clear</button>
+                </div>
+                <button onClick={handleBulkSave} disabled={bulkSelected.size === 0 || bulkSaving}
+                  className="px-5 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 disabled:opacity-50 flex items-center gap-2">
+                  {bulkSaving
+                    ? <><span className="animate-spin w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full inline-block" />{bulkDone}/{bulkSelected.size} creating…</>
+                    : `Create ${bulkSelected.size} Hypotheses`}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   )
