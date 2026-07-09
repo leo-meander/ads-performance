@@ -489,28 +489,34 @@ Top performers:
 Bottom performers:
 {bottom_lines}
 
-Find the ONE creative difference between winners and losers. Output exactly 3 fields — nothing more.
+Study the gap between winners and losers. Write a 4-part hypothesis using this exact structure:
 
-OUTPUT FORMAT (follow exactly):
+1. BELIEF — the enduring behavioral insight. What do these guests fundamentally care about? One sentence. Starts with the guest. Lives for 5 years.
+   ✓ "Solo travelers care more about how the trip feels than where they sleep."
+   ✗ "Guests respond to social proof content." (too vague, not behavioral)
+
+2. WHY — the assumption you are testing. One sentence. Mark it as unconfirmed. Plain language.
+   ✓ "Because they want experiences that feel like 'someone like me' — unconfirmed until isolated."
+   ✗ "Because social proof drives higher engagement metrics for this segment."
+
+3. TEST — the specific creative swap. One variable only. One sentence.
+   ✓ "KOL city exploration vs room showcase. Stage: Stop · Format: Video"
+   ✗ "AI-generated or KOL content with aspirational hotel + location combinations"
+
+4. SUCCESS — what a win looks like. Primary metric + threshold + baseline. Secondary metrics listed briefly.
+   ✓ "Primary: {metric} ≥ [X] (baseline ~{avg_fmt}). Secondary: CTR, watch time."
+   ✗ "We expect the winning creative to outperform the cohort average significantly."
+
+Return JSON in English:
 {{
-  "hypothesis": "[What changes] beats [what it replaces] for {ta} {metric}.",
-  "customer_insight": "[One sentence: what the guest believes or wants — starts with the guest, not the brand.]",
-  "expected_outcome": "{metric} ≥ [X] (baseline ~{avg_fmt})",
-  "hypothesis_category": "[one of: identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory]"
+  "customer_insight": "[BELIEF — one sentence, starts with the guest]",
+  "hypothesis": "[WHY — the assumption being tested, one sentence, plain language]",
+  "variable_tested": "[TEST — the exact swap, one variable, include Stage and Format if known]",
+  "expected_outcome": "Primary: {metric} ≥ [X] (baseline ~{avg_fmt}). Secondary: [list 1-2 metrics]",
+  "hypothesis_category": "[identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory]"
 }}
 
-RULES — rewrite if violated:
-- hypothesis: max 15 words, exactly ONE swap (one thing vs another), no "because", no "and", no "or", no jargon. Read it aloud in one breath — if you can't, it's too long.
-  ✓ "Opening with a guest face beats room footage for Solo hook rate."
-  ✗ "AI-generated or high-production KOL content featuring aspirational hotel + location combinations drives higher hook_rate because..."
-- customer_insight: one plain sentence. The guest's belief, not a restatement of the hypothesis.
-  ✓ "Solo travelers book places worth showing off, not places to be alone."
-  ✗ "Solo travelers seek social proof that the destination choice itself is impressive and worth sharing to peers."
-- expected_outcome: metric + number + baseline only. No prose.
-  ✓ "hook_rate ≥ 25% (baseline ~{avg_fmt})"
-  ✗ "We expect the hook rate of the winning creative to exceed the cohort average..."
-
-Return ONLY valid JSON in English. No markdown. Self-check before returning: is hypothesis ≤ 15 words? Does it have exactly one swap? If not — rewrite."""
+Return ONLY valid JSON. No markdown. All fields in English."""
 
             try:
                 msg = client.messages.create(

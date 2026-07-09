@@ -1292,29 +1292,40 @@ function AnglesPageInner() {
                           </a>
                         ) : null}
 
-                        {h.customer_insight && (
-                          <p className="text-[11px] text-gray-400 italic mb-1">"{h.customer_insight}"</p>
-                        )}
-                        <p className="text-sm font-medium text-gray-800 mb-3">{h.hypothesis}</p>
-
-                        {(h.variable_tested || h.expected_outcome || hasResult) && (
-                          <div className="grid grid-cols-2 gap-3 mb-3">
-                            <div className="bg-gray-50 rounded-lg p-3">
-                              <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Expected</p>
-                              {h.variable_tested && <p className="text-xs text-gray-600 mb-0.5">Variable: {h.variable_tested}</p>}
-                              {h.primary_kpi && <p className="text-xs text-gray-600 mb-0.5">KPI: {h.primary_kpi}</p>}
-                              {h.expected_outcome && <p className="text-xs font-semibold text-gray-800">{h.expected_outcome}</p>}
+                        {/* 4-tier hypothesis display */}
+                        <div className="space-y-2 mb-3">
+                          {h.customer_insight && (
+                            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                              <p className="text-[9px] font-bold text-blue-400 uppercase tracking-widest mb-0.5">1 · Belief</p>
+                              <p className="text-xs text-blue-900">{h.customer_insight}</p>
                             </div>
-                            <div className={`rounded-lg p-3 ${h.status === 'validated' ? 'bg-green-50' : h.status === 'refuted' ? 'bg-red-50' : 'bg-gray-50'}`}>
-                              <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">Actual</p>
-                              {h.actual_roas !== null && <p className="text-xs font-bold text-gray-800">ROAS: {h.actual_roas.toFixed(2)}x</p>}
-                              {h.actual_ctr !== null && <p className="text-xs text-gray-600">CTR: {(h.actual_ctr * 100).toFixed(2)}%</p>}
-                              {h.actual_spend !== null && <p className="text-xs text-gray-400">Spend: ${h.actual_spend.toLocaleString()}</p>}
-                              {clicks > 0 && <p className="text-xs text-gray-400">{clicks.toLocaleString()} clicks · {bookings} bookings</p>}
-                              {!hasResult && <p className="text-xs text-gray-400 italic">Waiting for data...</p>}
-                            </div>
+                          )}
+                          <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+                            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">2 · Why <span className="normal-case font-normal text-amber-500">⚠ unconfirmed</span></p>
+                            <p className="text-xs text-gray-800">{h.hypothesis}</p>
                           </div>
-                        )}
+                          {h.variable_tested && (
+                            <div className="bg-violet-50 border border-violet-100 rounded-lg px-3 py-2">
+                              <p className="text-[9px] font-bold text-violet-400 uppercase tracking-widest mb-0.5">3 · Test</p>
+                              <p className="text-xs text-violet-900">{h.variable_tested}</p>
+                            </div>
+                          )}
+                          {(h.expected_outcome || hasResult) && (
+                            <div className={`border rounded-lg px-3 py-2 ${h.status === 'validated' ? 'bg-green-50 border-green-100' : h.status === 'refuted' ? 'bg-red-50 border-red-100' : 'bg-amber-50 border-amber-100'}`}>
+                              <p className="text-[9px] font-bold text-amber-500 uppercase tracking-widest mb-1">4 · Success</p>
+                              {h.expected_outcome && <p className="text-xs font-semibold text-gray-800 mb-1">{h.expected_outcome}</p>}
+                              {hasResult && (
+                                <div className="flex flex-wrap gap-3 mt-1 pt-1 border-t border-gray-200">
+                                  {h.actual_roas !== null && <span className="text-xs font-bold text-gray-700">ROAS: {h.actual_roas.toFixed(2)}x</span>}
+                                  {h.actual_ctr !== null && <span className="text-xs text-gray-600">CTR: {(h.actual_ctr * 100).toFixed(2)}%</span>}
+                                  {h.actual_spend !== null && <span className="text-xs text-gray-400">Spend: ${h.actual_spend.toLocaleString()}</span>}
+                                  {clicks > 0 && <span className="text-xs text-gray-400">{clicks.toLocaleString()} clicks</span>}
+                                </div>
+                              )}
+                              {!hasResult && <p className="text-[10px] text-gray-400 italic">Waiting for data…</p>}
+                            </div>
+                          )}
+                        </div>
 
                         {h.learning && (
                           <div className={`rounded-lg px-3 py-2 mb-3 ${h.status === 'validated' ? 'bg-green-50' : 'bg-orange-50'}`}>
