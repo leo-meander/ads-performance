@@ -472,11 +472,16 @@ def bulk_generate_hypotheses(payload: BulkGenerateRequest, db: Session = Depends
             top_lines = "\n".join(fmt(c) for c in top)
             bottom_lines = "\n".join(fmt(c) for c in bottom)
 
+            top_metric_val = float(getattr(top[0], "hook_rate" if metric == "hook_rate" else "ctr" if metric == "CTR" else "roas") or 0) if top else 0
+            cohort_avg = sum(float(getattr(c, "hook_rate" if metric == "hook_rate" else "ctr" if metric == "CTR" else "roas") or 0) for c in members) / len(members)
+            avg_fmt = f"{cohort_avg:.2%}" if metric != "roas" else f"{cohort_avg:.2f}x"
+
             prompt = f"""You are a creative strategist for {payload.branch_name}, a hotel/restaurant brand.
 
 Cohort: TA={ta}, Market={country}, Primary Metric={metric}
 Brand promise: {brand_promise}
 Never say: {', '.join(never_say) or 'none'}
+Cohort average {metric}: {avg_fmt}
 
 Top performers:
 {top_lines}
@@ -484,16 +489,18 @@ Top performers:
 Bottom performers:
 {bottom_lines}
 
-Based on what's winning vs losing in this cohort, generate ONE sharp hypothesis that explains the pattern.
-Return JSON:
+Find what separates winners from losers. Write ONE clean hypothesis.
+
+Return JSON in English:
 {{
-  "hypothesis": "We believe that [specific creative element] drives higher {metric} for {ta} travelers in {country} because [psychological reason]",
-  "hypothesis_category": one of [identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory],
-  "customer_insight": "[the underlying guest belief — one sentence]",
-  "expected_outcome": "{metric} of winning creative ≥ [X] vs cohort average",
-  "rationale": "[one sentence connecting ad pattern to booking psychology]"
+  "customer_insight": "What this guest fundamentally wants — one plain sentence, starts with the guest, no brand jargon.",
+  "hypothesis": "The one thing we think drives {metric} here — one sentence, simple English. NO 'A or B', NO 'and', NO two ideas at once. Pick the single strongest variable.",
+  "variable_tested": "X vs Y — the exact creative swap. One pair only.",
+  "expected_outcome": "{metric} ≥ [number] (baseline ~{avg_fmt})",
+  "hypothesis_category": "[identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory]"
 }}
-Return ONLY valid JSON. No markdown."""
+
+Return ONLY valid JSON. No markdown. All values in English."""
 
             try:
                 msg = client.messages.create(
