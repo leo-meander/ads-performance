@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { Plus, X, ChevronDown, ChevronRight, Brain, Lightbulb, FlaskConical, BarChart3, HelpCircle } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
 
@@ -159,9 +160,10 @@ const FUNNEL_METRICS: Record<string, Record<string, string>> = {
 
 type Tab = 'angles' | 'brand' | 'hypotheses' | 'dashboard'
 
-export default function AnglesPage() {
+function AnglesPageInner() {
   const { canEditSection } = useAuth()
   const canEdit = canEditSection('meta_ads')
+  const searchParams = useSearchParams()
 
   const [tab, setTab] = useState<Tab>('angles')
   const [angles, setAngles] = useState<Angle[]>([])
@@ -203,6 +205,7 @@ export default function AnglesPage() {
     expected_outcome: '',
     funnel_stage: '', format: '', primary_metric: '',
     win_threshold: '', min_sample: '5',
+    combo_id: '',
   })
 
   // Learning dashboard state
@@ -238,6 +241,27 @@ export default function AnglesPage() {
     }).then(r => r.json()).then(d => {
       if (d.success) { setAnalyzeTarget(null); setVisionUrls(''); fetchHypotheses() }
     }).catch(() => {}).finally(() => setAnalyzeLoading(false))
+  }
+
+  // Combo search for hypothesis linking
+  const [comboSearch, setComboSearch] = useState('')
+  const [comboResults, setComboResults] = useState<{combo_id: string; ad_name: string | null; verdict: string; roas: number | null; branch_id: string}[]>([])
+  const [comboSearchLoading, setComboSearchLoading] = useState(false)
+  const searchCombos = (q: string, branchId?: string) => {
+    if (!q && !branchId) { setComboResults([]); return }
+    setComboSearchLoading(true)
+    const p = new URLSearchParams({ limit: '20' })
+    if (branchId) p.set('branch_id', branchId)
+    fetch(`${API_BASE}/api/combos?${p}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          const items = d.data.items as {combo_id: string; ad_name: string | null; verdict: string; roas: number | null; branch_id: string}[]
+          setComboResults(q ? items.filter(i => (i.ad_name || '').toLowerCase().includes(q.toLowerCase()) || i.combo_id.toLowerCase().includes(q.toLowerCase())) : items)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setComboSearchLoading(false))
   }
 
   // Auto-fetch benchmark win threshold
@@ -334,6 +358,17 @@ export default function AnglesPage() {
   }, [])
 
   useEffect(() => { if (tab === 'dashboard') fetchLearningDashboard(ldBranch) }, [tab, ldBranch])
+
+  // Pre-fill from URL params: /angles?tab=hypotheses&combo_id=CMB-XXX
+  useEffect(() => {
+    const paramTab = searchParams.get('tab')
+    const paramCombo = searchParams.get('combo_id')
+    if (paramTab === 'hypotheses') {
+      setTab('hypotheses')
+      setShowCreateHypo(true)
+      if (paramCombo) setHypoForm(p => ({ ...p, combo_id: paramCombo }))
+    }
+  }, [searchParams])
   useEffect(() => { fetchAngles() }, [fStatus, fBranch])
 
   const handleCreate = () => {
@@ -360,11 +395,12 @@ export default function AnglesPage() {
     fetch(`${API_BASE}/api/hypotheses`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify(hypoForm),
+      body: JSON.stringify({ ...hypoForm, combo_id: hypoForm.combo_id || null }),
     }).then(r => r.json()).then(d => {
       if (d.success) {
         setShowCreateHypo(false)
-        setHypoForm({ branch_name: '', human_desire: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '', funnel_stage: '', format: '', primary_metric: '', win_threshold: '', min_sample: '5' })
+        setHypoForm({ branch_name: '', human_desire: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '', funnel_stage: '', format: '', primary_metric: '', win_threshold: '', min_sample: '5', combo_id: '' })
+        setComboSearch(''); setComboResults([])
         fetchHypotheses()
       }
     })
@@ -418,21 +454,21 @@ export default function AnglesPage() {
       <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 mb-5 flex items-start gap-3">
         <HelpCircle className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
         <p className="text-xs text-blue-700 leading-relaxed">
-          <strong>Cách dùng:</strong> Creative Angles → chọn góc tiếp cận.{' '}
-          Hypotheses → đăng ký câu hỏi test <em>trước</em> khi chạy ad (Funnel Stage + Format → Primary Metric tự điền).{' '}
-          Learning Dashboard → đọc win rate sau khi có đủ data.{' '}
-          Layer A = creative verdict (hook/CTR), Layer B = downstream (ROAS/booking) — hai cái này độc lập với nhau.
-          <span className="ml-1 text-blue-400">Hover vào icon <HelpCircle className="inline w-3 h-3" /> để xem giải thích chi tiết.</span>
+          <strong>How to use:</strong> Creative Angles → pick your angle strategy.{' '}
+          Hypotheses → register a test question <em>before</em> running an ad (Funnel Stage + Format auto-fills the Primary Metric).{' '}
+          Learning Dashboard → read win rates once you have enough concluded data.{' '}
+          Layer A = creative verdict (hook/CTR only), Layer B = downstream (ROAS/booking) — these are independent.
+          <span className="ml-1 text-blue-400">Hover <HelpCircle className="inline w-3 h-3" /> icons for details.</span>
         </p>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-200 mb-6 overflow-x-auto">
         {([
-          { key: 'angles', label: 'Creative Angles', icon: Lightbulb, tip: 'Danh sách các Creative Angle — góc tiếp cận sáng tạo. WIN = đang scale, TEST = đang chạy thử, LOSE = đã bỏ. Mỗi angle được nhóm theo Human Desire.' },
-          { key: 'brand', label: 'Brand Intelligence', icon: Brain, tip: 'Bản đồ nhân cách thương hiệu từng branch — Desires, Emotional Themes, Always Say / Never Say. Dùng làm bộ lọc khi viết brief.' },
-          { key: 'hypotheses', label: 'Hypotheses', icon: FlaskConical, tip: 'Mỗi ad idea phải có 1 hypothesis trước khi chạy. Hypothesis ghi lại câu hỏi, biến test, ngưỡng thắng — và kết luận sau khi có data.' },
-          { key: 'dashboard', label: 'Learning Dashboard', icon: BarChart3, tip: 'Tổng hợp win rate theo Desire, Decision Driver, Angle và Funnel Stage. Đây là bộ não tích lũy — càng nhiều hypothesis concluded thì dashboard càng chính xác.' },
+          { key: 'angles', label: 'Creative Angles', icon: Lightbulb, tip: 'Library of creative angles. WIN = scaling, TEST = in trial, LOSE = retired. Angles are grouped by Human Desire.' },
+          { key: 'brand', label: 'Brand Intelligence', icon: Brain, tip: 'Brand personality map per branch — Desires, Emotional Themes, Always Say / Never Say. Use as a filter when writing briefs.' },
+          { key: 'hypotheses', label: 'Hypotheses', icon: FlaskConical, tip: 'Every ad idea should have a hypothesis before it runs. A hypothesis records the question, variable tested, win threshold — and the verdict once data comes in.' },
+          { key: 'dashboard', label: 'Learning Dashboard', icon: BarChart3, tip: 'Aggregated win rates by Desire, Decision Driver, Angle, and Funnel Stage. The more concluded hypotheses, the more reliable the dashboard.' },
         ] as const).map(({ key, label, icon: Icon, tip }) => (
           <button key={key} onClick={() => setTab(key)}
             className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${tab === key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
@@ -459,7 +495,7 @@ export default function AnglesPage() {
                 <option value="">All Status</option>
                 <option value="WIN">WIN</option><option value="TEST">TEST</option><option value="LOSE">LOSE</option>
               </select>
-              <Tip text="WIN = angle đang work, đang scale budget. TEST = đang chạy thử, chưa kết luận. LOSE = đã test và không work, không chạy nữa." />
+              <Tip text="WIN = angle is working, scaling budget. TEST = in trial, no verdict yet. LOSE = tested and did not work, retired." />
             </div>
           </div>
 
@@ -735,7 +771,7 @@ export default function AnglesPage() {
                 <div>
                   <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
                     Booking Decision Category
-                    <Tip wide text="Khách sạn cần trả lời 8 câu hỏi trong đầu khách trước khi họ book. Chọn câu nào hypothesis này đang test. Dùng để group learnings và tìm ra loại message nào work nhất cho từng brand." />
+                    <Tip wide text="Hotels must answer 8 mental questions guests ask before booking. Pick which question this hypothesis is testing. Used to group learnings and identify which message type works best per brand." />
                   </label>
                   <div className="grid grid-cols-4 gap-2">
                     {HYPOTHESIS_CATEGORIES.map(cat => (
@@ -800,11 +836,11 @@ export default function AnglesPage() {
                 <div className="bg-blue-50 border border-blue-100 rounded-xl p-4">
                   <div className="flex items-center gap-2 mb-3">
                     <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wider">Layer A — Creative Verdict Gate</p>
-                    <Tip wide text="Layer A đánh giá creative thuần túy — hook, hold, click. Không dùng ROAS hay booking. Verdict = primary metric có vượt ngưỡng sau đủ min_sample ads không? Layer B (downstream) là bước riêng, không bao giờ override Layer A." />
+                    <Tip wide text="Layer A judges the creative only — hook, hold, click. Never uses ROAS or booking. Verdict = did the primary metric exceed the threshold after min_sample concluded ads? Layer B (downstream) is a separate step and never overrides Layer A." />
                   </div>
                   <div className="grid grid-cols-4 gap-3">
                     <div>
-                      <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">Funnel Stage *<Tip text="Stop = giữ người không scroll qua (3s đầu). Hold = giữ người xem tiếp (thruplay). Click = thuyết phục click. Downstream = booking intent (Layer B)." wide /></label>
+                      <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">Funnel Stage *<Tip text="Stop = prevent scroll-past (first 3 seconds). Hold = keep watching (thruplay). Click = persuade the click (CTA/offer). Downstream = booking intent (Layer B)." wide /></label>
                       <select
                         value={hypoForm.funnel_stage}
                         onChange={e => {
@@ -820,7 +856,7 @@ export default function AnglesPage() {
                       </select>
                     </div>
                     <div>
-                      <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">Format *<Tip text="Video hay Image. Kết hợp với Funnel Stage sẽ xác định Primary Metric tự động. Stop+Video → hook_rate, Stop+Image → thumb_stop_rate, Hold+Video → hold_rate, Click → CTR." wide /></label>
+                      <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">Format *<Tip text="Video or Image. Combined with Funnel Stage, this auto-determines the Primary Metric. Stop+Video → hook_rate, Stop+Image → thumb_stop_rate, Hold+Video → hold_rate, Click → CTR." wide /></label>
                       <select
                         value={hypoForm.format}
                         onChange={e => {
@@ -837,7 +873,7 @@ export default function AnglesPage() {
                       </select>
                     </div>
                     <div>
-                      <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">Primary Metric<Tip text="Tự động điền từ Stage + Format. Đây là metric DUY NHẤT dùng để judge hypothesis này — AI suggestion cũng sẽ viết theo metric này, không phải CTR hay ROAS." wide /></label>
+                      <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">Primary Metric<Tip text="Auto-filled from Stage + Format. This is the ONLY metric used to judge this hypothesis — AI suggestions also write to this metric, never CTR or ROAS." wide /></label>
                       <input
                         value={hypoForm.primary_metric}
                         readOnly
@@ -848,7 +884,7 @@ export default function AnglesPage() {
                     <div>
                       <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
                         Win Threshold
-                        <Tip text="Ngưỡng để gọi là 'validated'. Tự động lấy từ average 60 ngày gần nhất của branch. Bạn có thể chỉnh lại nếu muốn set bar cao hơn hoặc thấp hơn." wide />
+                        <Tip text="The threshold to call a hypothesis 'validated'. Auto-filled from the branch's 60-day average for this metric. You can edit it to set the bar higher or lower." wide />
                         {benchmarkLoading && <span className="ml-1 text-blue-400 animate-pulse">fetching avg...</span>}
                         {!benchmarkLoading && hypoForm.win_threshold && <span className="ml-1 text-gray-300">(60d avg)</span>}
                       </label>
@@ -863,7 +899,7 @@ export default function AnglesPage() {
                     </div>
                   </div>
                   <div className="mt-2">
-                    <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">Min Sample <Tip text="Số ads tối thiểu phải có verdict (validated hoặc refuted) trước khi hệ thống cho phép kết luận hypothesis. Mặc định 5. Dưới ngưỡng này → 'insufficient data', không kết luận." wide /></label>
+                    <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">Min Sample <Tip text="Minimum number of ads that must have a verdict (validated or refuted) before the system allows a hypothesis conclusion. Default 5. Below this → 'insufficient data', no verdict." wide /></label>
                     <input
                       type="number"
                       value={hypoForm.min_sample}
@@ -884,10 +920,10 @@ export default function AnglesPage() {
                       ? <><span className="animate-spin inline-block w-3 h-3 border border-violet-400 border-t-transparent rounded-full" />Generating...</>
                       : <>✨ Suggest hypotheses with AI{hypoForm.primary_metric && <span className="ml-1 text-violet-400">→ {hypoForm.primary_metric}</span>}</>}
                   </button>
-                  <Tip wide text="AI sẽ viết hypothesis, variable tested, và expected outcome theo đúng primary metric của Stage+Format bạn chọn. Ví dụ: Stop+Video → AI chỉ nói về hook_rate, không bao giờ dùng CTR hay ROAS." />
+                  <Tip wide text="AI writes the hypothesis, variable tested, and expected outcome using only the primary metric for your chosen Stage+Format. Example: Stop+Video → AI only talks about hook_rate, never CTR or ROAS." />
                   {(!hypoForm.funnel_stage || !hypoForm.format)
-                    ? <span className="text-xs text-gray-400">Chọn Funnel Stage + Format trước — AI viết theo metric đó</span>
-                    : !hypoForm.human_desire && <span className="text-xs text-gray-400">Chọn branch + desire trước</span>}
+                    ? <span className="text-xs text-gray-400">Pick Funnel Stage + Format first — AI writes to that metric</span>
+                    : !hypoForm.human_desire && <span className="text-xs text-gray-400">Pick branch + desire first</span>}
                 </div>
 
                 {suggestions.length > 0 && (
@@ -918,6 +954,47 @@ export default function AnglesPage() {
                   <div><label className="block text-xs text-gray-500 mb-1">Expected Outcome</label>
                     <input value={hypoForm.expected_outcome} onChange={e => setHypoForm(p => ({ ...p, expected_outcome: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="+20% CTR" /></div>
                 </div>
+                {/* Link to Creative Library combo */}
+                <div>
+                  <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
+                    Link to Creative
+                    <Tip text="Search and select an ad from the Creative Library to link this hypothesis to a specific combo. The combo's metrics will appear on this hypothesis card." wide />
+                  </label>
+                  {hypoForm.combo_id ? (
+                    <div className="flex items-center gap-2 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                      <span className="font-mono text-xs text-violet-700">{hypoForm.combo_id}</span>
+                      <button onClick={() => { setHypoForm(p => ({ ...p, combo_id: '' })); setComboSearch(''); setComboResults([]) }}
+                        className="ml-auto text-violet-400 hover:text-violet-700"><X className="w-3 h-3" /></button>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <input
+                        value={comboSearch}
+                        onChange={e => { setComboSearch(e.target.value); searchCombos(e.target.value, accounts.find(a => a.account_name === hypoForm.branch_name)?.id) }}
+                        onFocus={() => { if (!comboSearch && hypoForm.branch_name) searchCombos('', accounts.find(a => a.account_name === hypoForm.branch_name)?.id) }}
+                        placeholder="Search by ad name or combo ID…"
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                      />
+                      {comboSearchLoading && <span className="absolute right-3 top-2 text-xs text-gray-400 animate-pulse">searching…</span>}
+                      {comboResults.length > 0 && (
+                        <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-52 overflow-auto">
+                          {comboResults.map(r => (
+                            <button key={r.combo_id} onClick={() => { setHypoForm(p => ({ ...p, combo_id: r.combo_id })); setComboSearch(''); setComboResults([]) }}
+                              className="w-full text-left px-3 py-2 hover:bg-violet-50 border-b border-gray-50 last:border-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[10px] text-gray-400">{r.combo_id}</span>
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${r.verdict === 'WIN' ? 'bg-green-100 text-green-700' : r.verdict === 'LOSE' ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'}`}>{r.verdict}</span>
+                                {r.roas && <span className="text-[10px] text-gray-500">{r.roas.toFixed(2)}x</span>}
+                              </div>
+                              <p className="text-xs text-gray-700 truncate mt-0.5">{r.ad_name || '(no name)'}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <button onClick={handleCreateHypo} disabled={!hypoForm.branch_name || !hypoForm.hypothesis}
                   className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 disabled:opacity-50">Create Hypothesis</button>
               </div>
@@ -1059,7 +1136,7 @@ export default function AnglesPage() {
                           {h.market && <span className="text-xs text-gray-400">{h.market}</span>}
                           <span className="flex items-center gap-1">
                             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-600'}`}>Layer A: {h.status}</span>
-                            <Tip text={`Layer A = creative verdict. Đánh giá ${h.primary_metric || h.primary_kpi || 'primary metric'} có vượt ngưỡng (${h.win_threshold ?? '—'}) sau ${h.min_sample} ads không. Không liên quan ROAS hay booking.`} wide />
+                            <Tip text={`Layer A = creative verdict. Did ${h.primary_metric || h.primary_kpi || 'primary metric'} exceed the threshold (${h.win_threshold ?? '—'}) after ${h.min_sample} concluded ads? No ROAS or booking involved.`} wide />
                           </span>
                           {h.layer_b_status && (
                             <span className="flex items-center gap-1">
@@ -1068,7 +1145,7 @@ export default function AnglesPage() {
                                 h.layer_b_status === 'fail' ? 'bg-red-50 text-red-600 border-red-200' :
                                 'bg-gray-50 text-gray-500 border-gray-200'
                               }`}>Layer B: {h.layer_b_status}</span>
-                              <Tip text="Layer B = downstream verdict (ROAS, booking rate). Độc lập với Layer A — một creative có thể Layer A pass (hook tốt) nhưng Layer B fail (offer/landing page kém)." wide />
+                              <Tip text="Layer B = downstream verdict (ROAS, booking rate). Independent of Layer A — a creative can pass Layer A (great hook) but fail Layer B (weak offer/landing page)." wide />
                             </span>
                           )}
                           {h.approval_status && (
@@ -1238,7 +1315,7 @@ export default function AnglesPage() {
                             >
                               {h.evidence ? '✏️ Re-analyze' : '🔬 Analyze creative'}
                             </button>
-                            <Tip text="Paste brief + script hoặc image URL để AI trích xuất Evidence, Why It Worked, và Creative Principle — giúp biết tại sao ad work/không work ở mức tâm lý." wide />
+                            <Tip text="Paste brief + script or image URLs so AI can extract Evidence, Why It Worked, and a Creative Principle — explains why the ad did or did not work at a psychological level." wide />
                           </div>
                         )}
 
@@ -1293,7 +1370,7 @@ export default function AnglesPage() {
                 <div className="bg-white rounded-xl border border-gray-200 p-5">
                   <div className="flex items-center gap-2 mb-4">
                     <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Desire Win Rate</h3>
-                    <Tip text="Win rate = validated ÷ (validated + refuted). Chỉ tính concluded ads, không tính pending/running. Greyed = chưa đủ min_sample — chưa thể kết luận." wide />
+                    <Tip text="Win rate = validated ÷ (validated + refuted). Only counts concluded ads, not pending/running. Greyed = below min_sample — no verdict yet." wide />
                   </div>
                   {learningDashboard.top_desires.length === 0 ? <p className="text-xs text-gray-400">No data yet.</p> : (
                     <div className="space-y-3">
@@ -1325,7 +1402,7 @@ export default function AnglesPage() {
                 <div className="bg-white rounded-xl border border-gray-200 p-5">
                   <div className="flex items-center gap-2 mb-4">
                     <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Decision Driver Win Rate</h3>
-                    <Tip text="Hypothesis Category (Identity, Emotional Trigger, Social Proof...) nào đang work nhất cho branch này. Dùng để ưu tiên loại test tiếp theo." wide />
+                    <Tip text="Which Hypothesis Category (Identity, Emotional Trigger, Social Proof...) is working best for this branch. Use this to prioritize the next test type." wide />
                   </div>
                   {learningDashboard.top_drivers.length === 0 ? <p className="text-xs text-gray-400">No data yet.</p> : (
                     <div className="space-y-3">
@@ -1356,7 +1433,7 @@ export default function AnglesPage() {
                 <div className="bg-white rounded-xl border border-gray-200 p-5 lg:col-span-2">
                   <div className="flex items-center gap-2 mb-4">
                     <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Angle Win Rate</h3>
-                    <Tip wide text="Mỗi creative angle xuất hiện đúng 1 lần. Win rate = validated ÷ (validated + refuted). Dòng mờ = chưa đủ min_sample ads, chưa thể kết luận. Sort: đủ sample trước, sau đó theo win rate cao nhất." />
+                    <Tip wide text="Each creative angle appears exactly once. Win rate = validated ÷ (validated + refuted). Faded rows = below min_sample — no verdict yet. Sorted: sufficient sample first, then by highest win rate." />
                   </div>
                   {learningDashboard.angle_win_rates.length === 0 ? <p className="text-xs text-gray-400">No concluded angles yet.</p> : (
                     <div className="overflow-x-auto">
@@ -1394,7 +1471,7 @@ export default function AnglesPage() {
                 <div className="bg-white rounded-xl border border-gray-200 p-5">
                   <div className="flex items-center gap-2 mb-1">
                     <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Funnel-Stage Failure Map</h3>
-                    <Tip wide text="% hypothesis bị refuted tại mỗi stage. Nếu Stop có fail rate cao → creative không đủ mạnh để giữ người. Nếu Click cao → hook tốt nhưng offer không thuyết phục. Dùng để biết team nên fix cái gì trước." />
+                    <Tip wide text="% of hypotheses refuted at each funnel stage. High Stop fail rate → creative is not strong enough to hold attention. High Click fail rate → good hook but weak offer. Use this to know what to fix first." />
                   </div>
                   <p className="text-[10px] text-gray-400 mb-4">Where do most hypotheses get refuted?</p>
                   {Object.keys(learningDashboard.funnel_failure_map).length === 0 ? <p className="text-xs text-gray-400">No data yet — add funnel_stage to hypotheses first.</p> : (
@@ -1446,5 +1523,13 @@ export default function AnglesPage() {
         </>
       )}
     </div>
+  )
+}
+
+export default function AnglesPage() {
+  return (
+    <Suspense>
+      <AnglesPageInner />
+    </Suspense>
   )
 }

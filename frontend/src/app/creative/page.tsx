@@ -328,6 +328,13 @@ function CreativePageInner() {
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="text-[10px] text-gray-400 font-mono">{c.combo_id}</span>
                       <FormatChip type={inferFormat(c.ad_name)} />
+                      <button
+                        onClick={e => { e.stopPropagation(); router.push(`/angles?tab=hypotheses&combo_id=${c.combo_id}`) }}
+                        className="text-[9px] text-violet-500 hover:text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-100 rounded px-1 py-0.5 font-medium"
+                        title="Create hypothesis for this ad"
+                      >
+                        + Hypothesis
+                      </button>
                     </div>
                   </td>
                   <td className="py-2 px-2 text-xs text-gray-600">{accName(c.branch_id)}</td>
