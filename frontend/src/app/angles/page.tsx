@@ -209,6 +209,7 @@ function AnglesPageInner() {
   const [bulkSelected, setBulkSelected] = useState<Set<number>>(new Set())
   const [bulkSaving, setBulkSaving] = useState(false)
   const [bulkDone, setBulkDone] = useState(0)
+  const [bulkSkipped, setBulkSkipped] = useState<number | null>(null)
 
   const handleBulkGenerate = () => {
     if (!bulkBranch) return
@@ -220,6 +221,7 @@ function AnglesPageInner() {
     }).then(r => r.json()).then(d => {
       if (d.success) {
         setBulkProposals(d.data.proposals)
+        setBulkSkipped(d.data.skipped ?? null)
         setBulkSelected(new Set(d.data.proposals.map((_: BulkProposal, i: number) => i)))
       }
     }).catch(() => {}).finally(() => setBulkLoading(false))
@@ -1748,6 +1750,12 @@ function AnglesPageInner() {
 
             {/* Proposals list */}
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+              {bulkSkipped !== null && bulkSkipped > 0 && (
+                <div className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                  <span className="text-green-500">✓</span>
+                  {bulkSkipped} combos already covered by existing hypotheses — skipped
+                </div>
+              )}
               {bulkProposals.length === 0 && !bulkLoading && (
                 <p className="text-sm text-gray-400 text-center py-8">
                   {bulkBranch ? 'Click Generate to analyse combos and propose hypotheses.' : 'Select a branch first.'}

@@ -405,6 +405,23 @@ def bulk_generate_hypotheses(payload: BulkGenerateRequest, db: Session = Depends
             return {"success": True, "data": {"proposals": []}, "error": None,
                     "timestamp": datetime.now(timezone.utc).isoformat()}
 
+        # Exclude combos already linked to a hypothesis
+        linked_ids = {
+            lk.combo_id for lk in db.query(HypothesisComboLink.combo_id).all()
+        }
+        # Also exclude combos referenced via legacy combo_id column
+        legacy_ids = {
+            r.combo_id for r in db.query(CreativeHypothesis.combo_id)
+            .filter(CreativeHypothesis.combo_id.isnot(None)).all()
+        }
+        already_linked = linked_ids | legacy_ids
+        combos = [c for c in combos if c.combo_id not in already_linked]
+
+        if not combos:
+            return {"success": True, "data": {"proposals": [], "total_combos": 0,
+                    "skipped": len(already_linked), "total_cohorts": 0}, "error": None,
+                    "timestamp": datetime.now(timezone.utc).isoformat()}
+
         # Group by (TA, country, dominant_metric)
         def dominant_metric(c: AdCombo) -> str:
             if c.hook_rate and float(c.hook_rate) > 0:
@@ -497,7 +514,7 @@ Return ONLY valid JSON. No markdown."""
                 continue
 
         return {"success": True, "data": {"proposals": proposals, "total_combos": len(combos),
-                "total_cohorts": len(groups)}, "error": None,
+                "skipped": len(already_linked), "total_cohorts": len(groups)}, "error": None,
                 "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
         logger.exception("[bulk-generate] failed")
