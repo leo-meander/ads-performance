@@ -510,7 +510,7 @@ RULES — rewrite if violated:
   ✓ "hook_rate ≥ 25% (baseline ~{avg_fmt})"
   ✗ "We expect the hook rate of the winning creative to exceed the cohort average..."
 
-Return ONLY valid JSON. No markdown. Self-check before returning: is hypothesis ≤ 15 words? Does it have exactly one swap? If not — rewrite."""
+Return ONLY valid JSON in English. No markdown. Self-check before returning: is hypothesis ≤ 15 words? Does it have exactly one swap? If not — rewrite."""
 
             try:
                 msg = client.messages.create(
