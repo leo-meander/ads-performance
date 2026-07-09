@@ -776,20 +776,7 @@ function AnglesPageInner() {
                     placeholder="e.g. Couples in their 30s don't want a 'luxurious' hotel — they want to feel like they made the right call."
                   />
                 </div>
-                <div className="grid grid-cols-4 gap-3">
-                  <div><label className="block text-xs text-gray-500 mb-1">Creative Angle</label>
-                    <select
-                      value={hypoForm.creative_angle}
-                      onChange={e => setHypoForm(p => ({ ...p, creative_angle: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                    >
-                      <option value="">— Any angle —</option>
-                      {angles
-                        .filter(a => !a.applicable_to?.length || a.applicable_to.includes(hypoForm.branch_name))
-                        .map(a => <option key={a.angle_id} value={a.angle_type}>{a.angle_type}</option>)
-                      }
-                    </select>
-                  </div>
+                <div className="grid grid-cols-3 gap-3">
                   <div><label className="block text-xs text-gray-500 mb-1">Target Audience</label>
                     <select value={hypoForm.target_audience} onChange={e => setHypoForm(p => ({ ...p, target_audience: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
                       <option value="">— All —</option>
