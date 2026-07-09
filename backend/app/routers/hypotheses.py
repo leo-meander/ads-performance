@@ -392,15 +392,20 @@ def bulk_generate_hypotheses(payload: BulkGenerateRequest, db: Session = Depends
     try:
         from anthropic import Anthropic
         from app.config import settings
-        from app.models.ad_account import AdAccount
+        from app.core.branches import get_account_ids_for_branches, canonical_branch
 
-        # Fetch combos for branch via account join
+        # Resolve branch name → account IDs (handles "Meander Taipei" → "Taipei" → account UUIDs)
+        canonical = canonical_branch(payload.branch_name) or payload.branch_name
+        account_ids = get_account_ids_for_branches(db, [canonical])
+        if not account_ids:
+            # Fallback: try the full string as a pattern
+            account_ids = get_account_ids_for_branches(db, [payload.branch_name])
+
         combos = (
             db.query(AdCombo)
-            .join(AdAccount, AdAccount.id == AdCombo.branch_id)
-            .filter(AdAccount.account_name == payload.branch_name)
+            .filter(AdCombo.branch_id.in_(account_ids))
             .all()
-        )
+        ) if account_ids else []
         if not combos:
             return {"success": True, "data": {"proposals": []}, "error": None,
                     "timestamp": datetime.now(timezone.utc).isoformat()}
