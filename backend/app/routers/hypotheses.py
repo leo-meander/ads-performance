@@ -472,11 +472,16 @@ def bulk_generate_hypotheses(payload: BulkGenerateRequest, db: Session = Depends
             top_lines = "\n".join(fmt(c) for c in top)
             bottom_lines = "\n".join(fmt(c) for c in bottom)
 
+            top_metric_val = float(getattr(top[0], "hook_rate" if metric == "hook_rate" else "ctr" if metric == "CTR" else "roas") or 0) if top else 0
+            cohort_avg = sum(float(getattr(c, "hook_rate" if metric == "hook_rate" else "ctr" if metric == "CTR" else "roas") or 0) for c in members) / len(members)
+            avg_fmt = f"{cohort_avg:.2%}" if metric != "roas" else f"{cohort_avg:.2f}x"
+
             prompt = f"""You are a creative strategist for {payload.branch_name}, a hotel/restaurant brand.
 
 Cohort: TA={ta}, Market={country}, Primary Metric={metric}
 Brand promise: {brand_promise}
 Never say: {', '.join(never_say) or 'none'}
+Cohort average {metric}: {avg_fmt}
 
 Top performers:
 {top_lines}
@@ -484,16 +489,26 @@ Top performers:
 Bottom performers:
 {bottom_lines}
 
-Based on what's winning vs losing in this cohort, generate ONE sharp hypothesis that explains the pattern.
+Find the ONE creative difference that separates winners from losers. Then write a hypothesis.
+
+STRICT RULES — violating any rule means you must rewrite:
+1. hypothesis: MAXIMUM 20 words. Exactly ONE variable changed (one "vs" or one swap). NO "because", NO "and", NO "or". Plain language, no jargon.
+   Good: "Opening with a guest face beats opening with room footage for {ta} traveler hook rate."
+   Bad: "AI-generated or high-production KOL content featuring aspirational hotel + location combinations drives higher hook_rate because solo travelers seek social proof..."
+   If you cannot say it in 20 words → the hypothesis has multiple variables → split and pick the strongest one only.
+2. customer_insight: ONE sentence. This is the guest belief, not a restatement of the hypothesis. Plain language.
+3. expected_outcome: "{metric} ≥ [number] vs cohort avg {avg_fmt}" — numbers only, no prose.
+4. hypothesis_category: one of [identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory]
+
 Return JSON:
 {{
-  "hypothesis": "We believe that [specific creative element] drives higher {metric} for {ta} travelers in {country} because [psychological reason]",
-  "hypothesis_category": one of [identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory],
-  "customer_insight": "[the underlying guest belief — one sentence]",
-  "expected_outcome": "{metric} of winning creative ≥ [X] vs cohort average",
-  "rationale": "[one sentence connecting ad pattern to booking psychology]"
+  "hypothesis": "...",
+  "hypothesis_category": "...",
+  "customer_insight": "...",
+  "expected_outcome": "...",
+  "rationale": "one sentence — why this specific swap affects booking psychology"
 }}
-Return ONLY valid JSON. No markdown."""
+Return ONLY valid JSON. No markdown. Self-check: count the words in hypothesis — if > 20, rewrite."""
 
             try:
                 msg = client.messages.create(
