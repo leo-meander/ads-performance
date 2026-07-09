@@ -626,6 +626,7 @@ def create_hypothesis(payload: HypothesisCreate, db: Session = Depends(get_db)) 
                 "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
         db.rollback()
+        logger.exception("[create_hypothesis] failed: %s", str(e))
         return {"success": False, "data": None, "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()}
 
