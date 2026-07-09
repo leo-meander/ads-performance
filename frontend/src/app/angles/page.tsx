@@ -110,11 +110,6 @@ const HYPO_STATUS_BADGE: Record<string, string> = {
   inconclusive: 'bg-orange-100 text-orange-700',
 }
 
-const HUMAN_DESIRES = [
-  'Belonging', 'Discovery', 'Recovery', 'Fulfillment', 'Immersion',
-  'Romance', 'Freedom', 'Calm', 'Adventure', 'Status',
-  'Achievement', 'Escape', 'Curiosity', 'Play', 'Growth', 'Security', 'Nostalgia',
-]
 const STORY_STRUCTURES = [
   'Curiosity Loop', 'Slice of Life', 'Hero Journey',
   'Before vs After', 'Open Loop', '3 Act', 'Conversation', 'Voice Over',
@@ -126,29 +121,17 @@ const VISUAL_PATTERNS = [
 const BRANCH_NAMES = ['Meander Taipei', 'Oani', 'Meander Osaka', 'Meander Saigon', 'Meander 1948']
 
 const HYPOTHESIS_CATEGORIES: { value: string; label: string; desc: string; color: string }[] = [
-  { value: 'identity', label: '🪞 Identity', desc: 'Who does the guest want to become?', color: 'bg-purple-50 text-purple-700 border-purple-200' },
-  { value: 'decision_driver', label: '🎯 Decision Driver', desc: 'What makes them book NOW?', color: 'bg-orange-50 text-orange-700 border-orange-200' },
-  { value: 'emotional_trigger', label: '❤️ Emotional Trigger', desc: 'Which emotion closes the booking?', color: 'bg-rose-50 text-rose-700 border-rose-200' },
-  { value: 'travel_moment', label: '🗓️ Travel Moment', desc: 'Which stage of the journey?', color: 'bg-sky-50 text-sky-700 border-sky-200' },
-  { value: 'social_proof', label: '👥 Social Proof', desc: 'Who do they trust?', color: 'bg-teal-50 text-teal-700 border-teal-200' },
-  { value: 'experience', label: '✨ Experience', desc: 'What moment will they remember?', color: 'bg-amber-50 text-amber-700 border-amber-200' },
-  { value: 'value_perception', label: '💰 Value Perception', desc: 'Is it worth the price?', color: 'bg-green-50 text-green-700 border-green-200' },
-  { value: 'brand_territory', label: '🏔️ Brand Territory', desc: 'What only this hotel owns?', color: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  { value: 'identity', label: '🪞 Self-Image', desc: 'Testing which identity the guest sees themselves as — the type of person who stays here (cultured traveler, intentional romantic, etc.)', color: 'bg-purple-50 text-purple-700 border-purple-200' },
+  { value: 'decision_driver', label: '⚡ Reason to Book Now', desc: 'Testing what pushes them from "want to go" to "book" — price framing, urgency, exclusive access, limited availability', color: 'bg-orange-50 text-orange-700 border-orange-200' },
+  { value: 'emotional_trigger', label: '😮 Closing Emotion', desc: 'Testing which emotion seals the booking — FOMO, nostalgia, feeling cared for, self-reward, belonging', color: 'bg-rose-50 text-rose-700 border-rose-200' },
+  { value: 'travel_moment', label: '📍 Journey Stage', desc: 'Testing which stage of the decision journey this ad hits — dreaming, planning, or ready to book', color: 'bg-sky-50 text-sky-700 border-sky-200' },
+  { value: 'social_proof', label: '👥 Social Proof', desc: 'Testing which proof type convinces — reviews, UGC, guest count, press mentions, familiar faces', color: 'bg-teal-50 text-teal-700 border-teal-200' },
+  { value: 'experience', label: '🎬 Memorable Moment', desc: 'Testing which experience highlight drives the click — breakfast, room view, spa, common space, a specific activity', color: 'bg-amber-50 text-amber-700 border-amber-200' },
+  { value: 'value_perception', label: '💰 Worth the Price', desc: 'Testing which value framing reduces friction — comparison to alternatives, bundle inclusions, "treat yourself" positioning', color: 'bg-green-50 text-green-700 border-green-200' },
+  { value: 'brand_territory', label: '🏔️ Only We Have This', desc: 'Testing the one differentiator no competitor can claim for this specific branch — a space, a feeling, a ritual', color: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
 ]
 const CAT_COLOR: Record<string, string> = Object.fromEntries(HYPOTHESIS_CATEGORIES.map(c => [c.value, c.color]))
 
-const DESIRE_COLOR: Record<string, string> = {
-  Belonging: 'bg-purple-50 border-purple-200 text-purple-800',
-  Discovery: 'bg-amber-50 border-amber-200 text-amber-800',
-  Recovery: 'bg-teal-50 border-teal-200 text-teal-800',
-  Fulfillment: 'bg-orange-50 border-orange-200 text-orange-800',
-  Immersion: 'bg-rose-50 border-rose-200 text-rose-800',
-  Curiosity: 'bg-amber-50 border-amber-200 text-amber-800',
-}
-const DESIRE_DOT: Record<string, string> = {
-  Belonging: 'bg-purple-400', Discovery: 'bg-amber-400', Recovery: 'bg-teal-400',
-  Fulfillment: 'bg-orange-400', Immersion: 'bg-rose-400', Curiosity: 'bg-amber-400',
-}
 
 // Spec §3: funnel stage → primary metric mapping
 const FUNNEL_METRICS: Record<string, Record<string, string>> = {
@@ -198,7 +181,7 @@ function AnglesPageInner() {
 
   // Create hypothesis form
   const [hypoForm, setHypoForm] = useState({
-    branch_name: '', human_desire: '', creative_angle: '',
+    branch_name: '', creative_angle: '',
     hypothesis_category: '', customer_insight: '',
     target_audience: '', market: '', hypothesis: '',
     variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '',
@@ -293,7 +276,7 @@ function AnglesPageInner() {
   const [suggestLoading, setSuggestLoading] = useState(false)
 
   const handleSuggest = () => {
-    if (!hypoForm.branch_name || !hypoForm.human_desire) return
+    if (!hypoForm.branch_name) return
     setSuggestLoading(true)
     setSuggestions([])
     fetch(`${API_BASE}/api/hypotheses/suggest`, {
@@ -301,7 +284,6 @@ function AnglesPageInner() {
       credentials: 'include',
       body: JSON.stringify({
         branch_name: hypoForm.branch_name,
-        human_desire: hypoForm.human_desire,
         hypothesis_category: hypoForm.hypothesis_category || null,
         customer_insight: hypoForm.customer_insight || null,
         creative_angle: hypoForm.creative_angle || null,
@@ -331,7 +313,7 @@ function AnglesPageInner() {
   }
 
   const selectedBrand = brandIdentities.find(b => b.branch_name === hypoForm.branch_name)
-  const branchDesires = selectedBrand ? selectedBrand.human_desires : HUMAN_DESIRES
+  const branchDesires = selectedBrand?.human_desires ?? []
 
   const fetchLearningDashboard = (branch: string) => {
     setLdLoading(true)
@@ -407,7 +389,7 @@ function AnglesPageInner() {
     }).then(r => r.json()).then(d => {
       if (d.success) {
         setShowCreateHypo(false)
-        setHypoForm({ branch_name: '', human_desire: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '', funnel_stage: '', format: '', primary_metric: '', win_threshold: '', min_sample: '5', combo_id: '', baseline: '' })
+        setHypoForm({ branch_name: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '', funnel_stage: '', format: '', primary_metric: '', win_threshold: '', min_sample: '5', combo_id: '', baseline: '' })
         setComboSearch(''); setComboResults([])
         fetchHypotheses()
       }
@@ -435,7 +417,7 @@ function AnglesPageInner() {
     const key = a.human_desire || 'Uncategorized'
     ;(byDesire[key] = byDesire[key] || []).push(a)
   })
-  const desireOrder = [...HUMAN_DESIRES, 'Uncategorized']
+  const desireOrder = [...(branchDesires ?? []), 'Uncategorized']
   const sortedDesires = Object.keys(byDesire).sort((a, b) => desireOrder.indexOf(a) - desireOrder.indexOf(b))
 
   const accName = (id: string | null) => accounts.find(a => a.id === id)?.account_name || 'All'
@@ -496,7 +478,7 @@ function AnglesPageInner() {
             </select>
             <select value={fDesire} onChange={e => setFDesire(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
               <option value="">All Desires</option>
-              {HUMAN_DESIRES.map(d => <option key={d}>{d}</option>)}
+              {(branchDesires ?? []).map((d: string) => <option key={d}>{d}</option>)}
             </select>
             <div className="flex items-center gap-1.5">
               <select value={fStatus} onChange={e => setFStatus(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
@@ -519,7 +501,7 @@ function AnglesPageInner() {
                     <input value={formType} onChange={e => setFormType(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="e.g. Strangers Become Friends" /></div>
                   <div><label className="block text-xs text-gray-500 mb-1">Human Desire</label>
                     <select value={formDesire} onChange={e => setFormDesire(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                      <option value="">Select...</option>{HUMAN_DESIRES.map(d => <option key={d}>{d}</option>)}
+                      <option value="">Select...</option>{(branchDesires ?? []).map((d: string) => <option key={d}>{d}</option>)}
                     </select></div>
                   <div><label className="block text-xs text-gray-500 mb-1">Emotional Theme</label>
                     <input value={formTheme} onChange={e => setFormTheme(e.target.value)} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="e.g. First Friend, Shared Meal" /></div>
@@ -561,8 +543,8 @@ function AnglesPageInner() {
             <div className="space-y-6">
               {sortedDesires.map(desire => {
                 const desireAngles = byDesire[desire]
-                const colorCls = DESIRE_COLOR[desire] || 'bg-gray-50 border-gray-200 text-gray-700'
-                const dotCls = DESIRE_DOT[desire] || 'bg-gray-400'
+                const colorCls = 'bg-gray-50 border-gray-200 text-gray-700'
+                const dotCls = 'bg-gray-400'
                 const isCollapsed = collapsedDesires.has(desire)
                 const byTheme: Record<string, Angle[]> = {}
                 desireAngles.forEach(a => {
@@ -752,26 +734,11 @@ function AnglesPageInner() {
                     <label className="block text-xs text-gray-500 mb-1">Branch *</label>
                     <select
                       value={hypoForm.branch_name}
-                      onChange={e => setHypoForm(p => ({ ...p, branch_name: e.target.value, human_desire: '' }))}
+                      onChange={e => setHypoForm(p => ({ ...p, branch_name: e.target.value }))}
                       className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
                     >
                       <option value="">Select...</option>
                       {BRANCH_NAMES.map(b => <option key={b}>{b}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">
-                      Human Desire
-                      {selectedBrand && <span className="ml-1 text-purple-500">({branchDesires.length} for {hypoForm.branch_name.split(' ').pop()})</span>}
-                    </label>
-                    <select
-                      value={hypoForm.human_desire}
-                      onChange={e => setHypoForm(p => ({ ...p, human_desire: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                      disabled={!hypoForm.branch_name}
-                    >
-                      <option value="">{hypoForm.branch_name ? 'Select...' : '← Pick branch first'}</option>
-                      {branchDesires.map(d => <option key={d}>{d}</option>)}
                     </select>
                   </div>
                 </div>
@@ -818,7 +785,6 @@ function AnglesPageInner() {
                     >
                       <option value="">— Any angle —</option>
                       {angles
-                        .filter(a => !hypoForm.human_desire || a.human_desire === hypoForm.human_desire)
                         .filter(a => !a.applicable_to?.length || a.applicable_to.includes(hypoForm.branch_name))
                         .map(a => <option key={a.angle_id} value={a.angle_type}>{a.angle_type}</option>)
                       }
@@ -921,7 +887,7 @@ function AnglesPageInner() {
                 <div className="flex items-center gap-3">
                   <button
                     onClick={handleSuggest}
-                    disabled={!hypoForm.branch_name || !hypoForm.human_desire || !hypoForm.funnel_stage || !hypoForm.format || suggestLoading}
+                    disabled={!hypoForm.branch_name || !hypoForm.funnel_stage || !hypoForm.format || suggestLoading}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-50 text-violet-700 border border-violet-200 rounded-lg text-xs font-medium hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {suggestLoading
@@ -931,7 +897,7 @@ function AnglesPageInner() {
                   <Tip wide text="AI writes the hypothesis, variable tested, and expected outcome using only the primary metric for your chosen Stage+Format. Example: Stop+Video → AI only talks about hook_rate, never CTR or ROAS." />
                   {(!hypoForm.funnel_stage || !hypoForm.format)
                     ? <span className="text-xs text-gray-400">Pick Funnel Stage + Format first — AI writes to that metric</span>
-                    : !hypoForm.human_desire && <span className="text-xs text-gray-400">Pick branch + desire first</span>}
+                    : null}
                 </div>
 
                 {suggestions.length > 0 && (
@@ -1082,10 +1048,10 @@ function AnglesPageInner() {
             const concluded = filteredHypos.filter(h => ['validated','refuted'].includes(h.status))
             const running = filteredHypos.filter(h => h.status === 'running')
             const validated = filteredHypos.filter(h => h.status === 'validated')
-            const learningsByDesire: Record<string, Hypothesis[]> = {}
+            const learningsByCategory: Record<string, Hypothesis[]> = {}
             concluded.filter(h => h.learning).forEach(h => {
-              const k = h.human_desire || 'General'
-              ;(learningsByDesire[k] = learningsByDesire[k] || []).push(h)
+              const k = HYPOTHESIS_CATEGORIES.find(c => c.value === h.hypothesis_category)?.label || 'General'
+              ;(learningsByCategory[k] = learningsByCategory[k] || []).push(h)
             })
             return (
               <div className="space-y-6">
@@ -1103,11 +1069,11 @@ function AnglesPageInner() {
                   ))}
                 </div>
 
-                {Object.keys(learningsByDesire).length > 0 && (
+                {Object.keys(learningsByCategory).length > 0 && (
                   <div className="bg-violet-50 rounded-xl border border-violet-100 p-5">
                     <p className="text-xs font-semibold text-violet-700 uppercase tracking-wider mb-3">Validated Learnings</p>
                     <div className="space-y-3">
-                      {Object.entries(learningsByDesire).map(([desire, items]) => (
+                      {Object.entries(learningsByCategory).map(([desire, items]) => (
                         <div key={desire}>
                           <p className="text-[10px] font-bold text-violet-500 uppercase tracking-widest mb-1.5">{desire}</p>
                           {items.map(h => (
@@ -1158,7 +1124,7 @@ function AnglesPageInner() {
                               {HYPOTHESIS_CATEGORIES.find(c => c.value === h.hypothesis_category)?.label || h.hypothesis_category}
                             </span>
                           )}
-                          {h.human_desire && <span className="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">{h.human_desire}</span>}
+                          {h.human_desire && <span className="text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full">{h.human_desire}</span>}
                           {h.creative_angle && <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">{h.creative_angle}</span>}
                           {h.funnel_stage && <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-medium">{h.funnel_stage}</span>}
                           {h.format && <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{h.format}</span>}
