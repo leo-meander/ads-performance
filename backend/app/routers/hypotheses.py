@@ -494,9 +494,9 @@ Find what separates winners from losers. Write ONE clean hypothesis.
 Return JSON in English:
 {{
   "customer_insight": "What this guest fundamentally wants — one plain sentence, starts with the guest, no brand jargon.",
-  "hypothesis": "The one thing we think drives {metric} here — one sentence, simple English. NO 'A or B', NO 'and', NO two ideas at once. Pick the single strongest variable.",
-  "variable_tested": "X vs Y — the exact creative swap. One pair only.",
-  "expected_outcome": "{metric} ≥ [number] (baseline ~{avg_fmt})",
+  "hypothesis": "The one creative element we think pushes {metric} above the cohort average — one sentence, plain English. State what the winning creatives DO, not what they do 'instead of' something else. No 'vs', no 'A or B'.",
+  "variable_tested": "The specific creative element being tested — one thing only. Format: '[element] · Stage: [Stop/Hold/Click] · Format: [Video/Image]'",
+  "expected_outcome": "{metric} ≥ [number] (60-day cohort avg ~{avg_fmt})",
   "hypothesis_category": "[identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory]"
 }}
 
@@ -626,6 +626,7 @@ def create_hypothesis(payload: HypothesisCreate, db: Session = Depends(get_db)) 
                 "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
         db.rollback()
+        logger.exception("[create_hypothesis] failed: %s", str(e))
         return {"success": False, "data": None, "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()}
 
