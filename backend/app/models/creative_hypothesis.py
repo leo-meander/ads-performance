@@ -24,7 +24,8 @@ class CreativeHypothesis(TimestampMixin, Base):
 
     # Hypothesis
     hypothesis = Column(Text, nullable=False)
-    variable_tested = Column(Text, nullable=True)
+    variable_tested = Column(Text, nullable=True)   # A/B: "X vs Y"; null = benchmark test
+    baseline = Column(Text, nullable=True)           # benchmark: "60-day avg CTR · Solo · TW = 2.1% (n=47)"
     primary_kpi = Column(String(50), nullable=True)
     secondary_kpi = Column(String(50), nullable=True)
     expected_outcome = Column(Text, nullable=True)

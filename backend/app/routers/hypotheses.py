@@ -48,7 +48,8 @@ class HypothesisCreate(BaseModel):
     target_audience: Optional[str] = None
     market: Optional[str] = None
     hypothesis: str
-    variable_tested: Optional[str] = None
+    variable_tested: Optional[str] = None   # A/B: "X vs Y"; omit for benchmark test
+    baseline: Optional[str] = None          # benchmark: human-readable description of the baseline
     # Layer A verdict setup
     funnel_stage: Optional[str] = None        # Stop|Hold|Click|Downstream
     format: Optional[str] = None             # Image|Video
@@ -129,6 +130,7 @@ def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_sta
         "market": h.market,
         "hypothesis": h.hypothesis,
         "variable_tested": h.variable_tested,
+        "baseline": h.baseline,
         "primary_kpi": h.primary_kpi,
         "secondary_kpi": h.secondary_kpi,
         "expected_outcome": h.expected_outcome,
@@ -588,13 +590,27 @@ def hypothesis_summary(branch_name: str, db: Session = Depends(get_db)) -> dict[
 
 
 @router.get("/benchmark/{branch_name}/{metric}")
-def metric_benchmark(branch_name: str, metric: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Return 60-day average of a creative metric for a branch (used to auto-fill win_threshold)."""
+def metric_benchmark(
+    branch_name: str,
+    metric: str,
+    ta: Optional[str] = None,
+    country: Optional[str] = None,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return 60-day average of a creative metric for a branch.
+
+    Optional query params:
+    - ta: target audience (Solo/Couple/Friend/Group/Business) — filters campaigns by parsed TA
+    - country: ISO alpha-2 (e.g. TW, VN) — filters ad_sets by parsed country
+
+    Narrowing by ta+country gives a tighter baseline for benchmark hypotheses.
+    """
     try:
         from datetime import date, timedelta
         from sqlalchemy import func, and_
         from app.models.metrics import MetricsCache
         from app.models.campaign import Campaign
+        from app.models.ad_set import AdSet
 
         SUPPORTED = {"hook_rate", "thumb_stop_rate", "hold_rate", "CTR", "ctr", "booking_rate"}
         if metric not in SUPPORTED:
@@ -604,7 +620,7 @@ def metric_benchmark(branch_name: str, metric: str, db: Session = Depends(get_db
 
         cutoff = date.today() - timedelta(days=60)
 
-        # Join metrics_cache → campaigns to filter by branch
+        # Base query: join metrics_cache → campaigns to filter by branch
         q = (
             db.query(MetricsCache)
             .join(Campaign, Campaign.id == MetricsCache.campaign_id)
@@ -615,6 +631,18 @@ def metric_benchmark(branch_name: str, metric: str, db: Session = Depends(get_db
                 MetricsCache.impressions > 0,
             )
         )
+
+        # Narrow by TA (parsed on campaign) if provided
+        if ta:
+            q = q.filter(Campaign.ta == ta)
+
+        # Narrow by country (parsed on adset) if provided
+        if country:
+            q = (
+                q.join(AdSet, AdSet.id == MetricsCache.ad_set_id)
+                .filter(AdSet.country == country.upper())
+            )
+
         rows = q.all()
 
         if not rows:
@@ -658,6 +686,8 @@ def metric_benchmark(branch_name: str, metric: str, db: Session = Depends(get_db
                 "sample_size": len(values),
                 "unit": "percent",
                 "period_days": 60,
+                "ta": ta or None,
+                "country": country or None,
             },
             "error": None,
             "timestamp": datetime.now(timezone.utc).isoformat(),

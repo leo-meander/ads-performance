@@ -205,7 +205,7 @@ function AnglesPageInner() {
     expected_outcome: '',
     funnel_stage: '', format: '', primary_metric: '',
     win_threshold: '', min_sample: '5',
-    combo_id: '',
+    combo_id: '', baseline: '',
   })
 
   // Learning dashboard state
@@ -266,14 +266,22 @@ function AnglesPageInner() {
 
   // Auto-fetch benchmark win threshold
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
-  const fetchBenchmark = (branch: string, metric: string) => {
+  const fetchBenchmark = (branch: string, metric: string, ta?: string, country?: string) => {
     if (!branch || !metric) return
     setBenchmarkLoading(true)
-    fetch(`${API_BASE}/api/hypotheses/benchmark/${encodeURIComponent(branch)}/${encodeURIComponent(metric)}`, { credentials: 'include' })
+    const p = new URLSearchParams()
+    if (ta) p.set('ta', ta)
+    if (country) p.set('country', country)
+    const qs = p.toString() ? `?${p}` : ''
+    fetch(`${API_BASE}/api/hypotheses/benchmark/${encodeURIComponent(branch)}/${encodeURIComponent(metric)}${qs}`, { credentials: 'include' })
       .then(r => r.json())
       .then(d => {
         if (d.success && d.data.average !== null) {
-          setHypoForm(p => ({ ...p, win_threshold: String(d.data.average) }))
+          setHypoForm(prev => ({
+            ...prev,
+            win_threshold: String(d.data.average),
+            baseline: `60-day avg ${metric}${ta ? ` · ${ta}` : ''}${country ? ` · ${country}` : ''} = ${d.data.average}% (n=${d.data.sample_size})`,
+          }))
         }
       })
       .catch(() => {})
@@ -399,7 +407,7 @@ function AnglesPageInner() {
     }).then(r => r.json()).then(d => {
       if (d.success) {
         setShowCreateHypo(false)
-        setHypoForm({ branch_name: '', human_desire: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '', funnel_stage: '', format: '', primary_metric: '', win_threshold: '', min_sample: '5', combo_id: '' })
+        setHypoForm({ branch_name: '', human_desire: '', creative_angle: '', hypothesis_category: '', customer_insight: '', target_audience: '', market: '', hypothesis: '', variable_tested: '', primary_kpi: 'CTR', secondary_kpi: '', expected_outcome: '', funnel_stage: '', format: '', primary_metric: '', win_threshold: '', min_sample: '5', combo_id: '', baseline: '' })
         setComboSearch(''); setComboResults([])
         fetchHypotheses()
       }
@@ -847,7 +855,7 @@ function AnglesPageInner() {
                           const stage = e.target.value
                           const metric = FUNNEL_METRICS[stage]?.[hypoForm.format] || ''
                           setHypoForm(p => ({ ...p, funnel_stage: stage, primary_metric: metric, win_threshold: '' }))
-                          if (hypoForm.branch_name && hypoForm.format && metric) fetchBenchmark(hypoForm.branch_name, metric)
+                          if (hypoForm.branch_name && hypoForm.format && metric) fetchBenchmark(hypoForm.branch_name, metric, hypoForm.target_audience || undefined, hypoForm.market || undefined)
                         }}
                         className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
                       >
@@ -863,7 +871,7 @@ function AnglesPageInner() {
                           const fmt = e.target.value
                           const metric = FUNNEL_METRICS[hypoForm.funnel_stage]?.[fmt] || ''
                           setHypoForm(p => ({ ...p, format: fmt, primary_metric: metric, win_threshold: '' }))
-                          if (hypoForm.branch_name && hypoForm.funnel_stage && metric) fetchBenchmark(hypoForm.branch_name, metric)
+                          if (hypoForm.branch_name && hypoForm.funnel_stage && metric) fetchBenchmark(hypoForm.branch_name, metric, hypoForm.target_audience || undefined, hypoForm.market || undefined)
                         }}
                         className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white"
                       >
@@ -948,11 +956,33 @@ function AnglesPageInner() {
 
                 <div><label className="block text-xs text-gray-500 mb-1">Hypothesis *</label>
                   <textarea value={hypoForm.hypothesis} onChange={e => setHypoForm(p => ({ ...p, hypothesis: e.target.value }))} rows={2} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="We believe that showing guests recovering rather than arriving will resonate more with burnout-prone urban audiences." /></div>
+                {/* A/B vs Benchmark toggle hint */}
+                <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 text-[11px] text-gray-400 leading-relaxed">
+                  <span className="font-medium text-gray-500">A/B test</span> — fill Variable Tested (X vs Y run simultaneously) &nbsp;·&nbsp;
+                  <span className="font-medium text-gray-500">Benchmark test</span> — leave Variable Tested empty, baseline auto-fills from your 60-day TA+Country average
+                </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <div><label className="block text-xs text-gray-500 mb-1">Variable Tested</label>
-                    <input value={hypoForm.variable_tested} onChange={e => setHypoForm(p => ({ ...p, variable_tested: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Social scene vs Room scene" /></div>
+                  <div>
+                    <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
+                      Variable Tested
+                      <Tip text="A/B only: describe the single thing you're changing (e.g. 'Solo arrival vs Group party opening'). Leave empty for a benchmark test — comparing against your own 60-day historical average instead." wide />
+                    </label>
+                    <input value={hypoForm.variable_tested} onChange={e => setHypoForm(p => ({ ...p, variable_tested: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="(leave empty for benchmark test)" />
+                  </div>
                   <div><label className="block text-xs text-gray-500 mb-1">Expected Outcome</label>
-                    <input value={hypoForm.expected_outcome} onChange={e => setHypoForm(p => ({ ...p, expected_outcome: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="+20% CTR" /></div>
+                    <input value={hypoForm.expected_outcome} onChange={e => setHypoForm(p => ({ ...p, expected_outcome: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="+20% CTR vs baseline" /></div>
+                </div>
+                <div>
+                  <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
+                    Baseline
+                    <Tip text="Auto-filled from the 60-day average for this branch + TA + country. For benchmark tests this is your comparison point. Narrower filter (TA+country) = tighter baseline = less noise." wide />
+                  </label>
+                  <input
+                    value={hypoForm.baseline}
+                    onChange={e => setHypoForm(p => ({ ...p, baseline: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-500"
+                    placeholder="Auto-fills when you pick Stage + Format above…"
+                  />
                 </div>
                 {/* Link to Creative Library combo */}
                 <div>
