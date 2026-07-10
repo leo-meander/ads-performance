@@ -1016,34 +1016,6 @@ function AnglesPageInner() {
 
                 <div><label className="block text-xs text-gray-500 mb-1">Hypothesis *</label>
                   <textarea value={hypoForm.hypothesis} onChange={e => setHypoForm(p => ({ ...p, hypothesis: e.target.value }))} rows={2} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="We believe that showing guests recovering rather than arriving will resonate more with burnout-prone urban audiences." /></div>
-                {/* A/B vs Benchmark toggle hint */}
-                <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2 text-[11px] text-gray-400 leading-relaxed">
-                  <span className="font-medium text-gray-500">A/B test</span> — fill Variable Tested (X vs Y run simultaneously) &nbsp;·&nbsp;
-                  <span className="font-medium text-gray-500">Benchmark test</span> — leave Variable Tested empty, baseline auto-fills from your 60-day TA+Country average
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
-                      Variable Tested
-                      <Tip text="A/B only: describe the single thing you're changing (e.g. 'Solo arrival vs Group party opening'). Leave empty for a benchmark test — comparing against your own 60-day historical average instead." wide />
-                    </label>
-                    <input value={hypoForm.variable_tested} onChange={e => setHypoForm(p => ({ ...p, variable_tested: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="(leave empty for benchmark test)" />
-                  </div>
-                  <div><label className="block text-xs text-gray-500 mb-1">Expected Outcome</label>
-                    <input value={hypoForm.expected_outcome} onChange={e => setHypoForm(p => ({ ...p, expected_outcome: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="+20% CTR vs baseline" /></div>
-                </div>
-                <div>
-                  <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
-                    Baseline
-                    <Tip text="Auto-filled from the 60-day average for this branch + TA + country. For benchmark tests this is your comparison point. Narrower filter (TA+country) = tighter baseline = less noise." wide />
-                  </label>
-                  <input
-                    value={hypoForm.baseline}
-                    onChange={e => setHypoForm(p => ({ ...p, baseline: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-500"
-                    placeholder="Auto-fills when you pick Stage + Format above…"
-                  />
-                </div>
                 {/* Link to Creative Library combos (multi-select) */}
                 <div>
                   <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
