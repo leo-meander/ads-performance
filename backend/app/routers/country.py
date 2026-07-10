@@ -105,7 +105,7 @@ def _no_double_count_filter():
     return MetricsCache.ad_set_id.is_(None)
 
 
-def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage, account_id, account_ids=None):
+def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage, account_id, account_ids=None, campaign_type=None):
     """Apply common filters to a metrics query (already joined with Campaign + AdSet)."""
     # Exclude ad-level rows; for campaign-level rows, only keep when the
     # campaign has no AdSets (PMax). Avoids double-counting Search.
@@ -126,6 +126,9 @@ def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage
     elif account_ids is not None:
         # empty list => return no rows
         q = q.filter(Campaign.account_id.in_(account_ids or ["__no_match__"]))
+    # campaign_type=lead → campaigns whose name contains "Lea" (Lead objective).
+    if campaign_type == "lead":
+        q = q.filter(Campaign.name.ilike("%Lea%"))
     # Valid country codes: 2-letter ISO, or the "ALL" multi-country marker.
     # Excludes NULL and the "Unknown" sentinel from failed parses.
     q = q.filter(
@@ -231,6 +234,7 @@ def country_kpi_summary(
     funnel_stage: str = Query(None),
     account_id: str = Query(None, description="Branch filter — ad_accounts.id"),
     branches: str = Query(None, description="Comma-separated branch names"),
+    campaign_type: str = Query(None, description="'lead' to scope to Lead campaigns (name contains Lea)"),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -256,12 +260,12 @@ def country_kpi_summary(
 
         # Current period
         q = _base_metrics_query(db)
-        q = _apply_common_filters(q, country, platform, df, dt, funnel_stage, account_id, scoped_ids)
+        q = _apply_common_filters(q, country, platform, df, dt, funnel_stage, account_id, scoped_ids, campaign_type)
         rows = q.group_by(cc, Campaign.account_id, AdAccount.currency).all()
 
         # Previous period
         q_prev = _base_metrics_query(db)
-        q_prev = _apply_common_filters(q_prev, country, platform, prev_from, prev_to, funnel_stage, account_id, scoped_ids)
+        q_prev = _apply_common_filters(q_prev, country, platform, prev_from, prev_to, funnel_stage, account_id, scoped_ids, campaign_type)
         prev_rows = q_prev.group_by(cc, Campaign.account_id, AdAccount.currency).all()
 
         curr_by_country = _aggregate_country_rows(rows, convert_to_vnd)
@@ -355,6 +359,7 @@ def daily_spend_series(
     funnel_stage: str = Query(None),
     account_id: str = Query(None),
     branches: str = Query(None),
+    campaign_type: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -392,7 +397,7 @@ def daily_spend_series(
             .join(AdAccount, AdAccount.id == Campaign.account_id)
             .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
         )
-        q = _apply_common_filters(q, country, platform, df, dt, funnel_stage, account_id, scoped_ids)
+        q = _apply_common_filters(q, country, platform, df, dt, funnel_stage, account_id, scoped_ids, campaign_type)
         rows = q.group_by(MetricsCache.date, AdAccount.currency).all()
 
         agg: dict[str, dict] = {}
@@ -675,6 +680,7 @@ def country_comparison(
     date_to: str = Query(None),
     account_id: str = Query(None),
     branches: str = Query(None),
+    campaign_type: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -709,6 +715,8 @@ def country_comparison(
                 q = q.filter(MetricsCache.platform == platform)
             if ta:
                 q = q.filter(Campaign.ta == ta)
+            if campaign_type == "lead":
+                q = q.filter(Campaign.name.ilike("%Lea%"))
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:
@@ -759,6 +767,7 @@ def country_campaign_breakdown(
     funnel_stage: str = Query(None),
     account_id: str = Query(None),
     branches: str = Query(None),
+    campaign_type: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -829,6 +838,8 @@ def country_campaign_breakdown(
                 q = q.filter(MetricsCache.platform == platform)
             if funnel_stage:
                 q = q.filter(Campaign.funnel_stage == funnel_stage.upper())
+            if campaign_type == "lead":
+                q = q.filter(Campaign.name.ilike("%Lea%"))
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:
@@ -964,6 +975,7 @@ def breakdown_by_platform(
     date_to: str = Query(None),
     account_id: str = Query(None),
     branches: str = Query(None),
+    campaign_type: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -1000,7 +1012,7 @@ def breakdown_by_platform(
                 .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
             )
             q = _apply_common_filters(q, country, platform, d_from, d_to,
-                                      funnel_stage, account_id, scoped_ids)
+                                      funnel_stage, account_id, scoped_ids, campaign_type)
             return q.group_by(MetricsCache.platform, AdAccount.currency).all()
 
         def _fold(rows):
@@ -1047,6 +1059,7 @@ def breakdown_by_funnel(
     date_to: str = Query(None),
     account_id: str = Query(None),
     branches: str = Query(None),
+    campaign_type: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -1085,7 +1098,7 @@ def breakdown_by_funnel(
                 .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
             )
             q = _apply_common_filters(q, country, platform, d_from, d_to,
-                                      funnel_stage, account_id, scoped_ids)
+                                      funnel_stage, account_id, scoped_ids, campaign_type)
             return q.group_by(Campaign.funnel_stage, AdAccount.currency).all()
 
         def _fold(rows):
@@ -1134,6 +1147,7 @@ def breakdown_by_branch(
     date_to: str = Query(None),
     account_id: str = Query(None),
     branches: str = Query(None),
+    campaign_type: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -1172,7 +1186,7 @@ def breakdown_by_branch(
                 .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
             )
             q = _apply_common_filters(q, country, platform, d_from, d_to,
-                                      funnel_stage, account_id, scoped_ids)
+                                      funnel_stage, account_id, scoped_ids, campaign_type)
             return q.group_by(
                 Campaign.account_id, AdAccount.account_name, AdAccount.currency,
             ).all()
