@@ -526,8 +526,10 @@ def get_dashboard_by_account(
 
 
 def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | None,
-                      account_id: str | None = None, account_ids: list[str] | None = None):
+                      account_id: str | None = None, account_ids: list[str] | None = None,
+                      campaign_type: str | None = None):
     """Aggregate funnel metrics for a date range."""
+    is_lead = campaign_type == "lead"
     q = db.query(
         func.sum(MetricsCache.impressions).label("impressions"),
         func.sum(MetricsCache.clicks).label("clicks"),
@@ -535,6 +537,8 @@ def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | Non
         func.sum(MetricsCache.add_to_cart).label("add_to_cart"),
         func.sum(MetricsCache.checkouts).label("checkouts"),
         func.sum(MetricsCache.conversions).label("bookings"),
+        func.sum(MetricsCache.landing_page_views).label("landing_page_views"),
+        func.sum(MetricsCache.leads).label("leads"),
     ).join(Campaign, MetricsCache.campaign_id == Campaign.id)
 
     # Campaign-level only — exclude adset/ad rows to prevent triple counting
@@ -546,8 +550,20 @@ def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | Non
         q = q.filter(Campaign.account_id == account_id)
     elif account_ids:
         q = q.filter(Campaign.account_id.in_(account_ids))
+    if campaign_type == "lead":
+        q = q.filter(Campaign.name.ilike("%Lea%"))
+    elif campaign_type == "sale":
+        q = q.filter(~Campaign.name.ilike("%Lea%"))
 
     row = q.one()
+    if is_lead:
+        return {
+            "impressions": int(row.impressions or 0),
+            "clicks": int(row.clicks or 0),
+            "landing_page_views": int(row.landing_page_views or 0),
+            "leads": int(row.leads or 0),
+            "bookings": int(row.bookings or 0),
+        }
     return {
         "impressions": int(row.impressions or 0),
         "clicks": int(row.clicks or 0),
@@ -565,13 +581,12 @@ def get_dashboard_funnel(
     platform: str | None = None,
     account_id: str | None = None,
     branches: str | None = None,
+    campaign_type: str | None = None,
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
-    """Funnel metrics: Impression → Clicks → Search → Add to cart → Checkout → Booking.
-
-    Returns current + previous period with % change and drop-off rates.
-    """
+    """Funnel metrics. Sale: Impression→Click→Search→Add to cart→Checkout→Booking.
+    Lead: Impression→Click→Landing Page→Form Fill→Purchase."""
     try:
         branch_list = [b.strip() for b in branches.split(",") if b.strip()] if branches else None
         ok, scoped_ids, err = scoped_account_ids(
@@ -595,12 +610,16 @@ def get_dashboard_funnel(
         prev_to = date_from - timedelta(days=1)
         prev_from = prev_to - timedelta(days=period_days - 1)
 
-        current = _aggregate_funnel(db, date_from, date_to, platform, account_id, branch_account_ids)
-        previous = _aggregate_funnel(db, prev_from, prev_to, platform, account_id, branch_account_ids)
+        current = _aggregate_funnel(db, date_from, date_to, platform, account_id, branch_account_ids, campaign_type)
+        previous = _aggregate_funnel(db, prev_from, prev_to, platform, account_id, branch_account_ids, campaign_type)
 
         # Build funnel steps with drop-off
-        step_keys = ["impressions", "clicks", "searches", "add_to_cart", "checkouts", "bookings"]
-        step_labels = ["Impression", "Clicks", "Search", "Add to cart", "Checkout", "Booking"]
+        if campaign_type == "lead":
+            step_keys = ["impressions", "clicks", "landing_page_views", "leads", "bookings"]
+            step_labels = ["Impression", "Click", "Landing Page", "Form Fill", "Purchase"]
+        else:
+            step_keys = ["impressions", "clicks", "searches", "add_to_cart", "checkouts", "bookings"]
+            step_labels = ["Impression", "Clicks", "Search", "Add to cart", "Checkout", "Booking"]
 
         steps = []
         for i, key in enumerate(step_keys):
