@@ -1692,7 +1692,7 @@ function AnglesPageInner() {
 
                 // 4. Funnel bottleneck
                 const funnelEntries = Object.entries(learningDashboard.funnel_failure_map)
-                const worstStage = funnelEntries.sort(([, a], [, b]) => b.refute_rate - a.refute_rate)[0]
+                const worstStage = funnelEntries.sort((x, y) => y[1].refute_rate - x[1].refute_rate)[0]
                 if (worstStage && worstStage[1].refute_rate >= 50 && worstStage[1].total >= 2) {
                   const stageHints: Record<string, string> = {
                     Stop: 'Hook is weak — first 3 seconds not stopping the scroll',
