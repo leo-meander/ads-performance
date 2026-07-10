@@ -91,7 +91,7 @@ interface Hypothesis {
 interface Account { id: string; account_name: string; platform: string }
 
 interface LearningDashboard {
-  branch_name: string; total_experiments: number; total_running: number; total_validated: number; total_refuted: number; min_sample: number
+  branch_name: string; total_hypotheses: number; total_pending: number; total_experiments: number; total_running: number; total_validated: number; total_refuted: number; min_sample: number
   top_desires: { desire: string; win_rate: number; experiments: number; wins: number; sufficient: boolean }[]
   top_drivers: { category: string; raw: string; win_rate: number; experiments: number; sufficient: boolean }[]
   angle_win_rates: { angle: string; wins: number; total: number; win_rate: number; sufficient: boolean }[]
@@ -1570,10 +1570,12 @@ function AnglesPageInner() {
             </div>
           ) : (
             <div className="space-y-6">
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-6 gap-4">
                 {[
-                  { label: 'Concluded', value: learningDashboard.total_experiments, color: 'text-gray-800' },
+                  { label: 'Total', value: learningDashboard.total_hypotheses, color: 'text-gray-800' },
+                  { label: 'Pending', value: learningDashboard.total_pending, color: 'text-gray-400' },
                   { label: 'Running', value: learningDashboard.total_running, color: 'text-blue-600' },
+                  { label: 'Concluded', value: learningDashboard.total_experiments, color: 'text-gray-700' },
                   { label: 'Validated', value: learningDashboard.total_validated, color: 'text-green-700' },
                   { label: 'Refuted', value: learningDashboard.total_refuted, color: 'text-red-600' },
                 ].map(s => (

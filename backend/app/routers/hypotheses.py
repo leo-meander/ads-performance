@@ -991,7 +991,6 @@ def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[
 
         all_hyps = db.query(CreativeHypothesis).filter(
             CreativeHypothesis.branch_name == branch_name,
-            CreativeHypothesis.status.in_(["validated", "refuted", "inconclusive", "running"]),
         ).all()
 
         # ── Desire Win Rate ──────────────────────────────────────────────
@@ -1103,6 +1102,8 @@ def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[
             "success": True,
             "data": {
                 "branch_name": branch_name,
+                "total_hypotheses": len(all_hyps),
+                "total_pending": sum(1 for h in all_hyps if h.status == "pending"),
                 "total_experiments": len(concluded),
                 "total_running": sum(1 for h in all_hyps if h.status == "running"),
                 "total_validated": sum(1 for h in concluded if h.status == "validated"),
