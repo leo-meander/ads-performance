@@ -977,21 +977,39 @@ def metric_benchmark(
 
 
 @router.get("/learning-dashboard/{branch_name}")
-def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+def learning_dashboard(
+    branch_name: str,
+    market: str | None = None,
+    target_audience: str | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
     """Learning Dashboard — win rates by desire, category, angle, and funnel-stage failure map."""
     try:
         from collections import defaultdict
 
         MIN_SAMPLE = 5  # spec §5: below this, result is greyed "insufficient data"
 
-        concluded = db.query(CreativeHypothesis).filter(
+        base_q = db.query(CreativeHypothesis).filter(
             CreativeHypothesis.branch_name == branch_name,
+        )
+        if market:
+            base_q = base_q.filter(CreativeHypothesis.market == market)
+        if target_audience:
+            base_q = base_q.filter(CreativeHypothesis.target_audience == target_audience)
+
+        concluded = base_q.filter(
             CreativeHypothesis.status.in_(["validated", "refuted"]),
         ).all()
 
-        all_hyps = db.query(CreativeHypothesis).filter(
-            CreativeHypothesis.branch_name == branch_name,
-        ).all()
+        all_hyps = base_q.all()
+
+        # Auto-detect "running": any hypothesis with actual spend data is effectively running
+        # even if status was never manually updated from "pending"
+        def is_running(h: CreativeHypothesis) -> bool:
+            return h.status == "running" or (h.actual_spend is not None and h.actual_spend > 0)
+
+        def is_pending(h: CreativeHypothesis) -> bool:
+            return h.status == "pending" and not (h.actual_spend is not None and h.actual_spend > 0)
 
         # ── Desire Win Rate ──────────────────────────────────────────────
         # spec: validated / (validated + refuted) per desire, not raw count
@@ -1103,9 +1121,9 @@ def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[
             "data": {
                 "branch_name": branch_name,
                 "total_hypotheses": len(all_hyps),
-                "total_pending": sum(1 for h in all_hyps if h.status == "pending"),
+                "total_pending": sum(1 for h in all_hyps if is_pending(h)),
                 "total_experiments": len(concluded),
-                "total_running": sum(1 for h in all_hyps if h.status == "running"),
+                "total_running": sum(1 for h in all_hyps if is_running(h)),
                 "total_validated": sum(1 for h in concluded if h.status == "validated"),
                 "total_refuted": sum(1 for h in concluded if h.status == "refuted"),
                 "min_sample": MIN_SAMPLE,
@@ -1125,7 +1143,7 @@ def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[
                         "format": h.format,
                         "target_audience": h.target_audience,
                     }
-                    for h in all_hyps if h.status == "pending"
+                    for h in all_hyps if is_pending(h)
                 ],
                 # Category coverage — which categories have been tested (concluded)
                 "category_counts": {

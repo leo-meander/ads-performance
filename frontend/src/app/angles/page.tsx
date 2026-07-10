@@ -264,6 +264,8 @@ function AnglesPageInner() {
   // Learning dashboard state
   const [learningDashboard, setLearningDashboard] = useState<LearningDashboard | null>(null)
   const [ldBranch, setLdBranch] = useState('Meander Taipei')
+  const [ldMarket, setLdMarket] = useState('')
+  const [ldTA, setLdTA] = useState('')
   const [ldLoading, setLdLoading] = useState(false)
 
   // Analyze brief state
@@ -463,9 +465,13 @@ function AnglesPageInner() {
     return map
   }, [hypotheses])
 
-  const fetchLearningDashboard = (branch: string) => {
+  const fetchLearningDashboard = (branch: string, market?: string, ta?: string) => {
     setLdLoading(true)
-    fetch(`${API_BASE}/api/hypotheses/learning-dashboard/${encodeURIComponent(branch)}`, { credentials: 'include' })
+    const p = new URLSearchParams()
+    if (market) p.set('market', market)
+    if (ta) p.set('target_audience', ta)
+    const qs = p.toString() ? `?${p}` : ''
+    fetch(`${API_BASE}/api/hypotheses/learning-dashboard/${encodeURIComponent(branch)}${qs}`, { credentials: 'include' })
       .then(r => r.json()).then(d => { if (d.success) setLearningDashboard(d.data) }).catch(() => {}).finally(() => setLdLoading(false))
   }
 
@@ -495,7 +501,7 @@ function AnglesPageInner() {
     fetchHypotheses()
   }, [])
 
-  useEffect(() => { if (tab === 'dashboard') fetchLearningDashboard(ldBranch) }, [tab, ldBranch])
+  useEffect(() => { if (tab === 'dashboard') fetchLearningDashboard(ldBranch, ldMarket, ldTA) }, [tab, ldBranch, ldMarket, ldTA])
 
   // Pre-fill from URL params: /angles?tab=hypotheses&combo_id=CMB-XXX
   useEffect(() => {
@@ -1560,10 +1566,23 @@ function AnglesPageInner() {
       {/* ── TAB: LEARNING DASHBOARD ── */}
       {tab === 'dashboard' && (
         <>
-          <div className="flex items-center gap-3 mb-6">
+          <div className="flex flex-wrap items-center gap-2 mb-6">
             <select value={ldBranch} onChange={e => setLdBranch(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm font-medium">
               {BRANCH_NAMES.map(b => <option key={b}>{b}</option>)}
             </select>
+            <select value={ldTA} onChange={e => setLdTA(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+              <option value="">All TA</option>
+              {['Solo', 'Couple', 'Friend', 'Group', 'Business'].map(t => <option key={t}>{t}</option>)}
+            </select>
+            <select value={ldMarket} onChange={e => setLdMarket(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+              <option value="">All Markets</option>
+              {['VN', 'TW', 'JP', 'SG', 'HK', 'AU', 'US', 'GB', 'DE', 'FR', 'KR', 'TH', 'PH', 'MY', 'ID'].map(m => <option key={m}>{m}</option>)}
+            </select>
+            {(ldTA || ldMarket) && (
+              <button onClick={() => { setLdTA(''); setLdMarket('') }} className="px-2.5 py-1.5 text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-lg">
+                Clear
+              </button>
+            )}
             {ldLoading && <span className="text-xs text-gray-400">Loading...</span>}
           </div>
 
