@@ -338,6 +338,51 @@ function AnglesPageInner() {
       .finally(() => setBenchmarkLoading(false))
   }
 
+  // Edit hypothesis state
+  const [editingHypoId, setEditingHypoId] = useState<string | null>(null)
+  const [editHypoForm, setEditHypoForm] = useState<Partial<Hypothesis>>({})
+  const [editSaving, setEditSaving] = useState(false)
+
+  const openEditHypo = (h: Hypothesis) => {
+    setEditingHypoId(h.hypothesis_id)
+    setEditHypoForm({
+      hypothesis: h.hypothesis,
+      hypothesis_category: h.hypothesis_category || '',
+      customer_insight: h.customer_insight || '',
+      human_desire: h.human_desire || '',
+      creative_angle: h.creative_angle || '',
+      target_audience: h.target_audience || '',
+      market: h.market || '',
+      variable_tested: h.variable_tested || '',
+      expected_outcome: h.expected_outcome || '',
+      funnel_stage: h.funnel_stage || '',
+      format: h.format || '',
+      primary_kpi: h.primary_kpi || '',
+      secondary_kpi: h.secondary_kpi || '',
+    })
+  }
+
+  const saveEditHypo = (hypothesisId: string) => {
+    setEditSaving(true)
+    const body: Record<string, string | null> = {}
+    for (const [k, v] of Object.entries(editHypoForm)) {
+      body[k] = (v as string) || null
+    }
+    fetch(`${API_BASE}/api/hypotheses/${hypothesisId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', body: JSON.stringify(body),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          setHypotheses(prev => prev.map(h => h.hypothesis_id === hypothesisId ? { ...h, ...d.data } : h))
+          setEditingHypoId(null)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setEditSaving(false))
+  }
+
   // AI suggestion state
   const [suggestions, setSuggestions] = useState<{hypothesis: string; variable_tested: string; expected_outcome: string; customer_insight?: string; rationale: string}[]>([])
   const [suggestLoading, setSuggestLoading] = useState(false)
@@ -1195,6 +1240,11 @@ function AnglesPageInner() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap mb-2">
                           <span className="font-mono text-xs text-gray-400">{h.hypothesis_id}</span>
+                          {canEdit && editingHypoId !== h.hypothesis_id && (
+                            <button onClick={() => openEditHypo(h)} className="text-gray-300 hover:text-blue-500 transition-colors" title="Edit hypothesis">
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                            </button>
+                          )}
                           <span className="text-xs text-gray-500">{h.branch_name}</span>
                           {h.hypothesis_category && (
                             <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${CAT_COLOR[h.hypothesis_category] || 'bg-gray-50 text-gray-600 border-gray-200'}`}>
@@ -1429,6 +1479,69 @@ function AnglesPageInner() {
                           <div className={`rounded-lg px-3 py-2 border text-xs ${nextStep.color}`}>
                             <span className="mr-1">{nextStep.icon}</span>
                             <span className="font-semibold">Next: </span>{nextStep.text}
+                          </div>
+                        )}
+
+                        {editingHypoId === h.hypothesis_id && (
+                          <div className="mt-4 border-t border-blue-100 pt-4 space-y-3">
+                            <p className="text-[10px] text-blue-500 uppercase tracking-wider font-semibold">Edit Hypothesis</p>
+                            <div>
+                              <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Hypothesis statement</label>
+                              <textarea rows={3} value={editHypoForm.hypothesis || ''} onChange={e => setEditHypoForm(p => ({ ...p, hypothesis: e.target.value }))}
+                                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-800" />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Customer insight</label>
+                                <input value={editHypoForm.customer_insight || ''} onChange={e => setEditHypoForm(p => ({ ...p, customer_insight: e.target.value }))}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Human desire</label>
+                                <input value={editHypoForm.human_desire || ''} onChange={e => setEditHypoForm(p => ({ ...p, human_desire: e.target.value }))}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Creative angle</label>
+                                <input value={editHypoForm.creative_angle || ''} onChange={e => setEditHypoForm(p => ({ ...p, creative_angle: e.target.value }))}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Variable tested</label>
+                                <input value={editHypoForm.variable_tested || ''} onChange={e => setEditHypoForm(p => ({ ...p, variable_tested: e.target.value }))}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Expected outcome</label>
+                                <input value={editHypoForm.expected_outcome || ''} onChange={e => setEditHypoForm(p => ({ ...p, expected_outcome: e.target.value }))}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Target audience</label>
+                                <input value={editHypoForm.target_audience || ''} onChange={e => setEditHypoForm(p => ({ ...p, target_audience: e.target.value }))}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Market</label>
+                                <input value={editHypoForm.market || ''} onChange={e => setEditHypoForm(p => ({ ...p, market: e.target.value }))}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Primary KPI</label>
+                                <input value={editHypoForm.primary_kpi || ''} onChange={e => setEditHypoForm(p => ({ ...p, primary_kpi: e.target.value }))}
+                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                              </div>
+                            </div>
+                            <div className="flex gap-2 pt-1">
+                              <button onClick={() => saveEditHypo(h.hypothesis_id)} disabled={editSaving}
+                                className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                                {editSaving ? 'Saving…' : 'Save'}
+                              </button>
+                              <button onClick={() => setEditingHypoId(null)}
+                                className="px-4 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50">
+                                Cancel
+                              </button>
+                            </div>
                           </div>
                         )}
                       </div>
