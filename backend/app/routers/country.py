@@ -126,9 +126,11 @@ def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage
     elif account_ids is not None:
         # empty list => return no rows
         q = q.filter(Campaign.account_id.in_(account_ids or ["__no_match__"]))
-    # campaign_type=lead → campaigns whose name contains "Lea" (Lead objective).
+    # campaign_type filter: lead = name contains "Lea"; sale = excludes "Lea"; all = no filter
     if campaign_type == "lead":
         q = q.filter(Campaign.name.ilike("%Lea%"))
+    elif campaign_type == "sale":
+        q = q.filter(~Campaign.name.ilike("%Lea%"))
     # Valid country codes: 2-letter ISO, or the "ALL" multi-country marker.
     # Excludes NULL and the "Unknown" sentinel from failed parses.
     q = q.filter(
@@ -717,6 +719,8 @@ def country_comparison(
                 q = q.filter(Campaign.ta == ta)
             if campaign_type == "lead":
                 q = q.filter(Campaign.name.ilike("%Lea%"))
+            elif campaign_type == "sale":
+                q = q.filter(~Campaign.name.ilike("%Lea%"))
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:
@@ -840,6 +844,8 @@ def country_campaign_breakdown(
                 q = q.filter(Campaign.funnel_stage == funnel_stage.upper())
             if campaign_type == "lead":
                 q = q.filter(Campaign.name.ilike("%Lea%"))
+            elif campaign_type == "sale":
+                q = q.filter(~Campaign.name.ilike("%Lea%"))
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:

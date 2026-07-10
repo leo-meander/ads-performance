@@ -46,7 +46,7 @@ function DashboardInner() {
   const highlightCampaignId = search.get('campaign') || ''
 
   // -------------------- filter state --------------------
-  const [campaignType, setCampaignType] = useState<'sale' | 'lead'>('sale')
+  const [campaignType, setCampaignType] = useState<'all' | 'sale' | 'lead'>('all')
   const [country, setCountry] = useState(initialCountry)
   const [platform, setPlatform] = useState(initialPlatform)
   const [funnelStage, setFunnelStage] = useState(initialFunnel)
@@ -102,6 +102,7 @@ function DashboardInner() {
     if (funnelStage) params.set('funnel_stage', funnelStage)
     if (branchParam) params.set('branches', branchParam)
     if (campaignType === 'lead') params.set('campaign_type', 'lead')
+    else if (campaignType === 'sale') params.set('campaign_type', 'sale')
     if (extra) {
       for (const [k, v] of Object.entries(extra)) {
         if (v) params.set(k, v)
@@ -312,6 +313,10 @@ function DashboardInner() {
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-blue-600">ADS Performance</h1>
           <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+            <button
+              onClick={() => setCampaignType('all')}
+              className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'all' ? 'bg-gray-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            >All</button>
             <button
               onClick={() => setCampaignType('sale')}
               className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'sale' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
