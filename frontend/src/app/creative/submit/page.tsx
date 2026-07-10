@@ -51,7 +51,7 @@ export default function CreateBatchAndSubmitPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [hypotheses, setHypotheses] = useState<HypothesisOption[]>([])
-  const [hypothesisId, setHypothesisId] = useState('')
+  const [hypothesisIds, setHypothesisIds] = useState<string[]>([])
 
   // Shared fields (same target across all versions)
   const [branchId, setBranchId] = useState('')
@@ -86,6 +86,7 @@ export default function CreateBatchAndSubmitPage() {
           if (d.success) setHypotheses((d.data.items || []).filter((h: HypothesisOption) => ['pending', 'running'].includes(h.status)))
         }).catch(() => {})
     }
+    setHypothesisIds([])
   }, [branchId, accounts])
 
   const toggleReviewer = (id: string) => setSelectedReviewers(prev => prev.includes(id) ? prev.filter(r => r !== id) : [...prev, id])
@@ -200,7 +201,7 @@ export default function CreateBatchAndSubmitPage() {
           reviewer_ids: selectedReviewers,
           deadline: deadline ? new Date(deadline).toISOString() : null,
           note: note.trim() || null,
-          hypothesis_id: hypothesisId || null,
+          hypothesis_ids: hypothesisIds.length > 0 ? hypothesisIds : undefined,
         }),
       })
       const data = await res.json()
@@ -425,29 +426,41 @@ export default function CreateBatchAndSubmitPage() {
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y" />
           </div>
 
-          {/* Hypothesis link */}
+          {/* Hypothesis link — multi-select */}
           <div>
             <label className="block text-xs text-gray-500 mb-1">
-              Linked Hypothesis <span className="text-gray-400">(optional)</span>
+              Linked Hypotheses <span className="text-gray-400">(optional, can select multiple)</span>
             </label>
             {!branchId ? (
               <p className="text-xs text-gray-400 italic">Select a branch first to see open hypotheses.</p>
             ) : hypotheses.length === 0 ? (
               <p className="text-xs text-gray-400 italic">No open hypotheses for this branch. <a href="/angles" className="text-indigo-500 hover:underline">Create one →</a></p>
             ) : (
-              <select value={hypothesisId} onChange={e => setHypothesisId(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="">— No hypothesis —</option>
-                {hypotheses.map(h => (
-                  <option key={h.hypothesis_id} value={h.hypothesis_id}>
-                    {h.hypothesis_id} · {h.hypothesis.slice(0, 80)}{h.hypothesis.length > 80 ? '…' : ''}
-                  </option>
-                ))}
-              </select>
+              <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-48 overflow-y-auto">
+                {hypotheses.map(h => {
+                  const selected = hypothesisIds.includes(h.hypothesis_id)
+                  return (
+                    <label key={h.hypothesis_id}
+                      className={`flex items-start gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-50 ${selected ? 'bg-indigo-50' : ''}`}>
+                      <input type="checkbox" checked={selected}
+                        onChange={() => setHypothesisIds(prev =>
+                          prev.includes(h.hypothesis_id) ? prev.filter(id => id !== h.hypothesis_id) : [...prev, h.hypothesis_id]
+                        )}
+                        className="mt-0.5 accent-indigo-600" />
+                      <div className="min-w-0">
+                        <span className="text-[10px] font-mono text-indigo-500 mr-1">{h.hypothesis_id}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full mr-1 ${h.status === 'running' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>{h.status}</span>
+                        <p className="text-xs text-gray-700 mt-0.5 line-clamp-2">{h.hypothesis}</p>
+                        {h.human_desire && <p className="text-[10px] text-gray-400 mt-0.5">{h.human_desire}</p>}
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
             )}
-            {hypothesisId && (
+            {hypothesisIds.length > 0 && (
               <p className="mt-1.5 text-[11px] text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md">
-                When approved, this hypothesis will auto-move to <strong>running</strong>.
+                {hypothesisIds.length} hypothesis{hypothesisIds.length > 1 ? 'es' : ''} linked — will auto-move to <strong>running</strong> when approved.
               </p>
             )}
           </div>

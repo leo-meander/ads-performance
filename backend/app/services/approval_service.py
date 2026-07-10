@@ -8,6 +8,7 @@ from app.config import settings
 from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.approval import ApprovalBatch, ApprovalComment, ApprovalReviewer, ApprovalReviewerHistory, ComboApproval
+from app.models.hypothesis_combo_link import HypothesisComboLink
 from app.models.user import User
 from app.services.email_service import render_approval_result_email, render_review_request_email
 from app.services.figma_service import ensure_template_from_url
@@ -30,15 +31,25 @@ def _snapshot_reviewers(db: Session, reviewers: list, round: int) -> None:
             ))
 
 
-def _sync_hypothesis_to_running(db: Session, hypothesis_id: str | None) -> None:
-    """When an approval is fully approved, move the linked hypothesis to 'running'."""
-    if not hypothesis_id:
-        return
+def _sync_hypothesis_to_running(db: Session, hypothesis_id: str | None, combo_short_id: str | None = None) -> None:
+    """When an approval is fully approved, move all linked hypotheses to 'running'."""
     from app.models.creative_hypothesis import CreativeHypothesis
-    hyp = db.query(CreativeHypothesis).filter(
-        CreativeHypothesis.hypothesis_id == hypothesis_id
-    ).first()
-    if hyp and hyp.status == "pending":
+    ids_to_sync: set[str] = set()
+    if hypothesis_id:
+        ids_to_sync.add(hypothesis_id)
+    # Also sync all hypotheses linked via junction table for this combo
+    if combo_short_id:
+        extra = [r.hypothesis_id for r in db.query(HypothesisComboLink.hypothesis_id).filter(
+            HypothesisComboLink.combo_id == combo_short_id
+        ).all()]
+        ids_to_sync.update(extra)
+    if not ids_to_sync:
+        return
+    hyps = db.query(CreativeHypothesis).filter(
+        CreativeHypothesis.hypothesis_id.in_(ids_to_sync),
+        CreativeHypothesis.status == "pending",
+    ).all()
+    for hyp in hyps:
         hyp.status = "running"
         db.add(hyp)
 
@@ -219,7 +230,8 @@ def record_decision(
         approval.status = "APPROVED"
         approval.resolved_at = now
         _notify_creator_of_result(db, approval, "APPROVED", None, email_tasks)
-        _sync_hypothesis_to_running(db, approval.hypothesis_id)
+        combo_obj = db.query(AdCombo).filter(AdCombo.id == approval.combo_id).first()
+        _sync_hypothesis_to_running(db, approval.hypothesis_id, combo_obj.combo_id if combo_obj else None)
 
     db.commit()
 
@@ -296,7 +308,8 @@ def record_branch_manager_approval(
 
     email_tasks: list = []
     _notify_creator_of_result(db, approval, "APPROVED", None, email_tasks)
-    _sync_hypothesis_to_running(db, approval.hypothesis_id)
+    bm_combo = db.query(AdCombo).filter(AdCombo.id == approval.combo_id).first()
+    _sync_hypothesis_to_running(db, approval.hypothesis_id, bm_combo.combo_id if bm_combo else None)
 
     db.commit()
 
@@ -728,6 +741,7 @@ def submit_batch(
     deadline: str | None = None,
     note: str | None = None,
     hypothesis_id: str | None = None,
+    hypothesis_ids: list[str] | None = None,
 ) -> ApprovalBatch:
     """Submit N combo versions of one target as a single review batch.
 
@@ -777,6 +791,9 @@ def submit_batch(
             .filter(ComboApproval.combo_id == combo.id)
             .scalar()
         )
+        # Primary hypothesis_id: first from hypothesis_ids list, or legacy field
+        all_hyp_ids = list({*(hypothesis_ids or []), *([hypothesis_id] if hypothesis_id else [])})
+        primary_hyp_id = all_hyp_ids[0] if all_hyp_ids else None
         approval = ComboApproval(
             batch_id=batch.id,
             combo_id=combo.id,
@@ -788,11 +805,19 @@ def submit_batch(
             working_file_url=v.get("working_file_url"),
             working_file_label=v.get("working_file_label"),
             note=(note or "").strip() or None,
-            hypothesis_id=hypothesis_id or None,
+            hypothesis_id=primary_hyp_id,
         )
         db.add(approval)
         db.flush()
         child_approvals.append((approval, combo))
+
+        # Create HypothesisComboLink for all hypotheses (deduped, skip if already exists)
+        for hid in all_hyp_ids:
+            exists = db.query(HypothesisComboLink).filter_by(
+                hypothesis_id=hid, combo_id=combo.combo_id
+            ).first()
+            if not exists:
+                db.add(HypothesisComboLink(hypothesis_id=hid, combo_id=combo.combo_id))
 
         for rid in reviewer_ids:
             db.add(ApprovalReviewer(
@@ -955,7 +980,8 @@ def record_batch_decision(
     if batch_status == "APPROVED":
         for child in children:
             if child.status == "APPROVED":
-                _sync_hypothesis_to_running(db, child.hypothesis_id)
+                batch_combo = db.query(AdCombo).filter(AdCombo.id == child.combo_id).first()
+                _sync_hypothesis_to_running(db, child.hypothesis_id, batch_combo.combo_id if batch_combo else None)
                 try:
                     _auto_queue_figma_render(db, child)
                 except Exception:
