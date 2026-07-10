@@ -46,7 +46,7 @@ function DashboardInner() {
   const highlightCampaignId = search.get('campaign') || ''
 
   // -------------------- filter state --------------------
-  const [campaignType, setCampaignType] = useState<'sale' | 'lead'>('sale')
+  const [campaignType, setCampaignType] = useState<'all' | 'sale' | 'lead'>('all')
   const [country, setCountry] = useState(initialCountry)
   const [platform, setPlatform] = useState(initialPlatform)
   const [funnelStage, setFunnelStage] = useState(initialFunnel)
@@ -102,6 +102,7 @@ function DashboardInner() {
     if (funnelStage) params.set('funnel_stage', funnelStage)
     if (branchParam) params.set('branches', branchParam)
     if (campaignType === 'lead') params.set('campaign_type', 'lead')
+    else if (campaignType === 'sale') params.set('campaign_type', 'sale')
     if (extra) {
       for (const [k, v] of Object.entries(extra)) {
         if (v) params.set(k, v)
@@ -312,6 +313,10 @@ function DashboardInner() {
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold text-blue-600">ADS Performance</h1>
           <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+            <button
+              onClick={() => setCampaignType('all')}
+              className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'all' ? 'bg-gray-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            >All</button>
             <button
               onClick={() => setCampaignType('sale')}
               className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'sale' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
@@ -553,7 +558,7 @@ function DashboardInner() {
       {funnelData.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
           <h2 className="text-sm font-semibold text-gray-700 mb-5">
-            Conversion Funnel
+            {campaignType === 'lead' ? 'Lead Funnel' : 'Conversion Funnel'}
             {country && <span className="text-gray-400 font-normal ml-2">— {countries.find(c => c.code === country)?.name || country}</span>}
           </h2>
           <div className="space-y-3">
@@ -575,7 +580,7 @@ function DashboardInner() {
                     </div>
                   )}
                   <div className="flex items-center gap-4">
-                    <div className="bg-blue-100 rounded-lg py-3 px-4 flex items-center justify-between transition-all"
+                    <div className={`rounded-lg py-3 px-4 flex items-center justify-between transition-all ${campaignType === 'lead' ? 'bg-orange-100' : 'bg-blue-100'}`}
                       style={{ width: `${widthPct}%`, minWidth: '180px' }}>
                       <span className="text-xs text-gray-600">{stage.name}</span>
                       <span className="text-lg font-bold text-gray-900 ml-2">{fmtNum(stage.value)}</span>

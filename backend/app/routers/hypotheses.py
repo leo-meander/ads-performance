@@ -669,6 +669,56 @@ def link_combos(hypothesis_id: str, payload: dict, db: Session = Depends(get_db)
         return {"success": False, "data": None, "error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+class HypothesisUpdate(BaseModel):
+    hypothesis: Optional[str] = None
+    hypothesis_category: Optional[str] = None
+    customer_insight: Optional[str] = None
+    human_desire: Optional[str] = None
+    creative_angle: Optional[str] = None
+    target_audience: Optional[str] = None
+    market: Optional[str] = None
+    variable_tested: Optional[str] = None
+    expected_outcome: Optional[str] = None
+    funnel_stage: Optional[str] = None
+    format: Optional[str] = None
+    primary_metric: Optional[str] = None
+    win_threshold: Optional[float] = None
+    min_sample: Optional[int] = None
+    primary_kpi: Optional[str] = None
+    secondary_kpi: Optional[str] = None
+    status: Optional[str] = None
+    branch_name: Optional[str] = None
+
+
+@router.patch("/{hypothesis_id}")
+def update_hypothesis(
+    hypothesis_id: str,
+    payload: HypothesisUpdate,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Edit core hypothesis fields (statement, category, insight, etc.)."""
+    try:
+        hyp = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.hypothesis_id == hypothesis_id
+        ).first()
+        if not hyp:
+            raise HTTPException(status_code=404, detail=f"Hypothesis not found: {hypothesis_id}")
+        if payload.status and payload.status not in HYPOTHESIS_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {payload.status}")
+        for field, value in payload.model_dump(exclude_none=True).items():
+            setattr(hyp, field, value)
+        db.commit()
+        db.refresh(hyp)
+        return {"success": True, "data": _serialize(hyp), "error": None,
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
 @router.patch("/{hypothesis_id}/result")
 def update_hypothesis_result(
     hypothesis_id: str,
@@ -941,7 +991,6 @@ def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[
 
         all_hyps = db.query(CreativeHypothesis).filter(
             CreativeHypothesis.branch_name == branch_name,
-            CreativeHypothesis.status.in_(["validated", "refuted", "inconclusive", "running"]),
         ).all()
 
         # ── Desire Win Rate ──────────────────────────────────────────────
@@ -1053,6 +1102,8 @@ def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[
             "success": True,
             "data": {
                 "branch_name": branch_name,
+                "total_hypotheses": len(all_hyps),
+                "total_pending": sum(1 for h in all_hyps if h.status == "pending"),
                 "total_experiments": len(concluded),
                 "total_running": sum(1 for h in all_hyps if h.status == "running"),
                 "total_validated": sum(1 for h in concluded if h.status == "validated"),
@@ -1063,6 +1114,26 @@ def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[
                 "angle_win_rates": angle_win_rates,
                 "funnel_failure_map": funnel_failure_map,
                 "recent_learnings": recent_learnings,
+                # Pending queue — so dashboard can show what's waiting to launch
+                "pending_hypotheses": [
+                    {
+                        "hypothesis_id": h.hypothesis_id,
+                        "hypothesis": h.hypothesis,
+                        "hypothesis_category": h.hypothesis_category,
+                        "human_desire": h.human_desire,
+                        "funnel_stage": h.funnel_stage,
+                        "format": h.format,
+                        "target_audience": h.target_audience,
+                    }
+                    for h in all_hyps if h.status == "pending"
+                ],
+                # Category coverage — which categories have been tested (concluded)
+                "category_counts": {
+                    cat: sum(1 for h in all_hyps if h.hypothesis_category == cat)
+                    for cat in set(h.hypothesis_category for h in all_hyps if h.hypothesis_category)
+                },
+                # Desires never tested (appear in pending but 0 concluded)
+                "tested_desires": list({h.human_desire for h in concluded if h.human_desire}),
             },
             "error": None,
             "timestamp": datetime.now(timezone.utc).isoformat(),

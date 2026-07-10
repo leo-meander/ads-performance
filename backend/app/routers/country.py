@@ -126,9 +126,11 @@ def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage
     elif account_ids is not None:
         # empty list => return no rows
         q = q.filter(Campaign.account_id.in_(account_ids or ["__no_match__"]))
-    # campaign_type=lead → campaigns whose name contains "Lea" (Lead objective).
+    # campaign_type filter: lead = name contains "Lea"; sale = excludes "Lea"; all = no filter
     if campaign_type == "lead":
         q = q.filter(Campaign.name.ilike("%Lea%"))
+    elif campaign_type == "sale":
+        q = q.filter(~Campaign.name.ilike("%Lea%"))
     # Valid country codes: 2-letter ISO, or the "ALL" multi-country marker.
     # Excludes NULL and the "Unknown" sentinel from failed parses.
     q = q.filter(
@@ -575,6 +577,7 @@ def country_funnel(
     date_to: str = Query(None),
     account_id: str = Query(None),
     branches: str = Query(None),
+    campaign_type: str = Query(None),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -603,6 +606,8 @@ def country_funnel(
                     func.sum(MetricsCache.add_to_cart).label("add_to_cart"),
                     func.sum(MetricsCache.checkouts).label("checkouts"),
                     func.sum(MetricsCache.conversions).label("bookings"),
+                    func.sum(MetricsCache.landing_page_views).label("landing_page_views"),
+                    func.sum(MetricsCache.leads).label("leads"),
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
                 .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
@@ -616,6 +621,10 @@ def country_funnel(
                 q = q.filter(Campaign.funnel_stage == funnel_stage.upper())
             if platform:
                 q = q.filter(MetricsCache.platform == platform)
+            if campaign_type == "lead":
+                q = q.filter(Campaign.name.ilike("%Lea%"))
+            elif campaign_type == "sale":
+                q = q.filter(~Campaign.name.ilike("%Lea%"))
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:
@@ -628,8 +637,12 @@ def country_funnel(
         if not row or not row.impressions:
             return _api_response(data={"stages": [], "country": country, "country_name": country_name(country) or country})
 
-        fields = ["impressions", "clicks", "searches", "add_to_cart", "checkouts", "bookings"]
-        labels = ["Impression", "Click", "Search", "Add to Cart", "Checkout", "Booking"]
+        if campaign_type == "lead":
+            fields = ["impressions", "clicks", "landing_page_views", "leads", "bookings"]
+            labels = ["Impression", "Click", "Landing Page", "Form Fill", "Purchase"]
+        else:
+            fields = ["impressions", "clicks", "searches", "add_to_cart", "checkouts", "bookings"]
+            labels = ["Impression", "Click", "Search", "Add to Cart", "Checkout", "Booking"]
 
         stages = []
         for i, field in enumerate(fields):
@@ -717,6 +730,8 @@ def country_comparison(
                 q = q.filter(Campaign.ta == ta)
             if campaign_type == "lead":
                 q = q.filter(Campaign.name.ilike("%Lea%"))
+            elif campaign_type == "sale":
+                q = q.filter(~Campaign.name.ilike("%Lea%"))
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:
@@ -840,6 +855,8 @@ def country_campaign_breakdown(
                 q = q.filter(Campaign.funnel_stage == funnel_stage.upper())
             if campaign_type == "lead":
                 q = q.filter(Campaign.name.ilike("%Lea%"))
+            elif campaign_type == "sale":
+                q = q.filter(~Campaign.name.ilike("%Lea%"))
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:

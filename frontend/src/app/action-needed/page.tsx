@@ -137,6 +137,7 @@ export default function ActionNeededPage() {
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
+  const [campaignType, setCampaignType] = useState<'all' | 'sale' | 'lead'>('all')
 
   // data
   const [rows, setRows] = useState<CampaignRow[]>([])
@@ -172,8 +173,10 @@ export default function ActionNeededPage() {
     const params = new URLSearchParams({ date_from: resolvedRange.from, date_to: resolvedRange.to })
     if (platform) params.set('platform', platform)
     if (branchParam) params.set('branches', branchParam)
+    if (campaignType === 'lead') params.set('campaign_type', 'lead')
+    else if (campaignType === 'sale') params.set('campaign_type', 'sale')
     return params.toString()
-  }, [resolvedRange, platform, branchParam])
+  }, [resolvedRange, platform, branchParam, campaignType])
 
   // branches list (once)
   useEffect(() => {
@@ -223,6 +226,8 @@ export default function ActionNeededPage() {
     const params = new URLSearchParams({ date_from: fmt(d90ago), date_to: fmt(today) })
     if (platform) params.set('platform', platform)
     if (branchParam) params.set('branches', branchParam)
+    if (campaignType === 'lead') params.set('campaign_type', 'lead')
+    else if (campaignType === 'sale') params.set('campaign_type', 'sale')
     apiFetch<FunnelResponse>(`/api/dashboard/funnel?${params}`)
       .then((res) => {
         if (cancelled) return
@@ -231,7 +236,7 @@ export default function ActionNeededPage() {
       .catch(() => { if (!cancelled) setBenchmarkFunnel([]) })
       .finally(() => { if (!cancelled) setBenchmarkLoading(false) })
     return () => { cancelled = true }
-  }, [comparisonMode, branchParam, platform])
+  }, [comparisonMode, branchParam, platform, campaignType])
 
   // close branch dropdown on outside click
   const branchRef = useRef<HTMLDivElement>(null)
@@ -380,7 +385,17 @@ export default function ActionNeededPage() {
       {/* Header + filters */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-2 print:mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-blue-600">Action Needed</h1>
+          <div className="flex items-center gap-3 mb-0.5">
+            <h1 className="text-2xl font-bold text-blue-600">Action Needed</h1>
+            <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm print:hidden">
+              <button onClick={() => setCampaignType('all')}
+                className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'all' ? 'bg-gray-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>All</button>
+              <button onClick={() => setCampaignType('sale')}
+                className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'sale' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>Sale</button>
+              <button onClick={() => setCampaignType('lead')}
+                className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'lead' ? 'bg-orange-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>Lead</button>
+            </div>
+          </div>
           {period && prevPeriod && (
             <p className="text-xs text-gray-400 mt-0.5">
               {period.from} → {period.to} &nbsp;vs&nbsp; {prevPeriod.from} → {prevPeriod.to}
