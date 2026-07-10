@@ -1093,6 +1093,26 @@ def learning_dashboard(branch_name: str, db: Session = Depends(get_db)) -> dict[
                 "angle_win_rates": angle_win_rates,
                 "funnel_failure_map": funnel_failure_map,
                 "recent_learnings": recent_learnings,
+                # Pending queue — so dashboard can show what's waiting to launch
+                "pending_hypotheses": [
+                    {
+                        "hypothesis_id": h.hypothesis_id,
+                        "hypothesis": h.hypothesis,
+                        "hypothesis_category": h.hypothesis_category,
+                        "human_desire": h.human_desire,
+                        "funnel_stage": h.funnel_stage,
+                        "format": h.format,
+                        "target_audience": h.target_audience,
+                    }
+                    for h in all_hyps if h.status == "pending"
+                ],
+                # Category coverage — which categories have been tested (concluded)
+                "category_counts": {
+                    cat: sum(1 for h in all_hyps if h.hypothesis_category == cat)
+                    for cat in set(h.hypothesis_category for h in all_hyps if h.hypothesis_category)
+                },
+                # Desires never tested (appear in pending but 0 concluded)
+                "tested_desires": list({h.human_desire for h in concluded if h.human_desire}),
             },
             "error": None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
