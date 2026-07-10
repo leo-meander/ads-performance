@@ -1894,7 +1894,6 @@ function AnglesPageInner() {
                   </div>
                 </div>
               )}
-            </div>
 
               {/* ── COHORT BATTLES ── */}
               {(() => {
