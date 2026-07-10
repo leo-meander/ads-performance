@@ -75,7 +75,7 @@ export default function CreateBatchAndSubmitPage() {
   }, [])
 
   useEffect(() => {
-    if (!branchId) { setCopies([]); setMaterials([]); setHypotheses([]); setHypothesisId(''); return }
+    if (!branchId) { setCopies([]); setMaterials([]); setHypotheses([]); setHypothesisIds([]); return }
     fetch(`${API_BASE}/api/copies?branch_id=${branchId}&limit=200`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setCopies(d.data.items || []) }).catch(() => {})
     fetch(`${API_BASE}/api/materials?branch_id=${branchId}&limit=200`, { credentials: 'include' }).then(r => r.json()).then(d => { if (d.success) setMaterials(d.data.items || []) }).catch(() => {})
     // Load open hypotheses for this branch (pending + running = still being tested)
