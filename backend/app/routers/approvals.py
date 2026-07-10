@@ -72,7 +72,8 @@ class SubmitBatchRequest(BaseModel):
     reviewer_ids: list[str]
     deadline: str | None = None  # ISO8601 datetime string
     note: str | None = None
-    hypothesis_id: str | None = None  # HYP-xxx — shared across all versions in this batch
+    hypothesis_id: str | None = None   # legacy single link (kept for compat)
+    hypothesis_ids: list[str] | None = None  # preferred multi-link
 
 
 class ReviseBatchVersion(BaseModel):
@@ -254,6 +255,8 @@ def submit_approval_batch(
 ):
     """Submit N combo versions of one target as a single review batch."""
     try:
+        # Merge hypothesis_id + hypothesis_ids into a deduplicated list
+        all_hyp_ids = list({*(body.hypothesis_ids or []), *([body.hypothesis_id] if body.hypothesis_id else [])})
         batch = submit_batch(
             db=db,
             versions=[v.model_dump() for v in body.versions],
@@ -261,7 +264,7 @@ def submit_approval_batch(
             submitted_by=current_user.id,
             deadline=body.deadline,
             note=body.note,
-            hypothesis_id=body.hypothesis_id,
+            hypothesis_ids=all_hyp_ids or None,
         )
         detail = get_batch_detail(db, batch.id)
         return _api_response(data=detail)

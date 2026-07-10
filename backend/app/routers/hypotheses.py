@@ -800,11 +800,27 @@ def analyze_vision(
 
 @router.get("/by-combo/{combo_id}")
 def hypotheses_for_combo(combo_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    """Return hypotheses linked to a specific combo (for approval submit form)."""
+    """Return all hypotheses linked to a combo — via direct FK or junction table."""
     try:
-        rows = db.query(CreativeHypothesis).filter(
+        # Direct FK links
+        direct = db.query(CreativeHypothesis).filter(
             CreativeHypothesis.combo_id == combo_id
-        ).order_by(desc(CreativeHypothesis.created_at)).all()
+        ).all()
+        direct_ids = {h.hypothesis_id for h in direct}
+
+        # Junction table links
+        linked_ids = [
+            r.hypothesis_id for r in
+            db.query(HypothesisComboLink.hypothesis_id).filter(
+                HypothesisComboLink.combo_id == combo_id
+            ).all()
+        ]
+        extra_ids = [hid for hid in linked_ids if hid not in direct_ids]
+        extra = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.hypothesis_id.in_(extra_ids)
+        ).all() if extra_ids else []
+
+        rows = sorted(direct + extra, key=lambda h: h.created_at or "", reverse=True)
         return {"success": True, "data": [_serialize(r) for r in rows],
                 "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:

@@ -508,6 +508,15 @@ function CreativePreview({ material, workingFile }: { material: ComboDetail['mat
   )
 }
 
+interface LinkedHypothesis {
+  hypothesis_id: string
+  hypothesis: string
+  status: string
+  human_desire: string | null
+  creative_angle: string | null
+  funnel_stage: string | null
+}
+
 function ComboDrawer({ comboId, onClose }: { comboId: string; onClose: () => void }) {
   const [data, setData] = useState<ComboDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -515,13 +524,21 @@ function ComboDrawer({ comboId, onClose }: { comboId: string; onClose: () => voi
   const [aiText, setAiText] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [linkedHyps, setLinkedHyps] = useState<LinkedHypothesis[]>([])
 
   useEffect(() => {
     setLoading(true); setError(''); setData(null)
-    setAiText(''); setAiError('')
-    fetch(`${API_BASE}/api/creative/combos/${comboId}/detail`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(d => { if (d.success) setData(d.data); else setError(d.error || 'Failed to load') })
+    setAiText(''); setAiError(''); setLinkedHyps([])
+
+    const comboShortId = comboId // CMB-xxx format used by hypotheses endpoint
+    Promise.all([
+      fetch(`${API_BASE}/api/creative/combos/${comboId}/detail`, { credentials: 'include' }).then(r => r.json()),
+      fetch(`${API_BASE}/api/hypotheses/by-combo/${comboShortId}`, { credentials: 'include' }).then(r => r.json()),
+    ])
+      .then(([d, hyps]) => {
+        if (d.success) setData(d.data); else setError(d.error || 'Failed to load')
+        if (hyps.success && hyps.data) setLinkedHyps(hyps.data)
+      })
       .catch(() => setError('Failed to load'))
       .finally(() => setLoading(false))
   }, [comboId])
@@ -670,6 +687,42 @@ function ComboDrawer({ comboId, onClose }: { comboId: string; onClose: () => voi
                       {data.keypoints.map((k, i) => <span key={i} className="inline-block bg-blue-50 text-blue-700 rounded px-1.5 py-0.5 text-[10px]">{k}</span>)}
                     </div>
                   )}
+                </section>
+              )}
+
+              {/* Linked hypotheses */}
+              {linkedHyps.length > 0 && (
+                <section>
+                  <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-2">
+                    Hypotheses ({linkedHyps.length})
+                  </h3>
+                  <div className="space-y-2">
+                    {linkedHyps.map(h => {
+                      const statusCls: Record<string, string> = {
+                        validated: 'bg-green-100 text-green-700',
+                        refuted: 'bg-red-100 text-red-600',
+                        running: 'bg-blue-100 text-blue-600',
+                        pending: 'bg-gray-100 text-gray-500',
+                        inconclusive: 'bg-orange-100 text-orange-600',
+                      }
+                      return (
+                        <div key={h.hypothesis_id} className="bg-gray-50 rounded-lg p-2.5 text-xs">
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <span className="font-mono text-[10px] text-gray-400">{h.hypothesis_id}</span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${statusCls[h.status] || 'bg-gray-100 text-gray-500'}`}>{h.status}</span>
+                            {h.funnel_stage && <span className="text-[10px] bg-indigo-50 text-indigo-500 px-1.5 py-0.5 rounded">{h.funnel_stage}</span>}
+                          </div>
+                          <p className="text-gray-700 leading-snug">{h.hypothesis}</p>
+                          {(h.human_desire || h.creative_angle) && (
+                            <p className="text-gray-400 mt-0.5">{[h.human_desire, h.creative_angle].filter(Boolean).join(' · ')}</p>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <a href={`/angles?tab=hypotheses`} className="inline-block mt-2 text-[11px] text-indigo-500 hover:underline">
+                    View in Angles →
+                  </a>
                 </section>
               )}
 
