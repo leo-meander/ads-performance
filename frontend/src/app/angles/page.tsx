@@ -344,6 +344,7 @@ function AnglesPageInner() {
   }
 
   // Edit hypothesis state
+  const [expandedHypoIds, setExpandedHypoIds] = useState<Set<string>>(new Set())
   const [editingHypoId, setEditingHypoId] = useState<string | null>(null)
   const [editHypoForm, setEditHypoForm] = useState<Partial<Hypothesis>>({})
   const [editSaving, setEditSaving] = useState(false)
@@ -1219,17 +1220,14 @@ function AnglesPageInner() {
                   </div>
                 )}
 
-                <div className="space-y-3">
-                  {filteredHypos.length === 0 && (fHypoBranch || fHypoStatus || fHypoCategory || fHypoTA || fHypoMarket) && (
+                <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+                  {filteredHypos.length === 0 && (
                     <div className="text-center text-gray-400 py-8 text-sm">No hypotheses match the current filters.</div>
                   )}
                   {filteredHypos.map(h => {
                     const hasResult = h.actual_roas !== null || h.actual_ctr !== null
                     const clicks = h.combo_clicks ?? 0
-                    const bookings = h.combo_conversions ?? 0
-                    const clicksLeft = Math.max(0, 4500 - clicks)
-                    const bookingsLeft = Math.max(0, 5 - bookings)
-
+                    const isExpanded = expandedHypoIds.has(h.hypothesis_id)
                     const metric = h.primary_metric || h.primary_kpi || 'primary metric'
                     const threshold = h.win_threshold ? ` (threshold: ${h.win_threshold})` : ''
                     const nextStep = (() => {
@@ -1244,318 +1242,253 @@ function AnglesPageInner() {
                       return null
                     })()
 
+                    // Status left-border color
+                    const statusBar = h.status === 'validated' ? 'border-l-green-400' : h.status === 'refuted' ? 'border-l-red-400' : h.status === 'running' ? 'border-l-blue-400' : 'border-l-gray-200'
+
+                    // Primary metric display value
+                    const metricDisplay = (() => {
+                      if (h.actual_roas !== null) return { label: 'ROAS', value: `${h.actual_roas.toFixed(2)}x`, color: h.actual_roas >= 1 ? 'text-green-600' : 'text-red-500' }
+                      if (h.actual_ctr !== null) return { label: 'CTR', value: `${(h.actual_ctr * 100).toFixed(2)}%`, color: 'text-blue-600' }
+                      if (h.actual_spend !== null && h.actual_spend > 0) return { label: 'Spend', value: `$${h.actual_spend.toLocaleString()}`, color: 'text-gray-600' }
+                      return null
+                    })()
+
+                    const catLabel = HYPOTHESIS_CATEGORIES.find(c => c.value === h.hypothesis_category)?.label
+
                     return (
-                    <div key={h.id} className={`bg-white rounded-xl border p-5 ${h.status === 'validated' ? 'border-green-200' : h.status === 'refuted' ? 'border-red-200' : 'border-gray-200'}`}>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap mb-2">
-                          <span className="font-mono text-xs text-gray-400">{h.hypothesis_id}</span>
-                          {canEdit && editingHypoId !== h.hypothesis_id && (
-                            <button onClick={() => openEditHypo(h)} className="text-gray-300 hover:text-blue-500 transition-colors" title="Edit hypothesis">
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                            </button>
-                          )}
-                          <span className="text-xs text-gray-500">{h.branch_name}</span>
-                          {h.hypothesis_category && (
-                            <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${CAT_COLOR[h.hypothesis_category] || 'bg-gray-50 text-gray-600 border-gray-200'}`}>
-                              {HYPOTHESIS_CATEGORIES.find(c => c.value === h.hypothesis_category)?.label || h.hypothesis_category}
-                            </span>
-                          )}
-                          {h.human_desire && <span className="text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full">{h.human_desire}</span>}
-                          {h.creative_angle && <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">{h.creative_angle}</span>}
-                          {h.funnel_stage && <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-medium">{h.funnel_stage}</span>}
-                          {h.format && <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{h.format}</span>}
-                          {h.target_audience && <span className="text-xs text-gray-400">{h.target_audience}</span>}
-                          {h.market && <span className="text-xs text-gray-400">{h.market}</span>}
-                          <span className="flex items-center gap-1">
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-600'}`}>Layer A: {h.status}</span>
-                            <Tip text={`Layer A = creative verdict. Did ${h.primary_metric || h.primary_kpi || 'primary metric'} exceed the threshold (${h.win_threshold ?? '—'}) after ${h.min_sample} concluded ads? No ROAS or booking involved.`} wide />
+                      <div key={h.id} className={`border-l-4 ${statusBar}`}>
+                        {/* ── Compact row ── */}
+                        <button
+                          onClick={() => setExpandedHypoIds(prev => {
+                            const n = new Set(prev)
+                            if (n.has(h.hypothesis_id)) n.delete(h.hypothesis_id); else n.add(h.hypothesis_id)
+                            return n
+                          })}
+                          className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-gray-50 transition-colors"
+                        >
+                          {/* Status badge */}
+                          <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-500'}`}>
+                            {h.status}
                           </span>
-                          {h.layer_b_status && (
-                            <span className="flex items-center gap-1">
-                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${
-                                h.layer_b_status === 'pass' ? 'bg-green-50 text-green-700 border-green-200' :
-                                h.layer_b_status === 'fail' ? 'bg-red-50 text-red-600 border-red-200' :
-                                'bg-gray-50 text-gray-500 border-gray-200'
-                              }`}>Layer B: {h.layer_b_status}</span>
-                              <Tip text="Layer B = downstream verdict (ROAS, booking rate). Independent of Layer A — a creative can pass Layer A (great hook) but fail Layer B (weak offer/landing page)." wide />
-                            </span>
-                          )}
-                          {cohortRankMap[h.hypothesis_id] && (() => {
-                            const r = cohortRankMap[h.hypothesis_id]
-                            const medal = r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `#${r.rank}`
-                            const parts = [r.label, r.metric].filter(Boolean).join(' · ')
-                            return (
-                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${r.rank === 1 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-gray-50 text-gray-500 border-gray-200'}`}>
-                                {medal}{parts ? ` in ${parts}` : ''}
-                              </span>
-                            )
-                          })()}
-                          {h.approval_status && (
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${
-                              h.approval_status === 'APPROVED' ? 'bg-green-50 text-green-700 border-green-200' :
-                              'bg-orange-50 text-orange-700 border-orange-200'
-                            }`}>
-                              {h.approval_status === 'APPROVED' ? '✓ Approved' : '⏳ In Review'}
-                            </span>
-                          )}
-                        </div>
 
-                        {(h.linked_combos && h.linked_combos.length > 0) ? (
-                          <div className="flex flex-wrap gap-1.5 mb-2">
-                            {h.linked_combos.map(lc => (
-                              <a key={lc.combo_id} href={`/creative?combo=${lc.combo_id}`}
-                                className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-lg px-2.5 py-1 transition-colors">
-                                <span className="font-mono text-gray-400">{lc.combo_id}</span>
-                                {lc.ad_name && <span className="truncate max-w-[200px]">{lc.ad_name}</span>}
-                                {lc.verdict && <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${lc.verdict === 'WIN' ? 'bg-green-100 text-green-700' : lc.verdict === 'LOSE' ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'}`}>{lc.verdict}</span>}
-                                {lc.roas && <span className="text-gray-400">{lc.roas.toFixed(2)}x</span>}
-                              </a>
+                          {/* ID + category */}
+                          <span className="font-mono text-[10px] text-gray-300 shrink-0">{h.hypothesis_id}</span>
+                          {h.hypothesis_category && (
+                            <span className={`shrink-0 hidden sm:inline text-[9px] px-1.5 py-0.5 rounded-full border font-medium ${CAT_COLOR[h.hypothesis_category] || 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                              {catLabel}
+                            </span>
+                          )}
+
+                          {/* Hypothesis text — hero */}
+                          <span className="flex-1 min-w-0 text-sm text-gray-800 truncate">{h.hypothesis}</span>
+
+                          {/* Right side: context chips + metric */}
+                          <span className="shrink-0 flex items-center gap-2 ml-2">
+                            {[h.funnel_stage, h.format, h.target_audience, h.market].filter(Boolean).map((v, i) => (
+                              <span key={i} className="hidden md:inline text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">{v}</span>
                             ))}
-                          </div>
-                        ) : h.combo_id ? (
-                          <a
-                            href={`/creative?combo=${h.combo_id}`}
-                            className="inline-flex items-center gap-1.5 mb-2 text-xs text-gray-500 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-lg px-2.5 py-1 transition-colors"
-                          >
-                            <span className="font-mono text-gray-400">{h.combo_id}</span>
-                            {h.ad_name && <span className="truncate max-w-[300px]">{h.ad_name}</span>}
-                            <span className="text-gray-300">→ Creative Library</span>
-                          </a>
-                        ) : null}
+                            {metricDisplay && (
+                              <span className={`text-xs font-bold ${metricDisplay.color}`}>{metricDisplay.value}</span>
+                            )}
+                            {h.layer_b_status === 'pass' && <span className="text-[10px] text-green-600 font-semibold">B✓</span>}
+                            {cohortRankMap[h.hypothesis_id]?.rank === 1 && <span className="text-sm">🥇</span>}
+                            <ChevronDown className={`w-3.5 h-3.5 text-gray-300 transition-transform shrink-0 ${isExpanded ? 'rotate-180' : ''}`} />
+                          </span>
+                        </button>
 
-                        {/* 4-tier hypothesis display */}
-                        <div className="space-y-2 mb-3">
-                          {h.customer_insight && (
-                            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
-                              <p className="text-[9px] font-bold text-blue-400 uppercase tracking-widest mb-0.5">1 · Belief</p>
-                              <p className="text-xs text-blue-900">{h.customer_insight}</p>
+                        {/* ── Expanded detail ── */}
+                        {isExpanded && (
+                          <div className="px-5 pb-5 pt-1 space-y-3 border-t border-gray-100 bg-gray-50/40">
+
+                            {/* Top meta row */}
+                            <div className="flex flex-wrap items-center gap-2 pt-2">
+                              <span className="text-xs text-gray-500">{h.branch_name}</span>
+                              {catLabel && <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${CAT_COLOR[h.hypothesis_category!] || 'bg-gray-50 text-gray-600 border-gray-200'}`}>{catLabel}</span>}
+                              {h.human_desire && <span className="text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full">{h.human_desire}</span>}
+                              {h.creative_angle && <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">{h.creative_angle}</span>}
+                              {h.funnel_stage && <span className="text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-medium">{h.funnel_stage}</span>}
+                              {h.format && <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{h.format}</span>}
+                              {h.target_audience && <span className="text-xs text-gray-400">{h.target_audience}</span>}
+                              {h.market && <span className="text-xs text-gray-400">{h.market}</span>}
+                              <span className="flex items-center gap-1">
+                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-600'}`}>Layer A: {h.status}</span>
+                                <Tip text={`Layer A = creative verdict. Did ${metric} exceed the threshold (${h.win_threshold ?? '—'}) after ${h.min_sample} concluded ads?`} wide />
+                              </span>
+                              {h.layer_b_status && (
+                                <span className="flex items-center gap-1">
+                                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${h.layer_b_status === 'pass' ? 'bg-green-50 text-green-700 border-green-200' : h.layer_b_status === 'fail' ? 'bg-red-50 text-red-600 border-red-200' : 'bg-gray-50 text-gray-500 border-gray-200'}`}>Layer B: {h.layer_b_status}</span>
+                                  <Tip text="Layer B = downstream verdict (ROAS, booking rate). Independent of Layer A." wide />
+                                </span>
+                              )}
+                              {cohortRankMap[h.hypothesis_id] && (() => {
+                                const r = cohortRankMap[h.hypothesis_id]
+                                const medal = r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `#${r.rank}`
+                                return <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${r.rank === 1 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-gray-50 text-gray-500 border-gray-200'}`}>{medal} in {[cohortRankMap[h.hypothesis_id].label, cohortRankMap[h.hypothesis_id].metric].filter(Boolean).join(' · ')}</span>
+                              })()}
+                              {h.approval_status && (
+                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium border ${h.approval_status === 'APPROVED' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-orange-50 text-orange-700 border-orange-200'}`}>
+                                  {h.approval_status === 'APPROVED' ? '✓ Approved' : '⏳ In Review'}
+                                </span>
+                              )}
+                              {canEdit && editingHypoId !== h.hypothesis_id && (
+                                <button onClick={() => openEditHypo(h)} className="text-gray-300 hover:text-blue-500 transition-colors ml-auto" title="Edit">
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                                </button>
+                              )}
                             </div>
-                          )}
-                          <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
-                            <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">2 · Why <span className="normal-case font-normal text-amber-500">⚠ unconfirmed</span></p>
-                            <p className="text-xs text-gray-800">{h.hypothesis}</p>
-                          </div>
-                          {h.variable_tested && (
-                            <div className="bg-violet-50 border border-violet-100 rounded-lg px-3 py-2">
-                              <p className="text-[9px] font-bold text-violet-400 uppercase tracking-widest mb-0.5">3 · Test</p>
-                              <p className="text-xs text-violet-900">{h.variable_tested}</p>
-                            </div>
-                          )}
-                          {(h.expected_outcome || hasResult) && (
-                            <div className={`border rounded-lg px-3 py-2 ${h.status === 'validated' ? 'bg-green-50 border-green-100' : h.status === 'refuted' ? 'bg-red-50 border-red-100' : 'bg-amber-50 border-amber-100'}`}>
-                              <p className="text-[9px] font-bold text-amber-500 uppercase tracking-widest mb-1">4 · Success</p>
-                              {h.expected_outcome && <p className="text-xs font-semibold text-gray-800 mb-1">{h.expected_outcome}</p>}
-                              {hasResult && (
-                                <div className="flex flex-wrap gap-3 mt-1 pt-1 border-t border-gray-200">
-                                  {h.actual_roas !== null && <span className="text-xs font-bold text-gray-700">ROAS: {h.actual_roas.toFixed(2)}x</span>}
-                                  {h.actual_ctr !== null && <span className="text-xs text-gray-600">CTR: {(h.actual_ctr * 100).toFixed(2)}%</span>}
-                                  {h.actual_spend !== null && <span className="text-xs text-gray-400">Spend: ${h.actual_spend.toLocaleString()}</span>}
-                                  {clicks > 0 && <span className="text-xs text-gray-400">{clicks.toLocaleString()} clicks</span>}
+
+                            {/* Linked combos */}
+                            {(h.linked_combos && h.linked_combos.length > 0) ? (
+                              <div className="flex flex-wrap gap-1.5">
+                                {h.linked_combos.map(lc => (
+                                  <a key={lc.combo_id} href={`/creative?combo=${lc.combo_id}`}
+                                    className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 bg-white hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-lg px-2.5 py-1 transition-colors">
+                                    <span className="font-mono text-gray-400">{lc.combo_id}</span>
+                                    {lc.ad_name && <span className="truncate max-w-[200px]">{lc.ad_name}</span>}
+                                    {lc.verdict && <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${lc.verdict === 'WIN' ? 'bg-green-100 text-green-700' : lc.verdict === 'LOSE' ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'}`}>{lc.verdict}</span>}
+                                    {lc.roas && <span className="text-gray-400">{lc.roas.toFixed(2)}x</span>}
+                                  </a>
+                                ))}
+                              </div>
+                            ) : h.combo_id ? (
+                              <a href={`/creative?combo=${h.combo_id}`}
+                                className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 bg-white hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-lg px-2.5 py-1 transition-colors">
+                                <span className="font-mono text-gray-400">{h.combo_id}</span>
+                                {h.ad_name && <span className="truncate max-w-[300px]">{h.ad_name}</span>}
+                                <span className="text-gray-300">→ Creative Library</span>
+                              </a>
+                            ) : null}
+
+                            {/* 4-tier */}
+                            <div className="space-y-1.5">
+                              {h.customer_insight && (
+                                <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                                  <p className="text-[9px] font-bold text-blue-400 uppercase tracking-widest mb-0.5">1 · Belief</p>
+                                  <p className="text-xs text-blue-900">{h.customer_insight}</p>
                                 </div>
                               )}
-                              {!hasResult && <p className="text-[10px] text-gray-400 italic">Waiting for data…</p>}
-                            </div>
-                          )}
-                        </div>
-
-                        {h.learning && (
-                          <div className={`rounded-lg px-3 py-2 mb-3 ${h.status === 'validated' ? 'bg-green-50' : 'bg-orange-50'}`}>
-                            <p className={`text-[10px] font-semibold uppercase tracking-wider mb-0.5 ${h.status === 'validated' ? 'text-green-600' : 'text-orange-600'}`}>Learning</p>
-                            <p className={`text-xs ${h.status === 'validated' ? 'text-green-800' : 'text-orange-800'}`}>{h.learning}</p>
-                          </div>
-                        )}
-
-                        {(h.evidence || h.creative_principle) && (
-                          <div className="border border-indigo-100 rounded-xl bg-indigo-50 p-4 mb-3 space-y-2">
-                            {h.human_moment && (
-                              <span className="inline-block text-[10px] font-bold uppercase tracking-widest text-indigo-500 bg-indigo-100 px-2 py-0.5 rounded-full">{h.human_moment}</span>
-                            )}
-                            {h.evidence && (
-                              <div>
-                                <p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-0.5">Evidence</p>
-                                <p className="text-xs text-indigo-900">{h.evidence}</p>
+                              <div className="bg-white border border-gray-200 rounded-lg px-3 py-2">
+                                <p className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-0.5">2 · Why <span className="normal-case font-normal text-amber-500">⚠ unconfirmed</span></p>
+                                <p className="text-xs text-gray-800">{h.hypothesis}</p>
                               </div>
-                            )}
-                            {h.why_it_worked && (
-                              <div>
-                                <p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-0.5">Why it worked</p>
-                                <p className="text-xs text-indigo-800 italic">{h.why_it_worked}</p>
-                              </div>
-                            )}
-                            {h.creative_principle && (
-                              <div className="border-t border-indigo-200 pt-2">
-                                <p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-0.5">Creative Principle</p>
-                                <p className="text-sm font-semibold text-indigo-900">"{h.creative_principle}"</p>
-                              </div>
-                            )}
-                          </div>
-                        )}
-
-                        {analyzeTarget === h.hypothesis_id ? (
-                          <div className="border border-indigo-200 rounded-xl bg-white p-4 mb-3">
-                            <div className="flex justify-between items-center mb-3">
-                              <div className="flex gap-1 bg-indigo-50 rounded-lg p-0.5">
-                                <button
-                                  onClick={() => setAnalyzeMode('brief')}
-                                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${analyzeMode === 'brief' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                                >
-                                  🔬 Brief + Script
-                                </button>
-                                <button
-                                  onClick={() => setAnalyzeMode('vision')}
-                                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${analyzeMode === 'vision' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-                                >
-                                  🖼️ Images
-                                </button>
-                              </div>
-                              <button onClick={() => setAnalyzeTarget(null)} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                              {h.variable_tested && (
+                                <div className="bg-violet-50 border border-violet-100 rounded-lg px-3 py-2">
+                                  <p className="text-[9px] font-bold text-violet-400 uppercase tracking-widest mb-0.5">3 · Test</p>
+                                  <p className="text-xs text-violet-900">{h.variable_tested}</p>
+                                </div>
+                              )}
+                              {(h.expected_outcome || hasResult) && (
+                                <div className={`border rounded-lg px-3 py-2 ${h.status === 'validated' ? 'bg-green-50 border-green-100' : h.status === 'refuted' ? 'bg-red-50 border-red-100' : 'bg-amber-50 border-amber-100'}`}>
+                                  <p className="text-[9px] font-bold text-amber-500 uppercase tracking-widest mb-1">4 · Success</p>
+                                  {h.expected_outcome && <p className="text-xs font-semibold text-gray-800 mb-1">{h.expected_outcome}</p>}
+                                  {hasResult && (
+                                    <div className="flex flex-wrap gap-3 mt-1 pt-1 border-t border-gray-200">
+                                      {h.actual_roas !== null && <span className="text-xs font-bold text-gray-700">ROAS: {h.actual_roas.toFixed(2)}x</span>}
+                                      {h.actual_ctr !== null && <span className="text-xs text-gray-600">CTR: {(h.actual_ctr * 100).toFixed(2)}%</span>}
+                                      {h.actual_spend !== null && <span className="text-xs text-gray-400">Spend: ${h.actual_spend.toLocaleString()}</span>}
+                                      {clicks > 0 && <span className="text-xs text-gray-400">{clicks.toLocaleString()} clicks</span>}
+                                    </div>
+                                  )}
+                                  {!hasResult && <p className="text-[10px] text-gray-400 italic">Waiting for data…</p>}
+                                </div>
+                              )}
                             </div>
 
-                            {analyzeMode === 'brief' ? (
-                              <div className="space-y-2">
-                                <div>
-                                  <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Creative Brief</label>
-                                  <textarea
-                                    value={analyzeForm.brief_text}
-                                    onChange={e => setAnalyzeForm(p => ({ ...p, brief_text: e.target.value }))}
-                                    rows={3}
-                                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400"
-                                    placeholder="What is this ad trying to do? Who is it for? What feeling should the viewer have?"
-                                  />
+                            {/* Learning */}
+                            {h.learning && (
+                              <div className={`rounded-lg px-3 py-2 ${h.status === 'validated' ? 'bg-green-50' : 'bg-orange-50'}`}>
+                                <p className={`text-[10px] font-semibold uppercase tracking-wider mb-0.5 ${h.status === 'validated' ? 'text-green-600' : 'text-orange-600'}`}>Learning</p>
+                                <p className={`text-xs ${h.status === 'validated' ? 'text-green-800' : 'text-orange-800'}`}>{h.learning}</p>
+                              </div>
+                            )}
+
+                            {/* Evidence + Creative Principle */}
+                            {(h.evidence || h.creative_principle) && (
+                              <div className="border border-indigo-100 rounded-xl bg-indigo-50 p-4 space-y-2">
+                                {h.human_moment && <span className="inline-block text-[10px] font-bold uppercase tracking-widest text-indigo-500 bg-indigo-100 px-2 py-0.5 rounded-full">{h.human_moment}</span>}
+                                {h.evidence && <div><p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-0.5">Evidence</p><p className="text-xs text-indigo-900">{h.evidence}</p></div>}
+                                {h.why_it_worked && <div><p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-0.5">Why it worked</p><p className="text-xs text-indigo-800 italic">{h.why_it_worked}</p></div>}
+                                {h.creative_principle && (
+                                  <div className="border-t border-indigo-200 pt-2">
+                                    <p className="text-[10px] text-indigo-400 uppercase tracking-wider mb-0.5">Creative Principle</p>
+                                    <p className="text-sm font-semibold text-indigo-900">"{h.creative_principle}"</p>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Analyze panel */}
+                            {analyzeTarget === h.hypothesis_id ? (
+                              <div className="border border-indigo-200 rounded-xl bg-white p-4">
+                                <div className="flex justify-between items-center mb-3">
+                                  <div className="flex gap-1 bg-indigo-50 rounded-lg p-0.5">
+                                    <button onClick={() => setAnalyzeMode('brief')} className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${analyzeMode === 'brief' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>🔬 Brief + Script</button>
+                                    <button onClick={() => setAnalyzeMode('vision')} className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${analyzeMode === 'vision' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>🖼️ Images</button>
+                                  </div>
+                                  <button onClick={() => setAnalyzeTarget(null)} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
                                 </div>
-                                <div>
-                                  <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Script / Scene Description / Dialogue</label>
-                                  <textarea
-                                    value={analyzeForm.script_text}
-                                    onChange={e => setAnalyzeForm(p => ({ ...p, script_text: e.target.value }))}
-                                    rows={4}
-                                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-800 placeholder-gray-400"
-                                    placeholder="Paste the actual script, scene breakdown, or lời thoại here..."
-                                  />
-                                </div>
-                                <button
-                                  onClick={() => handleAnalyzeBrief(h.hypothesis_id)}
-                                  disabled={!analyzeForm.brief_text || !analyzeForm.script_text || analyzeLoading}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
-                                >
-                                  {analyzeLoading
-                                    ? <><span className="animate-spin inline-block w-3 h-3 border border-white border-t-transparent rounded-full" />Analyzing...</>
-                                    : <>🔬 Extract Evidence &amp; Principle</>}
-                                </button>
+                                {analyzeMode === 'brief' ? (
+                                  <div className="space-y-2">
+                                    <textarea value={analyzeForm.brief_text} onChange={e => setAnalyzeForm(p => ({ ...p, brief_text: e.target.value }))} rows={3} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="What is this ad trying to do? Who is it for?" />
+                                    <textarea value={analyzeForm.script_text} onChange={e => setAnalyzeForm(p => ({ ...p, script_text: e.target.value }))} rows={4} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" placeholder="Paste script / scene breakdown here..." />
+                                    <button onClick={() => handleAnalyzeBrief(h.hypothesis_id)} disabled={!analyzeForm.brief_text || !analyzeForm.script_text || analyzeLoading} className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700 disabled:opacity-50">
+                                      {analyzeLoading ? <><span className="animate-spin inline-block w-3 h-3 border border-white border-t-transparent rounded-full" />Analyzing...</> : <>🔬 Extract Evidence &amp; Principle</>}
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    <p className="text-[11px] text-gray-500">{h.combo_id ? `Linked to ${h.combo_id} — images auto-pulled. Paste URLs below to override.` : 'Paste image URLs (one per line).'}</p>
+                                    <textarea value={visionUrls} onChange={e => setVisionUrls(e.target.value)} rows={4} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono" placeholder={"https://... or data:image/jpeg;base64,...\n(one URL per line)"} />
+                                    <button onClick={() => handleAnalyzeVision(h.hypothesis_id)} disabled={analyzeLoading || (!h.combo_id && !visionUrls.trim())} className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700 disabled:opacity-50">
+                                      {analyzeLoading ? <><span className="animate-spin inline-block w-3 h-3 border border-white border-t-transparent rounded-full" />Analyzing...</> : <>🖼️ Analyze Visual Creative</>}
+                                    </button>
+                                  </div>
+                                )}
                               </div>
                             ) : (
-                              <div className="space-y-2">
-                                <p className="text-[11px] text-gray-500">
-                                  {h.combo_id
-                                    ? `Linked to ${h.combo_id} — images will be pulled automatically. Or paste URLs below to override.`
-                                    : 'Paste image URLs (one per line). Supports base64 data: URLs or https:// links. Multiple = carousel.'}
-                                </p>
-                                <div>
-                                  <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Image URLs (optional override)</label>
-                                  <textarea
-                                    value={visionUrls}
-                                    onChange={e => setVisionUrls(e.target.value)}
-                                    rows={4}
-                                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono text-gray-800 placeholder-gray-400"
-                                    placeholder={"https://... or data:image/jpeg;base64,...\n(one URL per line for carousel)"}
-                                  />
-                                </div>
-                                <button
-                                  onClick={() => handleAnalyzeVision(h.hypothesis_id)}
-                                  disabled={analyzeLoading || (!h.combo_id && !visionUrls.trim())}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
-                                >
-                                  {analyzeLoading
-                                    ? <><span className="animate-spin inline-block w-3 h-3 border border-white border-t-transparent rounded-full" />Analyzing...</>
-                                    : <>🖼️ Analyze Visual Creative</>}
+                              <div className="flex items-center gap-1.5">
+                                <button onClick={() => { setAnalyzeTarget(h.hypothesis_id); setAnalyzeMode('brief'); setAnalyzeForm({ brief_text: h.brief_text || '', script_text: h.script_text || '' }) }} className="text-xs text-indigo-500 hover:text-indigo-700 underline underline-offset-2">
+                                  {h.evidence ? '✏️ Re-analyze' : '🔬 Analyze creative'}
                                 </button>
+                                <Tip text="Paste brief + script or image URLs so AI can extract Evidence, Why It Worked, and a Creative Principle." wide />
                               </div>
                             )}
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1.5 mb-3">
-                            <button
-                              onClick={() => { setAnalyzeTarget(h.hypothesis_id); setAnalyzeMode('brief'); setAnalyzeForm({ brief_text: h.brief_text || '', script_text: h.script_text || '' }) }}
-                              className="text-xs text-indigo-500 hover:text-indigo-700 underline underline-offset-2"
-                            >
-                              {h.evidence ? '✏️ Re-analyze' : '🔬 Analyze creative'}
-                            </button>
-                            <Tip text="Paste brief + script or image URLs so AI can extract Evidence, Why It Worked, and a Creative Principle — explains why the ad did or did not work at a psychological level." wide />
-                          </div>
-                        )}
 
-                        {nextStep && (
-                          <div className={`rounded-lg px-3 py-2 border text-xs ${nextStep.color}`}>
-                            <span className="mr-1">{nextStep.icon}</span>
-                            <span className="font-semibold">Next: </span>{nextStep.text}
-                          </div>
-                        )}
+                            {/* Next step banner */}
+                            {nextStep && (
+                              <div className={`rounded-lg px-3 py-2 border text-xs ${nextStep.color}`}>
+                                <span className="mr-1">{nextStep.icon}</span>
+                                <span className="font-semibold">Next: </span>{nextStep.text}
+                              </div>
+                            )}
 
-                        {editingHypoId === h.hypothesis_id && (
-                          <div className="mt-4 border-t border-blue-100 pt-4 space-y-3">
-                            <p className="text-[10px] text-blue-500 uppercase tracking-wider font-semibold">Edit Hypothesis</p>
-                            <div>
-                              <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Hypothesis statement</label>
-                              <textarea rows={3} value={editHypoForm.hypothesis || ''} onChange={e => setEditHypoForm(p => ({ ...p, hypothesis: e.target.value }))}
-                                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-800" />
-                            </div>
-                            <div className="grid grid-cols-2 gap-3">
-                              <div>
-                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Customer insight</label>
-                                <input value={editHypoForm.customer_insight || ''} onChange={e => setEditHypoForm(p => ({ ...p, customer_insight: e.target.value }))}
-                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                            {/* Edit form */}
+                            {editingHypoId === h.hypothesis_id && (
+                              <div className="mt-1 border-t border-blue-100 pt-4 space-y-3">
+                                <p className="text-[10px] text-blue-500 uppercase tracking-wider font-semibold">Edit Hypothesis</p>
+                                <div>
+                                  <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Hypothesis statement</label>
+                                  <textarea rows={3} value={editHypoForm.hypothesis || ''} onChange={e => setEditHypoForm(p => ({ ...p, hypothesis: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                  {([['Customer insight','customer_insight'],['Human desire','human_desire'],['Creative angle','creative_angle'],['Variable tested','variable_tested'],['Expected outcome','expected_outcome'],['Target audience','target_audience'],['Market','market'],['Primary KPI','primary_kpi']] as [string, keyof typeof editHypoForm][]).map(([label, field]) => (
+                                    <div key={field}>
+                                      <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">{label}</label>
+                                      <input value={(editHypoForm[field] as string) || ''} onChange={e => setEditHypoForm(p => ({ ...p, [field]: e.target.value }))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="flex gap-2 pt-1">
+                                  <button onClick={() => saveEditHypo(h.hypothesis_id)} disabled={editSaving} className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">{editSaving ? 'Saving…' : 'Save'}</button>
+                                  <button onClick={() => setEditingHypoId(null)} className="px-4 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+                                </div>
                               </div>
-                              <div>
-                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Human desire</label>
-                                <input value={editHypoForm.human_desire || ''} onChange={e => setEditHypoForm(p => ({ ...p, human_desire: e.target.value }))}
-                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Creative angle</label>
-                                <input value={editHypoForm.creative_angle || ''} onChange={e => setEditHypoForm(p => ({ ...p, creative_angle: e.target.value }))}
-                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Variable tested</label>
-                                <input value={editHypoForm.variable_tested || ''} onChange={e => setEditHypoForm(p => ({ ...p, variable_tested: e.target.value }))}
-                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Expected outcome</label>
-                                <input value={editHypoForm.expected_outcome || ''} onChange={e => setEditHypoForm(p => ({ ...p, expected_outcome: e.target.value }))}
-                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Target audience</label>
-                                <input value={editHypoForm.target_audience || ''} onChange={e => setEditHypoForm(p => ({ ...p, target_audience: e.target.value }))}
-                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Market</label>
-                                <input value={editHypoForm.market || ''} onChange={e => setEditHypoForm(p => ({ ...p, market: e.target.value }))}
-                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Primary KPI</label>
-                                <input value={editHypoForm.primary_kpi || ''} onChange={e => setEditHypoForm(p => ({ ...p, primary_kpi: e.target.value }))}
-                                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm" />
-                              </div>
-                            </div>
-                            <div className="flex gap-2 pt-1">
-                              <button onClick={() => saveEditHypo(h.hypothesis_id)} disabled={editSaving}
-                                className="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
-                                {editSaving ? 'Saving…' : 'Save'}
-                              </button>
-                              <button onClick={() => setEditingHypoId(null)}
-                                className="px-4 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50">
-                                Cancel
-                              </button>
-                            </div>
+                            )}
                           </div>
                         )}
                       </div>
-                    </div>
-                  )})}
+                    )
+                  })}
                 </div>
               </div>
             )
