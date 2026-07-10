@@ -46,6 +46,7 @@ function DashboardInner() {
   const highlightCampaignId = search.get('campaign') || ''
 
   // -------------------- filter state --------------------
+  const [campaignType, setCampaignType] = useState<'sale' | 'lead'>('sale')
   const [country, setCountry] = useState(initialCountry)
   const [platform, setPlatform] = useState(initialPlatform)
   const [funnelStage, setFunnelStage] = useState(initialFunnel)
@@ -100,13 +101,14 @@ function DashboardInner() {
     if (platform) params.set('platform', platform)
     if (funnelStage) params.set('funnel_stage', funnelStage)
     if (branchParam) params.set('branches', branchParam)
+    if (campaignType === 'lead') params.set('campaign_type', 'lead')
     if (extra) {
       for (const [k, v] of Object.entries(extra)) {
         if (v) params.set(k, v)
       }
     }
     return params.toString()
-  }, [resolvedRange, country, platform, funnelStage, branchParam])
+  }, [resolvedRange, country, platform, funnelStage, branchParam, campaignType])
 
   // Bootstrap: branches list (once).
   useEffect(() => {
@@ -223,7 +225,7 @@ function DashboardInner() {
       if (camp.success) setCampaignRows(camp.data?.items || [])
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [buildQs, datePreset, customFrom, customTo, country, platform, funnelStage, branchParam])
+  }, [buildQs, datePreset, customFrom, customTo, country, platform, funnelStage, branchParam, campaignType])
 
   // Branch dropdown click-outside.
   const branchDropdownRef = useRef<HTMLDivElement>(null)
@@ -307,7 +309,19 @@ function DashboardInner() {
       <div className="sticky top-0 z-30 -mx-6 -mt-6 px-6 pt-6 pb-3 mb-4 bg-gray-50/95 backdrop-blur border-b border-gray-200">
       {/* Header + filter bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <h1 className="text-2xl font-bold text-blue-600">ADS Performance</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold text-blue-600">ADS Performance</h1>
+          <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+            <button
+              onClick={() => setCampaignType('sale')}
+              className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'sale' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            >Sale</button>
+            <button
+              onClick={() => setCampaignType('lead')}
+              className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'lead' ? 'bg-orange-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            >Lead</button>
+          </div>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <select value={datePreset} onChange={e => setDatePreset(e.target.value)}
             className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -401,6 +415,49 @@ function DashboardInner() {
         const roas = selectedKpi.total_spend ? selectedKpi.total_revenue / selectedKpi.total_spend : 0
         const ctr = selectedKpi.impressions ? (selectedKpi.clicks / selectedKpi.impressions) * 100 : 0
         const cpa = selectedKpi.conversions ? selectedKpi.total_spend / selectedKpi.conversions : 0
+
+        const Card = ({ k }: { k: { label: string; value: string; change: number | null; inverse: boolean } }) => (
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <p className="text-xs text-gray-500 mb-1 truncate">{k.label}</p>
+            <p className="text-2xl font-bold text-gray-900">{k.value}</p>
+            <div className="mt-2"><ChangeTag change={k.change} inverseColor={k.inverse} /></div>
+          </div>
+        )
+
+        if (campaignType === 'lead') {
+          // Lead dashboard: Spend, Leads (= conversions for Lead objective), CPL, CTR, CPC, Impressions
+          const cpl = selectedKpi.conversions ? selectedKpi.total_spend / selectedKpi.conversions : 0
+          const leadHeadline = [
+            { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: kpiForChange?.spend_change ?? null, inverse: true },
+            { label: 'Leads', value: fmtNum(selectedKpi.conversions), change: kpiForChange?.conversions_change ?? null, inverse: false },
+            { label: `CPL (${responseCurrency})`, value: cpl ? fmtMoney(Math.round(cpl), responseCurrency) : '--', change: kpiForChange?.cpa_change ?? null, inverse: true },
+            { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: kpiForChange?.revenue_change ?? null, inverse: false },
+            { label: 'ROAS', value: roas ? roas.toFixed(2) + 'x' : '0', change: kpiForChange?.roas_change ?? null, inverse: false },
+            { label: 'CTR', value: ctr ? ctr.toFixed(1) + '%' : '0%', change: kpiForChange?.ctr_change ?? null, inverse: false },
+          ]
+          const leadDecomp = [
+            { label: 'Lead Rate (Leads / Clicks)', value: cr ? cr.toFixed(2) + '%' : '--', change: kpiForChange?.cr_change ?? null, inverse: false },
+            { label: 'Clicks', value: fmtNum(selectedKpi.clicks), change: kpiForChange?.ctr_change ?? null, inverse: false },
+            { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: kpiForChange?.cpc_change ?? null, inverse: true },
+          ]
+          return (
+            <div className="space-y-4 mb-6">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                {leadHeadline.map(k => <Card key={k.label} k={k} />)}
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-2 text-[11px] uppercase tracking-wider text-orange-400 font-semibold">
+                  Lead Funnel
+                  <span className="text-gray-300 normal-case font-normal tracking-normal">Comment → Landing Page → Form Fill → Email Flow</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {leadDecomp.map(k => <Card key={k.label} k={k} />)}
+                </div>
+              </div>
+            </div>
+          )
+        }
+
         const headline = [
           { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: kpiForChange?.spend_change ?? null, inverse: true },
           { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: kpiForChange?.revenue_change ?? null, inverse: false },
@@ -409,22 +466,11 @@ function DashboardInner() {
           { label: `CPA (${responseCurrency})`, value: cpa ? fmtMoney(Math.round(cpa), responseCurrency) : '--', change: kpiForChange?.cpa_change ?? null, inverse: true },
           { label: 'Conversions', value: fmtNum(selectedKpi.conversions), change: kpiForChange?.conversions_change ?? null, inverse: false },
         ]
-        // ROAS decomposition (CR × AOV / CPC). Always shown — when no country
-        // is selected we use the cross-country aggregate (totals re-derive
-        // ratios cleanly since they're computed from summed counters).
         const decomp = [
           { label: 'CR (Conversion Rate)', value: cr ? cr.toFixed(2) + '%' : '--', change: kpiForChange?.cr_change ?? null, inverse: false },
           { label: `AOV (${responseCurrency})`, value: aov ? fmtMoney(Math.round(aov), responseCurrency) : '--', change: kpiForChange?.aov_change ?? null, inverse: false },
           { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: kpiForChange?.cpc_change ?? null, inverse: true },
         ]
-
-        const Card = ({ k }: { k: typeof headline[number] }) => (
-          <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <p className="text-xs text-gray-500 mb-1 truncate">{k.label}</p>
-            <p className="text-2xl font-bold text-gray-900">{k.value}</p>
-            <div className="mt-2"><ChangeTag change={k.change} inverseColor={k.inverse} /></div>
-          </div>
-        )
 
         return (
           <div className="space-y-4 mb-6">
@@ -456,7 +502,7 @@ function DashboardInner() {
           valueFormatter={(v) => fmtMoney(v, 'VND')}
         />
         <BranchPie
-          title="By Branch (Conversions)"
+          title={campaignType === 'lead' ? 'By Branch (Leads)' : 'By Branch (Conversions)'}
           rows={byBranch as BranchBreakdownRow[]}
           valueKey="conversions"
           selectedBranches={selectedBranches}
