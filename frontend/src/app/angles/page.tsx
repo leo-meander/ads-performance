@@ -92,6 +92,9 @@ interface Account { id: string; account_name: string; platform: string }
 
 interface LearningDashboard {
   branch_name: string; total_hypotheses: number; total_pending: number; total_experiments: number; total_running: number; total_validated: number; total_refuted: number; min_sample: number
+  pending_hypotheses: { hypothesis_id: string; hypothesis: string; hypothesis_category: string | null; human_desire: string | null; funnel_stage: string | null; format: string | null; target_audience: string | null }[]
+  category_counts: Record<string, number>
+  tested_desires: string[]
   top_desires: { desire: string; win_rate: number; experiments: number; wins: number; sufficient: boolean }[]
   top_drivers: { category: string; raw: string; win_rate: number; experiments: number; sufficient: boolean }[]
   angle_win_rates: { angle: string; wins: number; total: number; win_rate: number; sufficient: boolean }[]
@@ -1569,176 +1572,312 @@ function AnglesPageInner() {
               {ldLoading ? 'Loading knowledge base...' : 'Select a branch to see the learning dashboard.'}
             </div>
           ) : (
-            <div className="space-y-6">
-              <div className="grid grid-cols-6 gap-4">
-                {[
-                  { label: 'Total', value: learningDashboard.total_hypotheses, color: 'text-gray-800' },
-                  { label: 'Pending', value: learningDashboard.total_pending, color: 'text-gray-400' },
-                  { label: 'Running', value: learningDashboard.total_running, color: 'text-blue-600' },
-                  { label: 'Concluded', value: learningDashboard.total_experiments, color: 'text-gray-700' },
-                  { label: 'Validated', value: learningDashboard.total_validated, color: 'text-green-700' },
-                  { label: 'Refuted', value: learningDashboard.total_refuted, color: 'text-red-600' },
-                ].map(s => (
-                  <div key={s.label} className="bg-white rounded-xl border border-gray-200 p-5 text-center">
-                    <p className={`text-3xl font-bold ${s.color}`}>{s.value}</p>
-                    <p className="text-xs text-gray-400 mt-1">{s.label}</p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Desire Win Rate */}
-                <div className="bg-white rounded-xl border border-gray-200 p-5">
-                  <div className="flex items-center gap-2 mb-4">
-                    <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Desire Win Rate</h3>
-                    <Tip text="Win rate = validated ÷ (validated + refuted). Only counts concluded ads, not pending/running. Greyed = below min_sample — no verdict yet." wide />
-                  </div>
-                  {learningDashboard.top_desires.length === 0 ? <p className="text-xs text-gray-400">No data yet.</p> : (
-                    <div className="space-y-3">
-                      {learningDashboard.top_desires.map(d => (
-                        <div key={d.desire} className={d.sufficient ? '' : 'opacity-50'}>
-                          <div className="flex items-center justify-between mb-1">
-                            <span className={`text-sm font-medium ${d.sufficient ? 'text-gray-800' : 'text-gray-400'}`}>{d.desire}</span>
-                            <span className={`text-sm font-bold ${!d.sufficient ? 'text-gray-400' : d.win_rate >= 60 ? 'text-green-600' : d.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>
-                              {d.sufficient ? `${d.win_rate}%` : '—'}
-                            </span>
-                          </div>
-                          {d.sufficient && (
-                            <div className="h-1.5 bg-gray-100 rounded-full">
-                              <div className={`h-full rounded-full ${d.win_rate >= 60 ? 'bg-green-500' : d.win_rate >= 40 ? 'bg-amber-500' : 'bg-red-400'}`}
-                                style={{ width: `${d.win_rate}%` }} />
-                            </div>
-                          )}
-                          <p className="text-[10px] text-gray-400 mt-0.5">
-                            {d.wins}/{d.experiments} concluded
-                            {!d.sufficient && ` · needs ${learningDashboard.min_sample} min`}
-                          </p>
-                        </div>
-                      ))}
+            <div className="space-y-5">
+              {/* ── PIPELINE ── Pending → Running → Concluded */}
+              <div className="bg-white rounded-xl border border-gray-200 p-5">
+                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4">Hypothesis Pipeline</h3>
+                <div className="flex items-stretch gap-0">
+                  {[
+                    { label: 'Pending', value: learningDashboard.total_pending, color: 'bg-gray-50 border-gray-200', badge: 'text-gray-500', dot: 'bg-gray-300' },
+                    { label: 'Running', value: learningDashboard.total_running, color: 'bg-blue-50 border-blue-200', badge: 'text-blue-600', dot: 'bg-blue-400' },
+                    { label: 'Concluded', value: learningDashboard.total_experiments, color: 'bg-gray-50 border-gray-200', badge: 'text-gray-700', dot: 'bg-gray-400' },
+                    { label: 'Validated ✓', value: learningDashboard.total_validated, color: 'bg-green-50 border-green-200', badge: 'text-green-700', dot: 'bg-green-400' },
+                    { label: 'Refuted ✗', value: learningDashboard.total_refuted, color: 'bg-red-50 border-red-200', badge: 'text-red-600', dot: 'bg-red-400' },
+                  ].map((s, i) => (
+                    <div key={s.label} className="flex items-center">
+                      <div className={`border rounded-lg px-4 py-3 text-center min-w-[90px] ${s.color}`}>
+                        <p className={`text-2xl font-bold ${s.badge}`}>{s.value}</p>
+                        <p className="text-[10px] text-gray-500 mt-0.5 whitespace-nowrap">{s.label}</p>
+                      </div>
+                      {i < 4 && <div className="text-gray-300 px-1.5 text-lg select-none">›</div>}
                     </div>
-                  )}
+                  ))}
+                  <div className="ml-auto flex items-center">
+                    {learningDashboard.total_experiments > 0 && (
+                      <span className={`text-sm font-bold px-3 py-1 rounded-full ${
+                        Math.round(learningDashboard.total_validated / learningDashboard.total_experiments * 100) >= 60
+                          ? 'bg-green-100 text-green-700' : Math.round(learningDashboard.total_validated / learningDashboard.total_experiments * 100) >= 40
+                          ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-600'
+                      }`}>
+                        {Math.round(learningDashboard.total_validated / learningDashboard.total_experiments * 100)}% win rate
+                      </span>
+                    )}
+                  </div>
                 </div>
 
-                {/* Decision Driver Win Rate */}
-                <div className="bg-white rounded-xl border border-gray-200 p-5">
-                  <div className="flex items-center gap-2 mb-4">
-                    <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Decision Driver Win Rate</h3>
-                    <Tip text="Which Hypothesis Category (Identity, Emotional Trigger, Social Proof...) is working best for this branch. Use this to prioritize the next test type." wide />
-                  </div>
-                  {learningDashboard.top_drivers.length === 0 ? <p className="text-xs text-gray-400">No data yet.</p> : (
-                    <div className="space-y-3">
-                      {learningDashboard.top_drivers.map(d => (
-                        <div key={d.raw} className={d.sufficient ? '' : 'opacity-50'}>
-                          <div className="flex items-center justify-between mb-1">
-                            <span className={`text-sm font-medium ${d.sufficient ? 'text-gray-800' : 'text-gray-400'}`}>{d.category}</span>
-                            <span className={`text-sm font-bold ${!d.sufficient ? 'text-gray-400' : d.win_rate >= 60 ? 'text-green-600' : d.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>
-                              {d.sufficient ? `${d.win_rate}%` : '—'}
-                            </span>
-                          </div>
-                          {d.sufficient && (
-                            <div className="h-1.5 bg-gray-100 rounded-full">
-                              <div className={`h-full rounded-full ${d.win_rate >= 60 ? 'bg-indigo-500' : d.win_rate >= 40 ? 'bg-amber-500' : 'bg-red-400'}`}
-                                style={{ width: `${d.win_rate}%` }} />
-                            </div>
-                          )}
-                          <p className="text-[10px] text-gray-400 mt-0.5">
-                            {d.experiments} concluded{!d.sufficient && ` · needs ${learningDashboard.min_sample} min`}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Angle Win Rate — ONE table */}
-                <div className="bg-white rounded-xl border border-gray-200 p-5 lg:col-span-2">
-                  <div className="flex items-center gap-2 mb-4">
-                    <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Angle Win Rate</h3>
-                    <Tip wide text="Each creative angle appears exactly once. Win rate = validated ÷ (validated + refuted). Faded rows = below min_sample — no verdict yet. Sorted: sufficient sample first, then by highest win rate." />
-                  </div>
-                  {learningDashboard.angle_win_rates.length === 0 ? <p className="text-xs text-gray-400">No concluded angles yet.</p> : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="text-[10px] text-gray-400 uppercase tracking-wider border-b border-gray-100">
-                            <th className="text-left pb-2 font-medium">Angle</th>
-                            <th className="text-right pb-2 font-medium w-20">Wins</th>
-                            <th className="text-right pb-2 font-medium w-20">Total</th>
-                            <th className="text-right pb-2 font-medium w-24">Win Rate</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-50">
-                          {learningDashboard.angle_win_rates.map(a => (
-                            <tr key={a.angle} className={a.sufficient ? '' : 'opacity-45'}>
-                              <td className={`py-2 pr-4 font-medium ${a.sufficient ? 'text-gray-800' : 'text-gray-400'}`}>{a.angle}</td>
-                              <td className="py-2 text-right text-green-700 font-medium">{a.wins}</td>
-                              <td className="py-2 text-right text-gray-500">{a.total}</td>
-                              <td className="py-2 text-right">
-                                {a.sufficient ? (
-                                  <span className={`font-bold ${a.win_rate >= 60 ? 'text-green-600' : a.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>{a.win_rate}%</span>
-                                ) : (
-                                  <span className="text-gray-300 text-xs">insufficient</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-
-                {/* Funnel-Stage Failure Map */}
-                <div className="bg-white rounded-xl border border-gray-200 p-5">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Funnel-Stage Failure Map</h3>
-                    <Tip wide text="% of hypotheses refuted at each funnel stage. High Stop fail rate → creative is not strong enough to hold attention. High Click fail rate → good hook but weak offer. Use this to know what to fix first." />
-                  </div>
-                  <p className="text-[10px] text-gray-400 mb-4">Where do most hypotheses get refuted?</p>
-                  {Object.keys(learningDashboard.funnel_failure_map).length === 0 ? <p className="text-xs text-gray-400">No data yet — add funnel_stage to hypotheses first.</p> : (
-                    <div className="space-y-3">
-                      {(['Stop', 'Hold', 'Click', 'Downstream'] as const).map(stage => {
-                        const d = learningDashboard.funnel_failure_map[stage]
-                        if (!d) return null
-                        return (
-                          <div key={stage}>
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-sm font-medium text-gray-700">{stage}</span>
-                              <span className={`text-sm font-bold ${d.refute_rate >= 60 ? 'text-red-600' : d.refute_rate >= 40 ? 'text-amber-600' : 'text-green-600'}`}>{d.refute_rate}% fail</span>
-                            </div>
-                            <div className="h-2 bg-gray-100 rounded-full">
-                              <div className={`h-full rounded-full ${d.refute_rate >= 60 ? 'bg-red-400' : d.refute_rate >= 40 ? 'bg-amber-400' : 'bg-green-400'}`}
-                                style={{ width: `${d.refute_rate}%` }} />
-                            </div>
-                            <p className="text-[10px] text-gray-400 mt-0.5">{d.refutes}/{d.total} refuted</p>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* Recent Learnings */}
-                {learningDashboard.recent_learnings.length > 0 && (
-                  <div className="bg-violet-50 rounded-xl border border-violet-100 p-5">
-                    <h3 className="text-sm font-bold text-violet-700 uppercase tracking-wider mb-4">Recent Learnings</h3>
-                    <div className="space-y-2">
-                      {learningDashboard.recent_learnings.map(l => (
-                        <div key={l.hypothesis_id} className="flex items-start gap-3">
-                          <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0 mt-1.5" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm text-violet-900">{l.learning}</p>
-                            <p className="text-[10px] text-violet-400 mt-0.5">
-                              {[l.funnel_stage, l.human_desire, l.target_audience, l.market].filter(Boolean).join(' · ')}
-                              {l.validated_at && ` · ${new Date(l.validated_at).toLocaleDateString()}`}
-                            </p>
+                {/* Pending queue */}
+                {learningDashboard.pending_hypotheses.length > 0 && (
+                  <div className="mt-4 border-t border-gray-100 pt-4">
+                    <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-2 font-medium">
+                      {learningDashboard.pending_hypotheses.length} waiting to launch — go to Hypotheses tab to set status → Running
+                    </p>
+                    <div className="space-y-1.5">
+                      {learningDashboard.pending_hypotheses.slice(0, 5).map(h => (
+                        <div key={h.hypothesis_id} className="flex items-start gap-2 text-sm">
+                          <span className="font-mono text-[10px] text-gray-300 mt-0.5 shrink-0">{h.hypothesis_id}</span>
+                          <span className="text-gray-700 line-clamp-1">{h.hypothesis}</span>
+                          <div className="flex items-center gap-1 ml-auto shrink-0">
+                            {h.funnel_stage && <span className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded">{h.funnel_stage}</span>}
+                            {h.format && <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">{h.format}</span>}
                           </div>
                         </div>
                       ))}
+                      {learningDashboard.pending_hypotheses.length > 5 && (
+                        <p className="text-[10px] text-gray-400">+{learningDashboard.pending_hypotheses.length - 5} more</p>
+                      )}
                     </div>
                   </div>
                 )}
               </div>
+
+              {/* ── FOCUS NOW ── Computed action items */}
+              {(() => {
+                const actions: { icon: string; text: string; sub: string; color: string }[] = []
+
+                // 1. Pending hypotheses to launch
+                if (learningDashboard.total_pending > 0 && learningDashboard.total_running === 0) {
+                  actions.push({
+                    icon: '🚀',
+                    text: `Launch ${learningDashboard.total_pending} pending hypothesis${learningDashboard.total_pending > 1 ? 'es' : ''}`,
+                    sub: 'None are running yet — go to Hypotheses tab and set status to Running',
+                    color: 'border-blue-200 bg-blue-50',
+                  })
+                } else if (learningDashboard.total_pending > 0) {
+                  actions.push({
+                    icon: '📋',
+                    text: `${learningDashboard.total_pending} hypothesis${learningDashboard.total_pending > 1 ? 'es' : ''} pending`,
+                    sub: 'Review and launch when ready in the Hypotheses tab',
+                    color: 'border-gray-200 bg-gray-50',
+                  })
+                }
+
+                // 2. Winning desire to double down on
+                const topDesire = learningDashboard.top_desires.find(d => d.sufficient && d.win_rate >= 60)
+                if (topDesire) {
+                  actions.push({
+                    icon: '🎯',
+                    text: `Double down on "${topDesire.desire}"`,
+                    sub: `${topDesire.win_rate}% win rate across ${topDesire.experiments} tests — keep testing this desire`,
+                    color: 'border-green-200 bg-green-50',
+                  })
+                }
+
+                // 3. Weakest desire to reconsider
+                const worstDesire = learningDashboard.top_desires.find(d => d.sufficient && d.win_rate < 40)
+                if (worstDesire) {
+                  actions.push({
+                    icon: '⚠️',
+                    text: `Rethink "${worstDesire.desire}" messaging`,
+                    sub: `${worstDesire.win_rate}% win rate — the angle isn't resonating, try a different insight`,
+                    color: 'border-amber-200 bg-amber-50',
+                  })
+                }
+
+                // 4. Funnel bottleneck
+                const funnelEntries = Object.entries(learningDashboard.funnel_failure_map)
+                const worstStage = funnelEntries.sort(([, a], [, b]) => b.refute_rate - a.refute_rate)[0]
+                if (worstStage && worstStage[1].refute_rate >= 50 && worstStage[1].total >= 2) {
+                  const stageHints: Record<string, string> = {
+                    Stop: 'Hook is weak — first 3 seconds not stopping the scroll',
+                    Hold: 'Hook works but body loses attention — tighten the middle',
+                    Click: 'Good content but CTA or offer isn\'t converting',
+                    Downstream: 'Ad works but landing page or booking flow is losing people',
+                  }
+                  actions.push({
+                    icon: '🔧',
+                    text: `Fix the ${worstStage[0]} stage`,
+                    sub: stageHints[worstStage[0]] || `${worstStage[1].refute_rate}% of tests fail here`,
+                    color: 'border-red-200 bg-red-50',
+                  })
+                }
+
+                // 5. Untested category gap
+                const CATS = ['identity', 'decision_driver', 'emotional_trigger', 'travel_moment', 'social_proof', 'objection_handler', 'aha_moment', 'aspiration']
+                const untestedCat = CATS.find(c => !learningDashboard.category_counts[c])
+                if (untestedCat && learningDashboard.total_hypotheses > 0) {
+                  actions.push({
+                    icon: '🧪',
+                    text: `Explore "${untestedCat.replace('_', ' ')}" — never tested`,
+                    sub: 'Create a hypothesis in this category to broaden your learning coverage',
+                    color: 'border-violet-200 bg-violet-50',
+                  })
+                }
+
+                // 6. Need more data
+                if (learningDashboard.total_experiments === 0 && learningDashboard.total_running > 0) {
+                  actions.push({
+                    icon: '⏳',
+                    text: `Wait for ${learningDashboard.total_running} running test${learningDashboard.total_running > 1 ? 's' : ''} to conclude`,
+                    sub: `Need at least ${learningDashboard.min_sample} concluded ads per hypothesis to reach a verdict`,
+                    color: 'border-gray-200 bg-gray-50',
+                  })
+                }
+
+                if (actions.length === 0) return null
+                return (
+                  <div>
+                    <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Focus Now</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {actions.slice(0, 4).map((a, i) => (
+                        <div key={i} className={`rounded-xl border p-4 flex gap-3 items-start ${a.color}`}>
+                          <span className="text-xl shrink-0">{a.icon}</span>
+                          <div>
+                            <p className="text-sm font-semibold text-gray-800">{a.text}</p>
+                            <p className="text-xs text-gray-500 mt-0.5">{a.sub}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* ── LEARNINGS — only when validated data exists ── */}
+              {learningDashboard.recent_learnings.length > 0 && (
+                <div className="bg-violet-50 rounded-xl border border-violet-200 p-5">
+                  <h3 className="text-xs font-bold text-violet-600 uppercase tracking-wider mb-4">What We Know Works</h3>
+                  <div className="space-y-3">
+                    {learningDashboard.recent_learnings.map(l => (
+                      <div key={l.hypothesis_id} className="flex items-start gap-3">
+                        <span className="text-green-500 text-base shrink-0">✓</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-violet-900">{l.learning}</p>
+                          <p className="text-[10px] text-violet-400 mt-0.5">
+                            {[l.funnel_stage, l.human_desire, l.target_audience, l.market].filter(Boolean).join(' · ')}
+                            {l.validated_at && ` · ${new Date(l.validated_at).toLocaleDateString()}`}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── ANALYTICS — collapsible, only meaningful when data exists ── */}
+              {learningDashboard.total_experiments > 0 && (
+                <div>
+                  <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Win Rate Analysis</h3>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    {/* Desire Win Rate */}
+                    {learningDashboard.top_desires.length > 0 && (
+                      <div className="bg-white rounded-xl border border-gray-200 p-5">
+                        <div className="flex items-center gap-2 mb-4">
+                          <h4 className="text-sm font-semibold text-gray-700">By Desire</h4>
+                          <Tip text="Win rate = validated ÷ (validated + refuted). Greyed = below min_sample." wide />
+                        </div>
+                        <div className="space-y-3">
+                          {learningDashboard.top_desires.map(d => (
+                            <div key={d.desire} className={d.sufficient ? '' : 'opacity-50'}>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-sm font-medium text-gray-800 truncate max-w-[200px]">{d.desire}</span>
+                                <span className={`text-sm font-bold ml-2 shrink-0 ${!d.sufficient ? 'text-gray-400' : d.win_rate >= 60 ? 'text-green-600' : d.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>
+                                  {d.sufficient ? `${d.win_rate}%` : `${d.experiments}/${learningDashboard.min_sample}`}
+                                </span>
+                              </div>
+                              <div className="h-1.5 bg-gray-100 rounded-full">
+                                <div className={`h-full rounded-full ${d.sufficient ? (d.win_rate >= 60 ? 'bg-green-400' : d.win_rate >= 40 ? 'bg-amber-400' : 'bg-red-400') : 'bg-gray-200'}`}
+                                  style={{ width: d.sufficient ? `${d.win_rate}%` : `${Math.round(d.experiments / learningDashboard.min_sample * 100)}%` }} />
+                              </div>
+                              <p className="text-[10px] text-gray-400 mt-0.5">{d.wins}/{d.experiments} concluded{!d.sufficient && ` · ${learningDashboard.min_sample - d.experiments} more needed`}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Decision Driver */}
+                    {learningDashboard.top_drivers.length > 0 && (
+                      <div className="bg-white rounded-xl border border-gray-200 p-5">
+                        <div className="flex items-center gap-2 mb-4">
+                          <h4 className="text-sm font-semibold text-gray-700">By Category</h4>
+                          <Tip text="Which message type is working best for this branch." wide />
+                        </div>
+                        <div className="space-y-3">
+                          {learningDashboard.top_drivers.map(d => (
+                            <div key={d.raw} className={d.sufficient ? '' : 'opacity-50'}>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-sm font-medium text-gray-800">{d.category}</span>
+                                <span className={`text-sm font-bold ${!d.sufficient ? 'text-gray-400' : d.win_rate >= 60 ? 'text-green-600' : d.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>
+                                  {d.sufficient ? `${d.win_rate}%` : '—'}
+                                </span>
+                              </div>
+                              <div className="h-1.5 bg-gray-100 rounded-full">
+                                {d.sufficient && <div className={`h-full rounded-full ${d.win_rate >= 60 ? 'bg-indigo-400' : d.win_rate >= 40 ? 'bg-amber-400' : 'bg-red-400'}`}
+                                  style={{ width: `${d.win_rate}%` }} />}
+                              </div>
+                              <p className="text-[10px] text-gray-400 mt-0.5">{d.experiments} concluded{!d.sufficient && ` · needs ${learningDashboard.min_sample} min`}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Funnel Failure Map */}
+                    {Object.keys(learningDashboard.funnel_failure_map).length > 0 && (
+                      <div className="bg-white rounded-xl border border-gray-200 p-5">
+                        <div className="flex items-center gap-2 mb-4">
+                          <h4 className="text-sm font-semibold text-gray-700">Where Tests Fail</h4>
+                          <Tip wide text="Stop = hook weak. Hold = body loses attention. Click = offer weak. Downstream = landing page problem." />
+                        </div>
+                        <div className="space-y-3">
+                          {(['Stop', 'Hold', 'Click', 'Downstream'] as const).map(stage => {
+                            const d = learningDashboard.funnel_failure_map[stage]
+                            if (!d) return null
+                            return (
+                              <div key={stage}>
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-sm font-medium text-gray-700">{stage}</span>
+                                  <span className={`text-sm font-bold ${d.refute_rate >= 60 ? 'text-red-600' : d.refute_rate >= 40 ? 'text-amber-600' : 'text-green-600'}`}>{d.refute_rate}% fail</span>
+                                </div>
+                                <div className="h-2 bg-gray-100 rounded-full">
+                                  <div className={`h-full rounded-full ${d.refute_rate >= 60 ? 'bg-red-400' : d.refute_rate >= 40 ? 'bg-amber-400' : 'bg-green-400'}`}
+                                    style={{ width: `${d.refute_rate}%` }} />
+                                </div>
+                                <p className="text-[10px] text-gray-400 mt-0.5">{d.refutes}/{d.total} refuted</p>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Angle Win Rate */}
+                    {learningDashboard.angle_win_rates.length > 0 && (
+                      <div className="bg-white rounded-xl border border-gray-200 p-5">
+                        <div className="flex items-center gap-2 mb-4">
+                          <h4 className="text-sm font-semibold text-gray-700">By Angle</h4>
+                          <Tip wide text="Faded = below min_sample. Sorted by win rate." />
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-[10px] text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                                <th className="text-left pb-2 font-medium">Angle</th>
+                                <th className="text-right pb-2 font-medium w-16">W/T</th>
+                                <th className="text-right pb-2 font-medium w-20">Win %</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-50">
+                              {learningDashboard.angle_win_rates.map(a => (
+                                <tr key={a.angle} className={a.sufficient ? '' : 'opacity-45'}>
+                                  <td className={`py-2 pr-4 font-medium text-sm ${a.sufficient ? 'text-gray-800' : 'text-gray-400'}`}>{a.angle}</td>
+                                  <td className="py-2 text-right text-xs text-gray-500">{a.wins}/{a.total}</td>
+                                  <td className="py-2 text-right">
+                                    {a.sufficient
+                                      ? <span className={`font-bold ${a.win_rate >= 60 ? 'text-green-600' : a.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>{a.win_rate}%</span>
+                                      : <span className="text-gray-300 text-xs">–</span>}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
 
               {/* ── COHORT BATTLES ── */}
               {(() => {
