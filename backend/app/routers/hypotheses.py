@@ -464,43 +464,51 @@ def bulk_generate_hypotheses(payload: BulkGenerateRequest, db: Session = Depends
             top = sorted_m[:3]
             bottom = sorted_m[-2:]
 
+            attr = "hook_rate" if metric == "hook_rate" else "ctr" if metric == "CTR" else "roas"
+
             def fmt(c: AdCombo) -> str:
-                val = float(getattr(c, "hook_rate" if metric == "hook_rate" else "ctr" if metric == "CTR" else "roas") or 0)
+                val = float(getattr(c, attr) or 0)
                 fmt_val = f"{val:.2%}" if metric != "roas" else f"{val:.2f}x"
-                return f"- [{c.verdict}] {c.ad_name or c.combo_id}: {metric}={fmt_val}"
+                return f"- [{c.verdict}] \"{c.ad_name or c.combo_id}\" → {metric}={fmt_val}"
 
             top_lines = "\n".join(fmt(c) for c in top)
             bottom_lines = "\n".join(fmt(c) for c in bottom)
-
-            top_metric_val = float(getattr(top[0], "hook_rate" if metric == "hook_rate" else "ctr" if metric == "CTR" else "roas") or 0) if top else 0
-            cohort_avg = sum(float(getattr(c, "hook_rate" if metric == "hook_rate" else "ctr" if metric == "CTR" else "roas") or 0) for c in members) / len(members)
+            cohort_avg = sum(float(getattr(c, attr) or 0) for c in members) / len(members)
             avg_fmt = f"{cohort_avg:.2%}" if metric != "roas" else f"{cohort_avg:.2f}x"
+            top_val = float(getattr(top[0], attr) or 0) if top else 0
+            top_fmt = f"{top_val:.2%}" if metric != "roas" else f"{top_val:.2f}x"
 
-            prompt = f"""You are a creative strategist for {payload.branch_name}, a hotel/restaurant brand.
+            prompt = f"""You are a creative strategist analyzing ad performance for {payload.branch_name}.
 
-Cohort: TA={ta}, Market={country}, Primary Metric={metric}
-Brand promise: {brand_promise}
-Never say: {', '.join(never_say) or 'none'}
-Cohort average {metric}: {avg_fmt}
+Cohort: TA={ta}, Market={country}, Metric={metric}
+Cohort average: {avg_fmt}
 
-Top performers:
+TOP ads (high {metric}):
 {top_lines}
 
-Bottom performers:
+BOTTOM ads (low {metric}):
 {bottom_lines}
 
-Find what separates winners from losers. Write ONE clean hypothesis.
+Step 1 — read the actual ad names above carefully. What is CONCRETELY different between the top and bottom ads? Look at:
+- Who appears (KOL name, guest, staff, no one)?
+- What is shown first (city, room, food, activity)?
+- What is the tone (price, emotion, discovery, lifestyle)?
+- What format signal is in the name (carousel, video, static)?
 
-Return JSON in English:
+Step 2 — pick the ONE most observable difference. Ignore vague categories like "authentic" or "storytelling."
+
+Step 3 — write the hypothesis using the actual content from the ad names.
+
+Return JSON:
 {{
-  "customer_insight": "What this guest fundamentally wants — one plain sentence, starts with the guest, no brand jargon.",
-  "hypothesis": "The one creative element we think pushes {metric} above the cohort average — one sentence, plain English. State what the winning creatives DO, not what they do 'instead of' something else. No 'vs', no 'A or B'.",
-  "variable_tested": "The specific creative element being tested — one thing only. Format: '[element] · Stage: [Stop/Hold/Click] · Format: [Video/Image]'",
-  "expected_outcome": "{metric} ≥ [number] (60-day cohort avg ~{avg_fmt})",
-  "hypothesis_category": "[identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory]"
+  "customer_insight": "One sentence starting with '{ta} travelers' — what they actually want based on what's winning.",
+  "hypothesis": "Ads that [specific observable element from winning ad names] get higher {metric} for {ta} travelers in {country}. (one sentence, name the actual element, ≤15 words)",
+  "variable_tested": "[exact creative element from the ad names] · Stage: Stop · Format: Video/Image",
+  "expected_outcome": "{metric} ≥ {top_fmt} (cohort avg {avg_fmt})",
+  "hypothesis_category": "identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory"
 }}
 
-Return ONLY valid JSON. No markdown. All values in English."""
+Return ONLY valid JSON. English only. hypothesis must reference something concrete from the ad names above — not a generic principle."""
 
             try:
                 msg = client.messages.create(
