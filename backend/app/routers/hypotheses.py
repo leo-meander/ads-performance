@@ -502,13 +502,13 @@ Step 3 — write the hypothesis using the actual content from the ad names.
 Return JSON:
 {{
   "customer_insight": "One sentence starting with '{ta} travelers' — what they actually want based on what's winning.",
-  "hypothesis": "Ads that [specific observable element from winning ad names] get higher {metric} for {ta} travelers in {country}. (one sentence, name the actual element, ≤15 words)",
+  "hypothesis": "Ads that [specific observable element from winning ad names] get higher {metric} than the cohort average. DO NOT write 'than [other ad type]' — end the sentence at 'cohort average'. One sentence, ≤15 words.",
   "variable_tested": "[exact creative element from the ad names] · Stage: Stop · Format: Video/Image",
   "expected_outcome": "{metric} ≥ {top_fmt} (cohort avg {avg_fmt})",
   "hypothesis_category": "identity|decision_driver|emotional_trigger|travel_moment|social_proof|experience|value_perception|brand_territory"
 }}
 
-Return ONLY valid JSON. English only. hypothesis must reference something concrete from the ad names above — not a generic principle."""
+Return ONLY valid JSON. English only. hypothesis must name a concrete element from the ad names above. Do NOT compare against another ad type — the comparison is always against the cohort average."""
 
             try:
                 msg = client.messages.create(
