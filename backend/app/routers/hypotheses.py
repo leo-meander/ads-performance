@@ -648,6 +648,56 @@ def link_combos(hypothesis_id: str, payload: dict, db: Session = Depends(get_db)
         return {"success": False, "data": None, "error": str(e), "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
+class HypothesisUpdate(BaseModel):
+    hypothesis: Optional[str] = None
+    hypothesis_category: Optional[str] = None
+    customer_insight: Optional[str] = None
+    human_desire: Optional[str] = None
+    creative_angle: Optional[str] = None
+    target_audience: Optional[str] = None
+    market: Optional[str] = None
+    variable_tested: Optional[str] = None
+    expected_outcome: Optional[str] = None
+    funnel_stage: Optional[str] = None
+    format: Optional[str] = None
+    primary_metric: Optional[str] = None
+    win_threshold: Optional[float] = None
+    min_sample: Optional[int] = None
+    primary_kpi: Optional[str] = None
+    secondary_kpi: Optional[str] = None
+    status: Optional[str] = None
+    branch_name: Optional[str] = None
+
+
+@router.patch("/{hypothesis_id}")
+def update_hypothesis(
+    hypothesis_id: str,
+    payload: HypothesisUpdate,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Edit core hypothesis fields (statement, category, insight, etc.)."""
+    try:
+        hyp = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.hypothesis_id == hypothesis_id
+        ).first()
+        if not hyp:
+            raise HTTPException(status_code=404, detail=f"Hypothesis not found: {hypothesis_id}")
+        if payload.status and payload.status not in HYPOTHESIS_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {payload.status}")
+        for field, value in payload.model_dump(exclude_none=True).items():
+            setattr(hyp, field, value)
+        db.commit()
+        db.refresh(hyp)
+        return {"success": True, "data": _serialize(hyp), "error": None,
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "data": None, "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
 @router.patch("/{hypothesis_id}/result")
 def update_hypothesis_result(
     hypothesis_id: str,
