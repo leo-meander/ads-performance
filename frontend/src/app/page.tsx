@@ -553,11 +553,18 @@ function DashboardInner() {
       {funnelData.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
           <h2 className="text-sm font-semibold text-gray-700 mb-5">
-            Conversion Funnel
+            {campaignType === 'lead' ? 'Lead Funnel' : 'Conversion Funnel'}
             {country && <span className="text-gray-400 font-normal ml-2">— {countries.find(c => c.code === country)?.name || country}</span>}
           </h2>
           <div className="space-y-3">
             {funnelData.map((stage, i) => {
+              const LEAD_LABELS: Record<string, string> = {
+                'Search': 'Comment',
+                'Add to Cart': 'Landing Page',
+                'Checkout': 'Form Fill',
+                'Booking': 'Purchase',
+              }
+              const displayName = campaignType === 'lead' ? (LEAD_LABELS[stage.name] ?? stage.name) : stage.name
               const widthPct = Math.max((stage.value / funnelMax) * 100, 4)
               return (
                 <div key={`${stage.name}-${i}`}>
@@ -575,9 +582,9 @@ function DashboardInner() {
                     </div>
                   )}
                   <div className="flex items-center gap-4">
-                    <div className="bg-blue-100 rounded-lg py-3 px-4 flex items-center justify-between transition-all"
+                    <div className={`rounded-lg py-3 px-4 flex items-center justify-between transition-all ${campaignType === 'lead' ? 'bg-orange-100' : 'bg-blue-100'}`}
                       style={{ width: `${widthPct}%`, minWidth: '180px' }}>
-                      <span className="text-xs text-gray-600">{stage.name}</span>
+                      <span className="text-xs text-gray-600">{displayName}</span>
                       <span className="text-lg font-bold text-gray-900 ml-2">{fmtNum(stage.value)}</span>
                     </div>
                     <ChangeTag change={stage.change} />
