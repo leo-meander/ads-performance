@@ -92,7 +92,8 @@ interface Account { id: string; account_name: string; platform: string }
 
 interface LearningDashboard {
   branch_name: string; total_hypotheses: number; total_pending: number; total_experiments: number; total_running: number; total_validated: number; total_refuted: number; min_sample: number
-  pending_hypotheses: { hypothesis_id: string; hypothesis: string; hypothesis_category: string | null; human_desire: string | null; funnel_stage: string | null; format: string | null; target_audience: string | null }[]
+  pending_hypotheses: { hypothesis_id: string; hypothesis: string; hypothesis_category: string | null; human_desire: string | null; funnel_stage: string | null; format: string | null; target_audience: string | null; primary_metric: string | null }[]
+  metric_win_rates: { metric: string; wins: number; total: number; win_rate: number; sufficient: boolean }[]
   category_counts: Record<string, number>
   tested_desires: string[]
   top_desires: { desire: string; win_rate: number; experiments: number; wins: number; sufficient: boolean }[]
@@ -1569,6 +1570,7 @@ function AnglesPageInner() {
                           <span className="font-mono text-[10px] text-gray-300 mt-0.5 shrink-0">{h.hypothesis_id}</span>
                           <span className="text-gray-700 line-clamp-1">{h.hypothesis}</span>
                           <div className="flex items-center gap-1 ml-auto shrink-0">
+                            {h.primary_metric && <span className="text-[10px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded font-mono">{h.primary_metric}</span>}
                             {h.funnel_stage && <span className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded">{h.funnel_stage}</span>}
                             {h.format && <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">{h.format}</span>}
                           </div>
@@ -1789,6 +1791,33 @@ function AnglesPageInner() {
                               </div>
                             )
                           })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Metric Win Rate */}
+                    {learningDashboard.metric_win_rates?.length > 0 && (
+                      <div className="bg-white rounded-xl border border-gray-200 p-5">
+                        <div className="flex items-center gap-2 mb-4">
+                          <h4 className="text-sm font-semibold text-gray-700">By Metric</h4>
+                          <Tip wide text="Win rate per primary KPI. Shows which metrics your hypotheses are actually moving." />
+                        </div>
+                        <div className="space-y-3">
+                          {learningDashboard.metric_win_rates.map(m => (
+                            <div key={m.metric} className={m.sufficient ? '' : 'opacity-50'}>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-sm font-mono font-medium text-gray-800">{m.metric}</span>
+                                <span className={`text-sm font-bold ${!m.sufficient ? 'text-gray-400' : m.win_rate >= 60 ? 'text-green-600' : m.win_rate >= 40 ? 'text-amber-600' : 'text-red-500'}`}>
+                                  {m.sufficient ? `${m.win_rate}%` : `${m.total}/${learningDashboard.min_sample}`}
+                                </span>
+                              </div>
+                              <div className="h-1.5 bg-gray-100 rounded-full">
+                                <div className={`h-full rounded-full ${m.sufficient ? (m.win_rate >= 60 ? 'bg-green-400' : m.win_rate >= 40 ? 'bg-amber-400' : 'bg-red-400') : 'bg-gray-200'}`}
+                                  style={{ width: m.sufficient ? `${m.win_rate}%` : `${Math.round(m.total / learningDashboard.min_sample * 100)}%` }} />
+                              </div>
+                              <p className="text-[10px] text-gray-400 mt-0.5">{m.wins}/{m.total} validated{!m.sufficient && ` · ${learningDashboard.min_sample - m.total} more needed`}</p>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     )}
