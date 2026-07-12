@@ -1047,6 +1047,104 @@ def learning_dashboard(
                     and h.hypothesis_id not in active_combo_hyp_ids
                     and not (h.actual_spend is not None and h.actual_spend > 0))
 
+        # ── Signal Board data: build combo lookup for all linked hypotheses ──
+        # Reuse `links` and `linked_combo_ids` from active_combo detection above
+        hyp_to_combos: dict[str, list[AdCombo]] = defaultdict(list)
+        if linked_combo_ids:
+            all_linked_combos = db.query(AdCombo).filter(
+                AdCombo.combo_id.in_(linked_combo_ids)
+            ).all()
+            combo_by_id = {c.combo_id: c for c in all_linked_combos}
+            for lk in links:
+                if lk.combo_id in combo_by_id:
+                    hyp_to_combos[lk.hypothesis_id].append(combo_by_id[lk.combo_id])
+
+        def _current_metric(h: CreativeHypothesis, combos: list[AdCombo]) -> float | None:
+            """Extract current metric value: prefer hypothesis actuals, fall back to combo average."""
+            m = (h.primary_metric or h.primary_kpi or "").upper().replace(" ", "_").replace("-", "_")
+            if m == "CTR":
+                if h.actual_ctr:
+                    return float(h.actual_ctr)
+                vals = [float(c.ctr) for c in combos if c.ctr]
+                return sum(vals) / len(vals) if vals else None
+            if m == "ROAS":
+                if h.actual_roas:
+                    return float(h.actual_roas)
+                vals = [float(c.roas) for c in combos if c.roas]
+                return sum(vals) / len(vals) if vals else None
+            if m == "HOOK_RATE":
+                vals = [float(c.hook_rate) for c in combos if c.hook_rate]
+                return sum(vals) / len(vals) if vals else None
+            if m == "HOLD_RATE":
+                vals = [float(c.thruplay_rate) for c in combos if c.thruplay_rate]
+                return sum(vals) / len(vals) if vals else None
+            if m == "CVR":
+                if h.actual_cvr:
+                    return float(h.actual_cvr)
+            # fallback: whatever actuals exist
+            return float(h.actual_roas) if h.actual_roas else (float(h.actual_ctr) if h.actual_ctr else None)
+
+        def _build_signal_entry(h: CreativeHypothesis, force_signal: str | None = None) -> dict:
+            combos = hyp_to_combos.get(h.hypothesis_id, [])
+            min_s = int(h.min_sample or 5)
+            n_concluded = len([c for c in combos if c.verdict in ("WIN", "LOSE")])
+            n_win = len([c for c in combos if c.verdict == "WIN"])
+            current = _current_metric(h, combos)
+            threshold = float(h.win_threshold) if h.win_threshold else None
+            beat_pct: float | None = None
+            if threshold and threshold > 0 and current is not None:
+                beat_pct = round((current - threshold) / threshold * 100, 1)
+
+            if force_signal:
+                signal = force_signal
+            elif beat_pct is not None:
+                if n_concluded >= min_s:
+                    signal = "push" if beat_pct >= 0 else "cut"
+                elif n_concluded >= 2:
+                    if beat_pct >= 5:
+                        signal = "watch"
+                    elif beat_pct < -20:
+                        signal = "cut"
+                    else:
+                        signal = "monitor"
+                else:
+                    signal = "monitor"
+            else:
+                signal = "monitor"
+
+            return {
+                "hypothesis_id": h.hypothesis_id,
+                "hypothesis": h.hypothesis,
+                "primary_metric": h.primary_metric or h.primary_kpi,
+                "current_value": round(current, 4) if current is not None else None,
+                "win_threshold": round(threshold, 4) if threshold is not None else None,
+                "beat_pct": beat_pct,
+                "n_concluded": n_concluded,
+                "n_win": n_win,
+                "min_sample": min_s,
+                "target_audience": h.target_audience,
+                "market": h.market,
+                "format": h.format,
+                "funnel_stage": h.funnel_stage,
+                "signal": signal,
+                "hypothesis_category": h.hypothesis_category,
+            }
+
+        running_signals: list[dict] = []
+        for h in all_hyps:
+            if h.status == "validated":
+                running_signals.append(_build_signal_entry(h, force_signal="push"))
+            elif h.status == "refuted":
+                running_signals.append(_build_signal_entry(h, force_signal="cut"))
+            elif is_running(h):
+                running_signals.append(_build_signal_entry(h))
+        # Sort: push → watch → monitor → cut, then by |beat_pct| desc
+        _order = {"push": 0, "watch": 1, "monitor": 2, "cut": 3}
+        running_signals.sort(key=lambda s: (
+            _order.get(s["signal"], 4),
+            -(abs(s["beat_pct"]) if s["beat_pct"] is not None else 0),
+        ))
+
         # ── Desire Win Rate ──────────────────────────────────────────────
         # spec: validated / (validated + refuted) per desire, not raw count
         desire_stats: dict[str, dict] = defaultdict(lambda: {"wins": 0, "total": 0})
@@ -1189,6 +1287,7 @@ def learning_dashboard(
                 "angle_win_rates": angle_win_rates,
                 "funnel_failure_map": funnel_failure_map,
                 "metric_win_rates": metric_win_rates,
+                "running_signals": running_signals,
                 "recent_learnings": recent_learnings,
                 # Pending queue — so dashboard can show what's waiting to launch
                 "pending_hypotheses": [

@@ -94,6 +94,7 @@ interface LearningDashboard {
   branch_name: string; total_hypotheses: number; total_pending: number; total_experiments: number; total_running: number; total_validated: number; total_refuted: number; min_sample: number
   pending_hypotheses: { hypothesis_id: string; hypothesis: string; hypothesis_category: string | null; human_desire: string | null; funnel_stage: string | null; format: string | null; target_audience: string | null; primary_metric: string | null }[]
   metric_win_rates: { metric: string; wins: number; total: number; win_rate: number; sufficient: boolean }[]
+  running_signals: { hypothesis_id: string; hypothesis: string; primary_metric: string | null; current_value: number | null; win_threshold: number | null; beat_pct: number | null; n_concluded: number; n_win: number; min_sample: number; target_audience: string | null; market: string | null; format: string | null; funnel_stage: string | null; signal: 'push' | 'watch' | 'monitor' | 'cut'; hypothesis_category: string | null }[]
   category_counts: Record<string, number>
   tested_desires: string[]
   top_desires: { desire: string; win_rate: number; experiments: number; wins: number; sufficient: boolean }[]
@@ -1526,63 +1527,132 @@ function AnglesPageInner() {
             </div>
           ) : (
             <div className="space-y-5">
-              {/* ── PIPELINE ── Pending → Running → Concluded */}
-              <div className="bg-white rounded-xl border border-gray-200 p-5">
-                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4">Hypothesis Pipeline</h3>
-                <div className="flex items-stretch gap-0">
-                  {[
-                    { label: 'Pending', value: learningDashboard.total_pending, color: 'bg-gray-50 border-gray-200', badge: 'text-gray-500', dot: 'bg-gray-300' },
-                    { label: 'Running', value: learningDashboard.total_running, color: 'bg-blue-50 border-blue-200', badge: 'text-blue-600', dot: 'bg-blue-400' },
-                    { label: 'Concluded', value: learningDashboard.total_experiments, color: 'bg-gray-50 border-gray-200', badge: 'text-gray-700', dot: 'bg-gray-400' },
-                    { label: 'Validated ✓', value: learningDashboard.total_validated, color: 'bg-green-50 border-green-200', badge: 'text-green-700', dot: 'bg-green-400' },
-                    { label: 'Refuted ✗', value: learningDashboard.total_refuted, color: 'bg-red-50 border-red-200', badge: 'text-red-600', dot: 'bg-red-400' },
-                  ].map((s, i) => (
-                    <div key={s.label} className="flex items-center">
-                      <div className={`border rounded-lg px-4 py-3 text-center min-w-[90px] ${s.color}`}>
-                        <p className={`text-2xl font-bold ${s.badge}`}>{s.value}</p>
-                        <p className="text-[10px] text-gray-500 mt-0.5 whitespace-nowrap">{s.label}</p>
-                      </div>
-                      {i < 4 && <div className="text-gray-300 px-1.5 text-lg select-none">›</div>}
-                    </div>
-                  ))}
-                  <div className="ml-auto flex items-center">
-                    {learningDashboard.total_experiments > 0 && (
-                      <span className={`text-sm font-bold px-3 py-1 rounded-full ${
-                        Math.round(learningDashboard.total_validated / learningDashboard.total_experiments * 100) >= 60
-                          ? 'bg-green-100 text-green-700' : Math.round(learningDashboard.total_validated / learningDashboard.total_experiments * 100) >= 40
-                          ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-600'
-                      }`}>
-                        {Math.round(learningDashboard.total_validated / learningDashboard.total_experiments * 100)}% win rate
-                      </span>
-                    )}
-                  </div>
-                </div>
+              {/* ── PIPELINE ── Redesigned: Backlog | Active | Outcomes */}
+              {(() => {
+                const winRate = learningDashboard.total_experiments > 0
+                  ? Math.round(learningDashboard.total_validated / learningDashboard.total_experiments * 100) : null
 
-                {/* Pending queue */}
-                {learningDashboard.pending_hypotheses.length > 0 && (
-                  <div className="mt-4 border-t border-gray-100 pt-4">
-                    <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-2 font-medium">
-                      {learningDashboard.pending_hypotheses.length} waiting to launch — go to Hypotheses tab to set status → Running
-                    </p>
-                    <div className="space-y-1.5">
-                      {learningDashboard.pending_hypotheses.slice(0, 5).map(h => (
-                        <div key={h.hypothesis_id} className="flex items-start gap-2 text-sm">
-                          <span className="font-mono text-[10px] text-gray-300 mt-0.5 shrink-0">{h.hypothesis_id}</span>
-                          <span className="text-gray-700 line-clamp-1">{h.hypothesis}</span>
-                          <div className="flex items-center gap-1 ml-auto shrink-0">
-                            {h.primary_metric && <span className="text-[10px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded font-mono">{h.primary_metric}</span>}
-                            {h.funnel_stage && <span className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded">{h.funnel_stage}</span>}
-                            {h.format && <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">{h.format}</span>}
-                          </div>
-                        </div>
-                      ))}
-                      {learningDashboard.pending_hypotheses.length > 5 && (
-                        <p className="text-[10px] text-gray-400">+{learningDashboard.pending_hypotheses.length - 5} more</p>
+                // Group pending by primary_metric
+                const metricGroups: Record<string, typeof learningDashboard.pending_hypotheses> = {}
+                for (const h of learningDashboard.pending_hypotheses) {
+                  const key = h.primary_metric || 'Other'
+                  if (!metricGroups[key]) metricGroups[key] = []
+                  metricGroups[key].push(h)
+                }
+                const metricEntries = Object.entries(metricGroups).sort((a, b) => b[1].length - a[1].length)
+
+                const metricColor: Record<string, { bg: string; text: string; border: string; dot: string }> = {
+                  CTR:       { bg: 'bg-blue-50',   text: 'text-blue-700',   border: 'border-l-blue-400',   dot: 'bg-blue-400' },
+                  hook_rate: { bg: 'bg-amber-50',  text: 'text-amber-700',  border: 'border-l-amber-400',  dot: 'bg-amber-400' },
+                  hold_rate: { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-l-orange-400', dot: 'bg-orange-400' },
+                  CVR:       { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-l-violet-400', dot: 'bg-violet-400' },
+                  ROAS:      { bg: 'bg-emerald-50',text: 'text-emerald-700',border: 'border-l-emerald-400',dot: 'bg-emerald-500' },
+                  Other:     { bg: 'bg-slate-50',  text: 'text-slate-600',  border: 'border-l-slate-300',  dot: 'bg-slate-400' },
+                }
+                const mc = (key: string) => metricColor[key] ?? metricColor.Other
+
+                return (
+                  <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                    {/* Header */}
+                    <div className="px-5 pt-4 pb-3 flex items-center justify-between">
+                      <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Hypothesis Pipeline</h3>
+                      {winRate !== null && (
+                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full tabular-nums ${
+                          winRate >= 60 ? 'bg-emerald-50 text-emerald-700' : winRate >= 40 ? 'bg-amber-50 text-amber-700' : 'bg-rose-50 text-rose-600'
+                        }`}>{winRate}% win rate</span>
                       )}
                     </div>
+
+                    {/* Three-lane pipeline */}
+                    <div className="grid grid-cols-3 border-t border-gray-100">
+                      {/* Lane 1: Backlog */}
+                      <div className="px-5 py-4 border-r border-gray-100">
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400 mb-2">Backlog</p>
+                        <p className="text-3xl font-bold text-gray-700 tabular-nums leading-none">{learningDashboard.total_pending}</p>
+                        <p className="text-xs text-gray-400 mt-1.5">pending</p>
+                      </div>
+
+                      {/* Lane 2: Active — most prominent */}
+                      <div className={`px-5 py-4 border-r border-gray-100 ${learningDashboard.total_running > 0 ? 'bg-blue-50/60' : ''}`}>
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-blue-400 mb-2">Active</p>
+                        <div className="flex items-baseline gap-2">
+                          <p className={`text-3xl font-bold tabular-nums leading-none ${learningDashboard.total_running > 0 ? 'text-blue-600' : 'text-gray-300'}`}>
+                            {learningDashboard.total_running}
+                          </p>
+                          {learningDashboard.total_running > 0 && (
+                            <span className="flex items-center gap-1">
+                              <span className="relative flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                              </span>
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-blue-400 mt-1.5">running now</p>
+                      </div>
+
+                      {/* Lane 3: Outcomes */}
+                      <div className="px-5 py-4">
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400 mb-2">Outcomes</p>
+                        <p className="text-3xl font-bold text-gray-700 tabular-nums leading-none">{learningDashboard.total_experiments}</p>
+                        {learningDashboard.total_experiments > 0 ? (
+                          <>
+                            <div className="flex items-center gap-2.5 mt-1.5">
+                              <span className="text-xs font-semibold text-emerald-600 tabular-nums">✓ {learningDashboard.total_validated}</span>
+                              <span className="text-xs font-semibold text-rose-500 tabular-nums">✗ {learningDashboard.total_refuted}</span>
+                            </div>
+                            <div className="mt-2 flex h-1 rounded-full overflow-hidden bg-gray-100">
+                              <div className="bg-emerald-400 rounded-full transition-all" style={{ width: `${winRate}%` }} />
+                            </div>
+                          </>
+                        ) : (
+                          <p className="text-xs text-gray-400 mt-1.5">concluded</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Pending queue — grouped by metric */}
+                    {metricEntries.length > 0 && (
+                      <div className="border-t border-gray-100 px-5 py-4">
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400 mb-3">
+                          {learningDashboard.pending_hypotheses.length} waiting to launch
+                        </p>
+                        <div className="space-y-3">
+                          {metricEntries.map(([metric, hyps]) => {
+                            const c = mc(metric)
+                            return (
+                              <div key={metric} className={`rounded-lg border-l-2 pl-3 py-2 pr-2 ${c.border} ${c.bg}`}>
+                                <div className="flex items-center gap-2 mb-1.5">
+                                  <span className={`inline-flex items-center gap-1 text-[10px] font-bold font-mono uppercase tracking-wide ${c.text}`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+                                    {metric}
+                                  </span>
+                                  <span className={`text-[10px] ${c.text} opacity-60`}>{hyps.length} test{hyps.length > 1 ? 's' : ''}</span>
+                                </div>
+                                <div className="space-y-1">
+                                  {hyps.slice(0, 3).map(h => (
+                                    <div key={h.hypothesis_id} className="flex items-start gap-2">
+                                      <span className="font-mono text-[9px] text-gray-300 mt-0.5 shrink-0 tabular-nums">{h.hypothesis_id}</span>
+                                      <span className="text-xs text-gray-600 line-clamp-1 leading-relaxed">{h.hypothesis}</span>
+                                      <div className="flex items-center gap-1 ml-auto shrink-0">
+                                        {h.funnel_stage && <span className="text-[9px] bg-white/70 text-indigo-500 border border-indigo-100 px-1.5 py-0.5 rounded">{h.funnel_stage}</span>}
+                                        {h.format && <span className="text-[9px] bg-white/70 text-gray-400 border border-gray-100 px-1.5 py-0.5 rounded">{h.format}</span>}
+                                      </div>
+                                    </div>
+                                  ))}
+                                  {hyps.length > 3 && (
+                                    <p className="text-[10px] text-gray-400 pl-8">+{hyps.length - 3} more</p>
+                                  )}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                )
+              })()}
 
               {/* ── FOCUS NOW ── Computed action items */}
               {(() => {
@@ -1681,6 +1751,149 @@ function AnglesPageInner() {
                           </div>
                         </div>
                       ))}
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* ── SIGNAL BOARD ── Push / Watch / Cut */}
+              {learningDashboard.running_signals?.length > 0 && (() => {
+                const signals = learningDashboard.running_signals
+                const pushList  = signals.filter(s => s.signal === 'push')
+                const watchList = signals.filter(s => s.signal === 'watch')
+                const cutList   = signals.filter(s => s.signal === 'cut')
+                const monitorList = signals.filter(s => s.signal === 'monitor')
+
+                const fmtMetric = (val: number | null, metric: string | null) => {
+                  if (val === null) return '—'
+                  const m = (metric || '').toUpperCase()
+                  if (m === 'ROAS') return `${val.toFixed(2)}x`
+                  if (m === 'CTR' || m === 'HOOK_RATE' || m === 'HOLD_RATE' || m === 'CVR')
+                    return `${(val * 100).toFixed(2)}%`
+                  return val.toFixed(2)
+                }
+
+                const metricColor: Record<string, string> = {
+                  CTR: 'bg-blue-50 text-blue-700', hook_rate: 'bg-amber-50 text-amber-700',
+                  hold_rate: 'bg-orange-50 text-orange-700', CVR: 'bg-violet-50 text-violet-700',
+                  ROAS: 'bg-emerald-50 text-emerald-700',
+                }
+                const mc = (m: string | null) => metricColor[m || ''] || 'bg-slate-50 text-slate-600'
+
+                type Sig = typeof signals[0]
+                const SignalCard = ({ s }: { s: Sig }) => {
+                  const pct = s.beat_pct
+                  const isAbove = pct !== null && pct >= 0
+                  const progress = Math.min(100, Math.round(s.n_concluded / s.min_sample * 100))
+                  return (
+                    <div className="bg-white rounded-lg border border-gray-100 p-3.5 space-y-2.5">
+                      {/* Header: metric + tags */}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {s.primary_metric && (
+                          <span className={`text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded ${mc(s.primary_metric)}`}>
+                            {s.primary_metric}
+                          </span>
+                        )}
+                        {s.target_audience && <span className="text-[10px] text-gray-500 bg-gray-50 border border-gray-100 px-1.5 py-0.5 rounded">{s.target_audience}</span>}
+                        {s.market && <span className="text-[10px] text-gray-500 bg-gray-50 border border-gray-100 px-1.5 py-0.5 rounded">{s.market}</span>}
+                        {s.format && <span className="text-[10px] text-gray-400 ml-auto shrink-0">{s.format}</span>}
+                      </div>
+                      {/* Hypothesis text */}
+                      <p className="text-xs text-gray-700 leading-relaxed line-clamp-2">{s.hypothesis}</p>
+                      {/* Metric vs threshold */}
+                      {(s.current_value !== null || s.win_threshold !== null) && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs tabular-nums font-semibold text-gray-800">
+                            {fmtMetric(s.current_value, s.primary_metric)}
+                          </span>
+                          {s.win_threshold !== null && (
+                            <span className="text-[10px] text-gray-400">
+                              vs {fmtMetric(s.win_threshold, s.primary_metric)} target
+                            </span>
+                          )}
+                          {pct !== null && (
+                            <span className={`text-[10px] font-semibold ml-auto tabular-nums ${isAbove ? 'text-emerald-600' : 'text-rose-500'}`}>
+                              {isAbove ? '+' : ''}{pct}%
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {/* Sample progress */}
+                      <div>
+                        <div className="h-1 bg-gray-100 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${progress >= 100 ? 'bg-emerald-400' : s.signal === 'cut' ? 'bg-rose-300' : 'bg-blue-300'}`}
+                            style={{ width: `${progress}%` }}
+                          />
+                        </div>
+                        <p className="text-[9px] text-gray-400 mt-1 tabular-nums">
+                          {s.n_concluded}/{s.min_sample} samples{s.n_concluded >= s.min_sample ? ' · verdict ready' : ''}
+                        </p>
+                      </div>
+                    </div>
+                  )
+                }
+
+                return (
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Signal Board</h3>
+                      <Tip wide text="Push = scale this content type. Watch = promising early signal, gather more data. Cut = stop spending here, reallocate budget." />
+                    </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                      {/* Push column */}
+                      <div>
+                        <div className="flex items-center gap-1.5 mb-2.5">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Push</span>
+                          <span className="text-[10px] text-gray-400 ml-1">scale this content</span>
+                          {pushList.length > 0 && <span className="ml-auto text-[10px] font-mono text-emerald-600">{pushList.length}</span>}
+                        </div>
+                        <div className="space-y-2">
+                          {pushList.length > 0
+                            ? pushList.map(s => <SignalCard key={s.hypothesis_id} s={s} />)
+                            : <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center">
+                                <p className="text-xs text-gray-400">No confirmed winners yet</p>
+                              </div>
+                          }
+                        </div>
+                      </div>
+
+                      {/* Watch column */}
+                      <div>
+                        <div className="flex items-center gap-1.5 mb-2.5">
+                          <span className="w-2 h-2 rounded-full bg-amber-400" />
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Watch</span>
+                          <span className="text-[10px] text-gray-400 ml-1">promising, needs more data</span>
+                          {(watchList.length + monitorList.length) > 0 && <span className="ml-auto text-[10px] font-mono text-amber-600">{watchList.length + monitorList.length}</span>}
+                        </div>
+                        <div className="space-y-2">
+                          {[...watchList, ...monitorList].length > 0
+                            ? [...watchList, ...monitorList].map(s => <SignalCard key={s.hypothesis_id} s={s} />)
+                            : <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center">
+                                <p className="text-xs text-gray-400">No active tests</p>
+                              </div>
+                          }
+                        </div>
+                      </div>
+
+                      {/* Cut column */}
+                      <div>
+                        <div className="flex items-center gap-1.5 mb-2.5">
+                          <span className="w-2 h-2 rounded-full bg-rose-400" />
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-rose-600">Cut</span>
+                          <span className="text-[10px] text-gray-400 ml-1">stop, reallocate budget</span>
+                          {cutList.length > 0 && <span className="ml-auto text-[10px] font-mono text-rose-500">{cutList.length}</span>}
+                        </div>
+                        <div className="space-y-2">
+                          {cutList.length > 0
+                            ? cutList.map(s => <SignalCard key={s.hypothesis_id} s={s} />)
+                            : <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center">
+                                <p className="text-xs text-gray-400">Nothing to cut yet</p>
+                              </div>
+                          }
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )
