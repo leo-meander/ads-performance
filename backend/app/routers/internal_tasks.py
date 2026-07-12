@@ -1012,3 +1012,168 @@ def trigger_backfill_hypotheses(
     finally:
         db.close()
     return _api_response(data=result)
+
+
+# ---------------------------------------- Google conversion diagnostics ------
+
+
+def _do_google_conversion_diag(db) -> list[dict]:
+    """Query Google Ads API for enabled conversion actions per account.
+
+    Returns one entry per account with all enabled conversion actions and a
+    has_purchase flag. Accounts without a PURCHASE-category action will report
+    0 conversions in the dashboard because _fetch_purchase_metrics filters by
+    conversion_action_category = PURCHASE.
+    """
+    from app.models.account import AdAccount
+    from app.services.google_client import _get_client, _search_stream
+
+    accounts = db.query(AdAccount).filter_by(platform="google", is_active=True).all()
+    results = []
+    for acct in accounts:
+        cid = acct.account_id.replace("-", "")
+        entry: dict = {
+            "account_name": acct.account_name,
+            "account_id": acct.account_id,
+            "has_purchase_category": False,
+            "conversion_actions": [],
+            "error": None,
+        }
+        try:
+            rows = _search_stream(_get_client(), cid, """
+                SELECT conversion_action.name, conversion_action.category,
+                       conversion_action.status
+                FROM conversion_action
+                WHERE conversion_action.status = 'ENABLED'
+            """)
+            for r in rows:
+                cat = r.conversion_action.category.name
+                entry["conversion_actions"].append({
+                    "name": r.conversion_action.name,
+                    "category": cat,
+                })
+                if cat == "PURCHASE":
+                    entry["has_purchase_category"] = True
+        except Exception as e:
+            entry["error"] = str(e)[:300]
+        results.append(entry)
+
+    # Sort: broken accounts first
+    results.sort(key=lambda x: (x["has_purchase_category"], x["account_name"]))
+    return results
+
+
+@router.post("/internal/tasks/google-conversion-diag", status_code=200)
+def trigger_google_conversion_diag(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Synchronous: query Google Ads API for enabled conversion actions on every
+    active Google account and flag accounts missing a PURCHASE-category action.
+
+    Accounts without PURCHASE will report 0 conversions in the dashboard because
+    the metrics sync filters by conversion_action_category = PURCHASE.
+    Returns inline JSON — safe to call from curl or the Zeabur console.
+    """
+    _require_secret(x_internal_secret)
+    db = SessionLocal()
+    try:
+        results = _do_google_conversion_diag(db)
+    except Exception as e:
+        logger.exception("[google-conversion-diag] failed")
+        return _api_response(error=f"{type(e).__name__}: {e}")
+    finally:
+        db.close()
+
+    broken = [r for r in results if not r["has_purchase_category"] and not r["error"]]
+    errored = [r for r in results if r["error"]]
+    return _api_response(data={
+        "total_accounts": len(results),
+        "broken_no_purchase": len(broken),
+        "errored": len(errored),
+        "accounts": results,
+    })
+
+
+# ----------------------------------------- Google conversion resync ----------
+
+
+def _do_google_conversion_resync(
+    db,
+    date_from_iso: str,
+    date_to_iso: str,
+    account_name_filter: str | None = None,
+):
+    from datetime import date as _date, timedelta as _td
+
+    from app.models.account import AdAccount
+    from app.services.google_sync_engine import sync_google_metrics_window
+
+    start = _date.fromisoformat(date_from_iso)
+    end = _date.fromisoformat(date_to_iso)
+
+    q = db.query(AdAccount).filter_by(platform="google", is_active=True)
+    if account_name_filter:
+        q = q.filter(AdAccount.account_name.ilike(f"%{account_name_filter}%"))
+    accounts = q.all()
+
+    logger.info(
+        "[google-conversion-resync] %d accounts, %s → %s",
+        len(accounts), start, end,
+    )
+
+    totals = {"metrics_synced": 0, "ad_country_rows": 0, "errors": 0}
+    chunk_end = end
+    while chunk_end >= start:
+        chunk_start = max(chunk_end - _td(days=14), start)
+        for acct in accounts:
+            try:
+                res = sync_google_metrics_window(db, acct, chunk_start, chunk_end)
+                totals["metrics_synced"] += res["metrics_synced"]
+                totals["ad_country_rows"] += res["ad_country_rows"]
+                totals["errors"] += len(res["errors"])
+                logger.info(
+                    "[google-conversion-resync] %s [%s..%s] metrics=%d errs=%d",
+                    acct.account_name, chunk_start, chunk_end,
+                    res["metrics_synced"], len(res["errors"]),
+                )
+            except Exception:
+                logger.exception(
+                    "[google-conversion-resync] failed %s [%s..%s]",
+                    acct.account_name, chunk_start, chunk_end,
+                )
+                totals["errors"] += 1
+        chunk_end = chunk_start - _td(days=1)
+
+    logger.info("[google-conversion-resync] done totals=%s", totals)
+
+
+@router.post("/internal/tasks/google-conversion-resync", status_code=202)
+def trigger_google_conversion_resync(
+    x_internal_secret: str | None = Header(default=None),
+    date_from: str = "2026-05-01",
+    date_to: str | None = None,
+    account_name: str | None = None,
+):
+    """Async: re-pull Google Ads metrics for a date range to backfill missing
+    conversions. Walks backwards in 15-day chunks (smaller than backfill's 30
+    to reduce per-chunk PURCHASE query load).
+
+    date_from / date_to: YYYY-MM-DD (date_to defaults to today).
+    account_name: optional ILIKE filter to target one branch (e.g. "Saigon").
+    """
+    _require_secret(x_internal_secret)
+    from datetime import date as _date
+    resolved_to = date_to or _date.today().isoformat()
+    _run_in_thread(
+        _do_google_conversion_resync,
+        "google-conversion-resync",
+        date_from_iso=date_from,
+        date_to_iso=resolved_to,
+        account_name_filter=account_name,
+    )
+    return _api_response(data={
+        "status": "started",
+        "date_from": date_from,
+        "date_to": resolved_to,
+        "account_name_filter": account_name,
+    })
