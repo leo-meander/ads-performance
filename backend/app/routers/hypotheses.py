@@ -1019,13 +1019,33 @@ def learning_dashboard(
 
         all_hyps = base_q.all()
 
-        # Auto-detect "running": any hypothesis with actual spend data is effectively running
-        # even if status was never manually updated from "pending"
+        # Auto-detect "running": hypothesis has actual spend OR a linked combo with spend > 0
+        hyp_ids_all = [h.hypothesis_id for h in all_hyps]
+        active_combo_hyp_ids: set[str] = set()
+        if hyp_ids_all:
+            links = db.query(HypothesisComboLink).filter(
+                HypothesisComboLink.hypothesis_id.in_(hyp_ids_all)
+            ).all()
+            linked_combo_ids = [lk.combo_id for lk in links]
+            if linked_combo_ids:
+                spending = db.query(AdCombo.combo_id).filter(
+                    AdCombo.combo_id.in_(linked_combo_ids),
+                    AdCombo.spend > 0,
+                ).all()
+                spending_ids = {c.combo_id for c in spending}
+                for lk in links:
+                    if lk.combo_id in spending_ids:
+                        active_combo_hyp_ids.add(lk.hypothesis_id)
+
         def is_running(h: CreativeHypothesis) -> bool:
-            return h.status == "running" or (h.actual_spend is not None and h.actual_spend > 0)
+            return (h.status == "running"
+                    or (h.actual_spend is not None and h.actual_spend > 0)
+                    or h.hypothesis_id in active_combo_hyp_ids)
 
         def is_pending(h: CreativeHypothesis) -> bool:
-            return h.status == "pending" and not (h.actual_spend is not None and h.actual_spend > 0)
+            return (h.status == "pending"
+                    and h.hypothesis_id not in active_combo_hyp_ids
+                    and not (h.actual_spend is not None and h.actual_spend > 0))
 
         # ── Desire Win Rate ──────────────────────────────────────────────
         # spec: validated / (validated + refuted) per desire, not raw count
@@ -1113,6 +1133,27 @@ def learning_dashboard(
             for stage, v in stage_stats.items()
         }
 
+        # ── Metric Win Rate ────────────────────────────────────────────────
+        metric_stats: dict[str, dict] = defaultdict(lambda: {"wins": 0, "total": 0})
+        for h in concluded:
+            metric = h.primary_metric or h.primary_kpi or "Unknown"
+            metric_stats[metric]["total"] += 1
+            if h.status == "validated":
+                metric_stats[metric]["wins"] += 1
+        metric_win_rates = sorted(
+            [
+                {
+                    "metric": m,
+                    "wins": v["wins"],
+                    "total": v["total"],
+                    "win_rate": round(v["wins"] / v["total"] * 100, 0) if v["total"] > 0 else 0,
+                    "sufficient": v["total"] >= MIN_SAMPLE,
+                }
+                for m, v in metric_stats.items()
+            ],
+            key=lambda x: (-x["sufficient"], -x["win_rate"]),
+        )
+
         # ── Recent validated learnings ─────────────────────────────────────
         recent = sorted(
             [h for h in concluded if h.status == "validated" and h.learning],
@@ -1147,6 +1188,7 @@ def learning_dashboard(
                 "top_drivers": top_drivers,
                 "angle_win_rates": angle_win_rates,
                 "funnel_failure_map": funnel_failure_map,
+                "metric_win_rates": metric_win_rates,
                 "recent_learnings": recent_learnings,
                 # Pending queue — so dashboard can show what's waiting to launch
                 "pending_hypotheses": [
@@ -1158,6 +1200,7 @@ def learning_dashboard(
                         "funnel_stage": h.funnel_stage,
                         "format": h.format,
                         "target_audience": h.target_audience,
+                        "primary_metric": h.primary_metric or h.primary_kpi,
                     }
                     for h in all_hyps if is_pending(h)
                 ],
