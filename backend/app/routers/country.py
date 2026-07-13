@@ -178,6 +178,7 @@ def _base_metrics_query(db: Session):
             func.sum(MetricsCache.impressions).label("total_impressions"),
             func.sum(MetricsCache.clicks).label("total_clicks"),
             func.sum(MetricsCache.conversions).label("total_conversions"),
+            func.sum(MetricsCache.leads).label("total_leads"),
             func.sum(MetricsCache.revenue).label("total_revenue"),
             func.count(func.distinct(Campaign.id)).label("campaign_count"),
         )
@@ -200,6 +201,7 @@ def _aggregate_country_rows(rows, convert_to_vnd: bool) -> dict:
             "impressions": 0,
             "clicks": 0,
             "conversions": 0,
+            "leads": 0,
             "campaign_count": 0,
         })
         fx = _fx(row.currency) if convert_to_vnd else 1
@@ -208,6 +210,7 @@ def _aggregate_country_rows(rows, convert_to_vnd: bool) -> dict:
         cur["impressions"] += int(row.total_impressions or 0)
         cur["clicks"] += int(row.total_clicks or 0)
         cur["conversions"] += int(row.total_conversions or 0)
+        cur["leads"] += int(row.total_leads or 0)
         cur["campaign_count"] += int(getattr(row, "campaign_count", 0) or 0)
 
     for cur in agg.values():
@@ -306,7 +309,7 @@ def country_kpi_summary(
         # cleanly, so we recompute them from the summed totals.
         def _sum_items(by_country: dict) -> dict:
             tot = {"total_spend": 0.0, "total_revenue": 0.0, "impressions": 0,
-                   "clicks": 0, "conversions": 0, "campaign_count": 0}
+                   "clicks": 0, "conversions": 0, "leads": 0, "campaign_count": 0}
             for code, k in by_country.items():
                 if not is_valid_country(code):
                     continue
@@ -315,6 +318,7 @@ def country_kpi_summary(
                 tot["impressions"] += k["impressions"]
                 tot["clicks"] += k["clicks"]
                 tot["conversions"] += k["conversions"]
+                tot["leads"] += k["leads"]
                 tot["campaign_count"] += k["campaign_count"]
             spend, rev = tot["total_spend"], tot["total_revenue"]
             imp, clk, conv = tot["impressions"], tot["clicks"], tot["conversions"]
