@@ -430,18 +430,19 @@ function DashboardInner() {
         )
 
         if (campaignType === 'lead') {
-          // Lead dashboard: Spend, Leads (= conversions for Lead objective), CPL, CTR, CPC, Impressions
-          const cpl = selectedKpi.conversions ? selectedKpi.total_spend / selectedKpi.conversions : 0
+          // Lead dashboard: use MetricsCache.leads (form fills) not conversions (purchases)
+          const leadCount = selectedKpi.leads ?? 0
+          const cpl = leadCount ? selectedKpi.total_spend / leadCount : 0
           const leadHeadline = [
             { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: kpiForChange?.spend_change ?? null, inverse: true },
-            { label: 'Leads', value: fmtNum(selectedKpi.conversions), change: kpiForChange?.conversions_change ?? null, inverse: false },
+            { label: 'Leads', value: fmtNum(leadCount), change: kpiForChange?.conversions_change ?? null, inverse: false },
             { label: `CPL (${responseCurrency})`, value: cpl ? fmtMoney(Math.round(cpl), responseCurrency) : '--', change: kpiForChange?.cpa_change ?? null, inverse: true },
             { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: kpiForChange?.revenue_change ?? null, inverse: false },
             { label: 'ROAS', value: roas ? roas.toFixed(2) + 'x' : '0', change: kpiForChange?.roas_change ?? null, inverse: false },
             { label: 'CTR', value: ctr ? ctr.toFixed(1) + '%' : '0%', change: kpiForChange?.ctr_change ?? null, inverse: false },
           ]
           const leadDecomp = [
-            { label: 'Lead Rate (Leads / Clicks)', value: cr ? cr.toFixed(2) + '%' : '--', change: kpiForChange?.cr_change ?? null, inverse: false },
+            { label: 'Lead Rate (Leads / Clicks)', value: selectedKpi.clicks ? ((leadCount / selectedKpi.clicks) * 100).toFixed(2) + '%' : '--', change: kpiForChange?.cr_change ?? null, inverse: false },
             { label: 'Clicks', value: fmtNum(selectedKpi.clicks), change: kpiForChange?.ctr_change ?? null, inverse: false },
             { label: `CPC (${responseCurrency})`, value: cpc ? fmtMoney(Math.round(cpc), responseCurrency) : '--', change: kpiForChange?.cpc_change ?? null, inverse: true },
           ]
