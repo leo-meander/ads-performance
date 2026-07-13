@@ -12,6 +12,7 @@ export type CountryKpi = {
   impressions: number
   clicks: number
   conversions: number
+  leads: number
   campaign_count: number
   roas: number
   ctr: number
