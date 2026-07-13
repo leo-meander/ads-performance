@@ -6,37 +6,52 @@ import {
   Tooltip, ResponsiveContainer, Cell,
 } from 'recharts'
 import type { BranchBreakdownRow } from './BranchPie'
-import { fmtMoney } from './dashboardUtils'
+import { fmtMoney, fmtNum } from './dashboardUtils'
 
-// Same palette as BranchPie so a branch keeps its colour across the dashboard.
 const BRANCH_COLORS = ['#a68a64', '#b8a7d9', '#a3c982', '#7dc4c2', '#eb7373', '#f4b971']
 
-type CmpMetric = 'roas' | 'cpa' | 'ctr'
+type CmpMetric = 'roas' | 'cpa' | 'cpl' | 'ctr'
 
-const METRIC_DEFS: Record<CmpMetric, { label: string; kind: 'x' | 'money' | 'pct'; inverse: boolean }> = {
-  // CPA is derived from VND-converted spend, so it's comparable across branches.
+const SALE_METRICS: CmpMetric[] = ['roas', 'cpa', 'ctr']
+const LEAD_METRICS: CmpMetric[] = ['roas', 'cpl', 'ctr']
+
+const METRIC_DEFS: Record<CmpMetric, { label: string; kind: 'x' | 'money' | 'pct' | 'num'; inverse: boolean }> = {
   roas: { label: 'ROAS', kind: 'x', inverse: false },
-  cpa: { label: 'CPA', kind: 'money', inverse: true },
-  ctr: { label: 'CTR', kind: 'pct', inverse: false },
+  cpa:  { label: 'CPA',  kind: 'money', inverse: true },
+  cpl:  { label: 'CPL',  kind: 'money', inverse: true },
+  ctr:  { label: 'CTR',  kind: 'pct', inverse: false },
 }
 
-function fmt(v: number, kind: 'x' | 'money' | 'pct'): string {
+function fmt(v: number, kind: 'x' | 'money' | 'pct' | 'num'): string {
   switch (kind) {
-    case 'x': return `${v.toFixed(2)}x`
+    case 'x':     return `${v.toFixed(2)}x`
     case 'money': return fmtMoney(v, 'VND')
-    case 'pct': return `${v.toFixed(2)}%`
+    case 'pct':   return `${v.toFixed(2)}%`
+    case 'num':   return fmtNum(v)
   }
 }
 
 type Row = BranchBreakdownRow & { roas: number; cpa: number; ctr: number }
 
-export default function BranchComparisonChart({ rows }: { rows: Row[] }) {
+export default function BranchComparisonChart({ rows, campaignType }: { rows: Row[]; campaignType?: string }) {
+  const isLead = campaignType === 'lead'
+  const availableMetrics = isLead ? LEAD_METRICS : SALE_METRICS
   const [metric, setMetric] = useState<CmpMetric>('roas')
-  const def = METRIC_DEFS[metric]
 
-  // Sort best-first for the active metric (low CPA is best; high ROAS/CTR best).
+  // Reset to roas if current metric not available in this mode
+  const activeMetric = availableMetrics.includes(metric) ? metric : 'roas'
+  const def = METRIC_DEFS[activeMetric]
+
+  const getValue = (r: Row): number => {
+    if (activeMetric === 'cpl') {
+      const leads = (r as Row & { leads?: number }).leads ?? 0
+      return leads > 0 ? (r.spend_vnd ?? 0) / leads : 0
+    }
+    return Number((r as Record<string, unknown>)[activeMetric]) || 0
+  }
+
   const data = rows
-    .map(r => ({ branch: r.branch, value: Number(r[metric]) || 0 }))
+    .map(r => ({ branch: r.branch, value: getValue(r) }))
     .filter(d => d.value > 0)
     .sort((a, b) => def.inverse ? a.value - b.value : b.value - a.value)
 
@@ -48,12 +63,12 @@ export default function BranchComparisonChart({ rows }: { rows: Row[] }) {
           {def.kind === 'money' && <span className="text-gray-400 font-normal ml-1">(VND)</span>}
         </h2>
         <div className="flex gap-1 bg-gray-100 rounded-lg p-0.5">
-          {(Object.keys(METRIC_DEFS) as CmpMetric[]).map(m => (
+          {availableMetrics.map(m => (
             <button
               key={m}
               onClick={() => setMetric(m)}
               className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                metric === m ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                activeMetric === m ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
               }`}
             >
               {METRIC_DEFS[m].label}

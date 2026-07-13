@@ -200,22 +200,22 @@ function DashboardInner() {
       }
       if (brBranch.success && brBranch.data) setByBranch(brBranch.data.items || [])
       if (brPlat.success && brPlat.data) {
-        setByPlatform((brPlat.data.items || []).map((it: { platform: string; spend: number; revenue: number; conversions: number; roas: number; spend_change: number | null; roas_change: number | null; conversions_change: number | null }) => ({
+        setByPlatform((brPlat.data.items || []).map((it: { platform: string; spend: number; revenue: number; conversions: number; leads: number; roas: number; spend_change: number | null; roas_change: number | null; conversions_change: number | null }) => ({
           key: it.platform,
           label: it.platform.charAt(0).toUpperCase() + it.platform.slice(1),
           badgeClass: PLATFORM_PILL[it.platform],
-          spend: it.spend, revenue: it.revenue, conversions: it.conversions,
+          spend: it.spend, revenue: it.revenue, conversions: it.conversions, leads: it.leads ?? 0,
           roas: it.roas,
           spend_change: it.spend_change, roas_change: it.roas_change,
           conversions_change: it.conversions_change,
         })))
       }
       if (brFun.success && brFun.data) {
-        setByFunnel((brFun.data.items || []).map((it: { funnel_stage: string; spend: number; revenue: number; conversions: number; roas: number; spend_change: number | null; roas_change: number | null; conversions_change: number | null }) => ({
+        setByFunnel((brFun.data.items || []).map((it: { funnel_stage: string; spend: number; revenue: number; conversions: number; leads: number; roas: number; spend_change: number | null; roas_change: number | null; conversions_change: number | null }) => ({
           key: it.funnel_stage,
           label: it.funnel_stage,
           badgeClass: FUNNEL_STAGE_PILL[it.funnel_stage] || FUNNEL_STAGE_PILL.Unknown,
-          spend: it.spend, revenue: it.revenue, conversions: it.conversions,
+          spend: it.spend, revenue: it.revenue, conversions: it.conversions, leads: it.leads ?? 0,
           roas: it.roas,
           spend_change: it.spend_change, roas_change: it.roas_change,
           conversions_change: it.conversions_change,
@@ -525,6 +525,7 @@ function DashboardInner() {
           onSelect={(k) => setPlatform(prev => prev === k ? '' : k)}
           metric={breakdownMetric}
           onMetricChange={setBreakdownMetric}
+          campaignType={campaignType}
         />
         <HorizontalBarBreakdown
           title="By Funnel"
@@ -533,13 +534,14 @@ function DashboardInner() {
           selectedKey={funnelStage}
           onSelect={(k) => setFunnelStage(prev => prev === k ? '' : k)}
           metric={breakdownMetric}
+          campaignType={campaignType}
         />
       </div>
 
       {/* Branch comparison — ROAS / CPA / CTR side-by-side across branches */}
       {byBranch.length > 0 && (
         <div className="mb-6">
-          <BranchComparisonChart rows={byBranch as (BranchBreakdownRow & { roas: number; cpa: number; ctr: number })[]} />
+          <BranchComparisonChart rows={byBranch as (BranchBreakdownRow & { roas: number; cpa: number; ctr: number })[]} campaignType={campaignType} />
         </div>
       )}
 
