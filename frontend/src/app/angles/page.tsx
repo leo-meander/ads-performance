@@ -269,6 +269,7 @@ function AnglesPageInner() {
   const [ldMarket, setLdMarket] = useState('')
   const [ldTA, setLdTA] = useState('')
   const [ldLoading, setLdLoading] = useState(false)
+  const [ldSyncing, setLdSyncing] = useState(false)
 
   // Analyze brief state
   const [analyzeTarget, setAnalyzeTarget] = useState<string | null>(null)
@@ -476,6 +477,19 @@ function AnglesPageInner() {
     const qs = p.toString() ? `?${p}` : ''
     fetch(`${API_BASE}/api/hypotheses/learning-dashboard/${encodeURIComponent(branch)}${qs}`, { credentials: 'include' })
       .then(r => r.json()).then(d => { if (d.success) setLearningDashboard(d.data) }).catch(() => {}).finally(() => setLdLoading(false))
+  }
+
+  const syncHypothesisResults = () => {
+    setLdSyncing(true)
+    fetch(`${API_BASE}/api/hypotheses/sync-results`, { method: 'POST', credentials: 'include' })
+      .then(() => {
+        // Wait 3s for background task to finish then refresh
+        setTimeout(() => {
+          fetchLearningDashboard(ldBranch, ldMarket, ldTA)
+          setLdSyncing(false)
+        }, 3000)
+      })
+      .catch(() => setLdSyncing(false))
   }
 
   const fetchAngles = () => {
@@ -1614,9 +1628,18 @@ function AnglesPageInner() {
                     {/* Pending queue — grouped by metric */}
                     {metricEntries.length > 0 && (
                       <div className="border-t border-gray-100 px-5 py-4">
-                        <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400 mb-3">
-                          {learningDashboard.pending_hypotheses.length} waiting to launch
-                        </p>
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400">
+                            {learningDashboard.pending_hypotheses.length} waiting to launch
+                          </p>
+                          <button
+                            onClick={syncHypothesisResults}
+                            disabled={ldSyncing}
+                            className="text-[10px] text-blue-500 hover:text-blue-700 disabled:text-gray-300 flex items-center gap-1"
+                          >
+                            {ldSyncing ? '⟳ syncing...' : '⟳ sync now'}
+                          </button>
+                        </div>
                         <div className="space-y-3">
                           {metricEntries.map(([metric, hyps]) => {
                             const c = mc(metric)

@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -1326,3 +1326,24 @@ def learning_dashboard(
         logger.exception("[learning-dashboard] failed")
         return {"success": False, "data": None, "error": str(e),
                 "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+@router.post("/sync-results", status_code=202)
+def trigger_sync_results(background_tasks: BackgroundTasks):
+    """Trigger hypothesis sync in background — updates actual_spend/status from linked combo spend."""
+    from app.database import SessionLocal
+    from app.services.hypothesis_sync_service import sync_hypothesis_results as _sync
+
+    def _run():
+        db = SessionLocal()
+        try:
+            result = _sync(db)
+            logger.info("[hypothesis-sync] done: %s", result)
+        except Exception:
+            logger.exception("[hypothesis-sync] failed")
+        finally:
+            db.close()
+
+    background_tasks.add_task(_run)
+    return {"success": True, "data": {"status": "sync started"}, "error": None,
+            "timestamp": datetime.now(timezone.utc).isoformat()}
