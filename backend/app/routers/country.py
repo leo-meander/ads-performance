@@ -1024,6 +1024,7 @@ def breakdown_by_platform(
                     func.sum(MetricsCache.impressions).label("impressions"),
                     func.sum(MetricsCache.clicks).label("clicks"),
                     func.sum(MetricsCache.conversions).label("conversions"),
+                    func.sum(MetricsCache.leads).label("leads"),
                     func.sum(MetricsCache.revenue).label("revenue"),
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
@@ -1041,7 +1042,7 @@ def breakdown_by_platform(
                 cur = agg.setdefault(key, {
                     "platform": key,
                     "spend": 0.0, "revenue": 0.0,
-                    "impressions": 0, "clicks": 0, "conversions": 0,
+                    "impressions": 0, "clicks": 0, "conversions": 0, "leads": 0,
                 })
                 fx = _fx(r.currency) if convert_to_vnd else 1
                 cur["spend"] += float(r.spend or 0) * fx
@@ -1049,6 +1050,7 @@ def breakdown_by_platform(
                 cur["impressions"] += int(r.impressions or 0)
                 cur["clicks"] += int(r.clicks or 0)
                 cur["conversions"] += int(r.conversions or 0)
+                cur["leads"] += int(r.leads or 0)
             for cur in agg.values():
                 cur.update(_breakdown_derive(
                     cur["spend"], cur["revenue"], cur["impressions"],
@@ -1110,6 +1112,7 @@ def breakdown_by_funnel(
                     func.sum(MetricsCache.impressions).label("impressions"),
                     func.sum(MetricsCache.clicks).label("clicks"),
                     func.sum(MetricsCache.conversions).label("conversions"),
+                    func.sum(MetricsCache.leads).label("leads"),
                     func.sum(MetricsCache.revenue).label("revenue"),
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
@@ -1127,7 +1130,7 @@ def breakdown_by_funnel(
                 cur = agg.setdefault(key, {
                     "funnel_stage": key,
                     "spend": 0.0, "revenue": 0.0,
-                    "impressions": 0, "clicks": 0, "conversions": 0,
+                    "impressions": 0, "clicks": 0, "conversions": 0, "leads": 0,
                 })
                 fx = _fx(r.currency) if convert_to_vnd else 1
                 cur["spend"] += float(r.spend or 0) * fx
@@ -1135,6 +1138,7 @@ def breakdown_by_funnel(
                 cur["impressions"] += int(r.impressions or 0)
                 cur["clicks"] += int(r.clicks or 0)
                 cur["conversions"] += int(r.conversions or 0)
+                cur["leads"] += int(r.leads or 0)
             for cur in agg.values():
                 cur.update(_breakdown_derive(
                     cur["spend"], cur["revenue"], cur["impressions"],

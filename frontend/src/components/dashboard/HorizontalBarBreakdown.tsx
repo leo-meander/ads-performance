@@ -3,12 +3,13 @@
 import { ChangeTag, fmtMoney, fmtNum } from './dashboardUtils'
 
 export type BreakdownItem = {
-  key: string                // dimension value (e.g. "meta", "TOF")
-  label: string              // display label
-  badgeClass?: string        // optional pill class (FUNNEL_STAGE_PILL / PLATFORM_PILL)
+  key: string
+  label: string
+  badgeClass?: string
   spend: number
   revenue: number
   conversions: number
+  leads: number
   roas: number
   spend_change: number | null
   roas_change: number | null
@@ -16,12 +17,6 @@ export type BreakdownItem = {
 }
 
 type Metric = 'spend' | 'roas' | 'conversions'
-
-const METRIC_LABEL: Record<Metric, string> = {
-  spend: 'Spend',
-  roas: 'ROAS',
-  conversions: 'Conversions',
-}
 
 export default function HorizontalBarBreakdown({
   title,
@@ -31,6 +26,7 @@ export default function HorizontalBarBreakdown({
   onSelect,
   metric = 'spend',
   onMetricChange,
+  campaignType,
 }: {
   title: string
   items: BreakdownItem[]
@@ -39,18 +35,27 @@ export default function HorizontalBarBreakdown({
   onSelect: (key: string) => void
   metric?: Metric
   onMetricChange?: (m: Metric) => void
+  campaignType?: string
 }) {
+  const isLead = campaignType === 'lead'
+
+  const METRIC_LABEL: Record<Metric, string> = {
+    spend: 'Spend',
+    roas: 'ROAS',
+    conversions: isLead ? 'Leads' : 'Conversions',
+  }
+
   const valueOf = (it: BreakdownItem) => {
     if (metric === 'spend') return it.spend
     if (metric === 'roas') return it.roas
-    return it.conversions
+    return isLead ? it.leads : it.conversions
   }
   const max = Math.max(...items.map(valueOf), 1)
   const hasFilter = !!selectedKey
   const fmt = (it: BreakdownItem) => {
     if (metric === 'spend') return fmtMoney(it.spend, currency)
     if (metric === 'roas') return `${it.roas.toFixed(2)}x`
-    return fmtNum(it.conversions)
+    return fmtNum(isLead ? it.leads : it.conversions)
   }
   const change = (it: BreakdownItem) => {
     if (metric === 'spend') return { c: it.spend_change, inv: true }
