@@ -311,8 +311,6 @@ def country_kpi_summary(
             tot = {"total_spend": 0.0, "total_revenue": 0.0, "impressions": 0,
                    "clicks": 0, "conversions": 0, "leads": 0, "campaign_count": 0}
             for code, k in by_country.items():
-                if not is_valid_country(code):
-                    continue
                 tot["total_spend"] += k["total_spend"]
                 tot["total_revenue"] += k["total_revenue"]
                 tot["impressions"] += k["impressions"]
