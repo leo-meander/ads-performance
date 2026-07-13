@@ -7,6 +7,7 @@ export type BranchBreakdownRow = {
   currency: string
   spend_vnd: number
   conversions: number
+  leads: number
   revenue_vnd: number
 }
 

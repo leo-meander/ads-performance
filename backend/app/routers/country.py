@@ -1198,6 +1198,7 @@ def breakdown_by_branch(
                     func.sum(MetricsCache.impressions).label("impressions"),
                     func.sum(MetricsCache.clicks).label("clicks"),
                     func.sum(MetricsCache.conversions).label("conversions"),
+                    func.sum(MetricsCache.leads).label("leads"),
                     func.sum(MetricsCache.revenue).label("revenue"),
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
@@ -1229,7 +1230,7 @@ def breakdown_by_branch(
                     "currency": BRANCH_CURRENCY.get(branch, "VND"),
                     "spend_vnd": 0.0, "revenue_vnd": 0.0,
                     "spend": 0.0, "revenue": 0.0,
-                    "impressions": 0, "clicks": 0, "conversions": 0,
+                    "impressions": 0, "clicks": 0, "conversions": 0, "leads": 0,
                 })
                 fx = _fx(r.currency)
                 cur["spend_vnd"] += float(r.spend or 0) * fx
@@ -1240,6 +1241,7 @@ def breakdown_by_branch(
                 cur["impressions"] += int(r.impressions or 0)
                 cur["clicks"] += int(r.clicks or 0)
                 cur["conversions"] += int(r.conversions or 0)
+                cur["leads"] += int(r.leads or 0)
             for cur in agg.values():
                 cur.update(_breakdown_derive(
                     cur["spend_vnd"], cur["revenue_vnd"], cur["impressions"],
