@@ -1038,14 +1038,10 @@ def learning_dashboard(
                         active_combo_hyp_ids.add(lk.hypothesis_id)
 
         def is_running(h: CreativeHypothesis) -> bool:
-            return (h.status == "running"
-                    or (h.actual_spend is not None and h.actual_spend > 0)
-                    or h.hypothesis_id in active_combo_hyp_ids)
+            return h.status == "running" or (h.actual_spend is not None and h.actual_spend > 0)
 
         def is_pending(h: CreativeHypothesis) -> bool:
-            return (h.status == "pending"
-                    and h.hypothesis_id not in active_combo_hyp_ids
-                    and not (h.actual_spend is not None and h.actual_spend > 0))
+            return h.status == "pending" and not (h.actual_spend is not None and h.actual_spend > 0)
 
         # ── Signal Board data: build combo lookup for all linked hypotheses ──
         # Reuse `links` and `linked_combo_ids` from active_combo detection above
