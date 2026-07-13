@@ -10,10 +10,14 @@ from app.models.approval import ApprovalReviewer, ComboApproval
 from app.models.user import User
 from app.services.approval_service import (
     get_approval_detail,
+    get_approvals_list_summary,
+    get_batch_detail,
+    record_batch_decision,
     record_decision,
     resend_review_request_emails,
     resubmit,
     revise_pending_approval,
+    submit_batch,
     submit_for_approval,
 )
 
@@ -44,6 +48,19 @@ class SubmitApprovalRequest(BaseModel):
 class DecisionRequest(BaseModel):
     decision: str  # APPROVED | REJECTED | NEEDS_REVISION
     feedback: str | None = None
+
+
+class BatchVersion(BaseModel):
+    combo_id: str
+    working_file_url: str | None = None
+    working_file_label: str | None = None
+
+
+class SubmitBatchRequest(BaseModel):
+    versions: list[BatchVersion]
+    reviewer_ids: list[str]
+    deadline: str | None = None  # ISO8601 datetime string
+    note: str | None = None
 
 
 class ResubmitRequest(BaseModel):
@@ -141,11 +158,7 @@ def list_approvals(
         total = q.count()
         approvals = q.order_by(ComboApproval.created_at.desc()).offset(offset).limit(limit).all()
 
-        items = []
-        for a in approvals:
-            detail = get_approval_detail(db, a.id)
-            if detail:
-                items.append(detail)
+        items = get_approvals_list_summary(db, approvals)
 
         return _api_response(data={"items": items, "total": total})
     except Exception as e:
@@ -161,22 +174,109 @@ def list_pending_reviews(
     """List approvals awaiting this reviewer's decision."""
     try:
         pending_rows = (
-            db.query(ApprovalReviewer)
+            db.query(ApprovalReviewer.approval_id)
             .filter(
                 ApprovalReviewer.reviewer_id == current_user.id,
                 ApprovalReviewer.status == "PENDING",
             )
             .all()
         )
+        approval_ids = [row.approval_id for row in pending_rows]
 
-        items = []
-        for row in pending_rows:
-            detail = get_approval_detail(db, row.approval_id)
-            if detail and detail["status"] == "PENDING_APPROVAL":
-                items.append(detail)
+        approvals = (
+            db.query(ComboApproval)
+            .filter(
+                ComboApproval.id.in_(approval_ids),
+                ComboApproval.status == "PENDING_APPROVAL",
+            )
+            .order_by(ComboApproval.created_at.desc())
+            .all()
+            if approval_ids else []
+        )
+
+        items = get_approvals_list_summary(db, approvals)
 
         return _api_response(data={"items": items, "total": len(items)})
     except Exception as e:
+        return _api_response(error=str(e))
+
+
+# ── Approval batches (multi-version reviews) ─────────────────
+
+
+@router.post("/approval-batches")
+def submit_approval_batch(
+    body: SubmitBatchRequest,
+    current_user: User = Depends(require_role(["creator", "admin"])),
+    _section: User = Depends(require_page("approvals", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Submit N combo versions of one target as a single review batch."""
+    try:
+        batch = submit_batch(
+            db=db,
+            versions=[v.model_dump() for v in body.versions],
+            reviewer_ids=body.reviewer_ids,
+            submitted_by=current_user.id,
+            deadline=body.deadline,
+            note=body.note,
+        )
+        detail = get_batch_detail(db, batch.id)
+        return _api_response(data=detail)
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.get("/approval-batches/{batch_id}")
+def get_approval_batch(
+    batch_id: str,
+    current_user: User = Depends(require_page("approvals")),
+    db: Session = Depends(get_db),
+):
+    """Get full batch detail (all versions + batch-level reviewer states)."""
+    try:
+        detail = get_batch_detail(db, batch_id)
+        if not detail:
+            return _api_response(error="Batch not found")
+
+        user_roles = current_user.roles or []
+        if "admin" not in user_roles:
+            is_creator = detail["submitted_by"] == current_user.id
+            is_reviewer = any(r["reviewer_id"] == current_user.id for r in detail["reviewers"])
+            if not is_creator and not is_reviewer:
+                return _api_response(error="Access denied")
+
+        return _api_response(data=detail)
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.post("/approval-batches/{batch_id}/decide")
+def decide_approval_batch(
+    batch_id: str,
+    body: DecisionRequest,
+    current_user: User = Depends(require_role(["reviewer", "admin"])),
+    _section: User = Depends(require_page("approvals")),
+    db: Session = Depends(get_db),
+):
+    """Submit one reviewer decision for the whole batch (all-or-nothing)."""
+    try:
+        batch = record_batch_decision(
+            db=db,
+            batch_id=batch_id,
+            reviewer_id=current_user.id,
+            decision=body.decision,
+            feedback=body.feedback,
+        )
+        detail = get_batch_detail(db, batch.id)
+        return _api_response(data=detail)
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        db.rollback()
         return _api_response(error=str(e))
 
 

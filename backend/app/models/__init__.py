@@ -8,7 +8,7 @@ from app.models.ad_daily_metric import AdDailyMetric
 from app.models.ad_material import AdMaterial
 from app.models.ad_set import AdSet
 from app.models.api_key import ApiKey
-from app.models.approval import ApprovalReviewer, ComboApproval
+from app.models.approval import ApprovalBatch, ApprovalReviewer, ComboApproval
 from app.models.booking_match import BookingMatch
 from app.models.budget import BudgetAllocation, BudgetMonthlySplit, BudgetPlan, BudgetYearlyPlan
 from app.models.campaign import Campaign
@@ -56,6 +56,7 @@ __all__ = [
     "AdMaterial",
     "AdSet",
     "ApiKey",
+    "ApprovalBatch",
     "ApprovalReviewer",
     "BookingMatch",
     "BranchKeypoint",
