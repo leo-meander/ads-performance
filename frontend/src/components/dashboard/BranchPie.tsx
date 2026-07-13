@@ -18,7 +18,7 @@ export default function BranchPie({
 }: {
   title: string
   rows: BranchBreakdownRow[]
-  valueKey: 'spend_vnd' | 'conversions'
+  valueKey: 'spend_vnd' | 'conversions' | 'leads'
   selectedBranches: string[]
   onToggle: (name: string) => void
   valueFormatter: (v: number) => string
