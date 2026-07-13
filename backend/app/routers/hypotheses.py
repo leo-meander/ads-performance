@@ -181,6 +181,68 @@ def _serialize(h: CreativeHypothesis, combo: AdCombo | None = None, approval_sta
     }
 
 
+def _lookup_benchmark(
+    db: Session,
+    branch_name: str,
+    metric: str,
+    ta: Optional[str] = None,
+    country: Optional[str] = None,
+) -> Optional[float]:
+    """Return 60-day average of *metric* for branch (optionally narrowed by TA + country).
+    Returns None if no data or metric unsupported."""
+    try:
+        from datetime import date, timedelta
+        from app.models.metrics import MetricsCache
+        from app.models.campaign import Campaign
+        from app.models.ad_set import AdSet
+
+        cutoff = date.today() - timedelta(days=60)
+        q = (
+            db.query(MetricsCache)
+            .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+            .filter(
+                Campaign.branch_name == branch_name,
+                MetricsCache.date >= cutoff,
+                MetricsCache.ad_id.isnot(None),
+                MetricsCache.impressions > 0,
+            )
+        )
+        if ta:
+            q = q.filter(Campaign.ta == ta)
+        if country:
+            q = q.join(AdSet, AdSet.id == MetricsCache.ad_set_id).filter(AdSet.country == country.upper())
+
+        rows = q.all()
+        if not rows:
+            return None
+
+        values: list[float] = []
+        for r in rows:
+            imp = r.impressions or 0
+            if imp == 0:
+                continue
+            m = metric.lower()
+            if m in ("hook_rate", "thumb_stop_rate"):
+                if r.video_3s_views:
+                    values.append(r.video_3s_views / imp * 100)
+            elif m == "hold_rate":
+                if r.video_thru_plays:
+                    values.append(r.video_thru_plays / imp * 100)
+            elif m in ("ctr",):
+                if r.ctr:
+                    values.append(float(r.ctr) * 100)
+            elif m == "booking_rate":
+                if r.clicks and r.conversions:
+                    values.append(float(r.conversions) / r.clicks * 100)
+            elif m == "roas":
+                if r.roas:
+                    values.append(float(r.roas))
+        return round(sum(values) / len(values), 2) if values else None
+    except Exception:
+        logger.warning("[benchmark] lookup failed for %s / %s", branch_name, metric)
+        return None
+
+
 @router.post("/suggest")
 def suggest_hypotheses(payload: HypothesisSuggestRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     """Generate 3 hypothesis variants. When funnel_stage + format are set, all output is
@@ -271,12 +333,21 @@ def suggest_hypotheses(payload: HypothesisSuggestRequest, db: Session = Depends(
                 f"  - [{h.status.upper()}] {h.learning}" for h in past
             ) + "\n"
 
-        # ── 4. Benchmark band for the active metric ───────────────────────
+        # ── 4. Benchmark band for the active metric — auto-lookup, segment by branch+TA+market ──
+        win_threshold_auto = payload.win_threshold or _lookup_benchmark(
+            db,
+            payload.branch_name,
+            active_metric,
+            ta=payload.target_audience,
+            country=payload.market,
+        )
         benchmark_ctx = ""
-        if payload.win_threshold:
+        if win_threshold_auto:
             benchmark_ctx = (
-                f"60-day benchmark for {active_metric} on {payload.branch_name}: "
-                f"{payload.win_threshold}% average. "
+                f"60-day benchmark for {active_metric} on {payload.branch_name}"
+                f"{f' ({payload.target_audience})' if payload.target_audience else ''}"
+                f"{f' / {payload.market}' if payload.market else ''}: "
+                f"{win_threshold_auto} average. "
                 f"Set Expected Outcome threshold near this band — do not invent fantasy deltas."
             )
 
@@ -374,8 +445,11 @@ Return ONLY valid JSON array. No markdown, no explanation."""
         # Fall back to full list if all were dropped (shouldn't happen)
         suggestions = cleaned or suggestions
 
-        return {"success": True, "data": {"suggestions": suggestions, "active_metric": active_metric},
-                "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
+        return {"success": True, "data": {
+            "suggestions": suggestions,
+            "active_metric": active_metric,
+            "win_threshold": win_threshold_auto,
+        }, "error": None, "timestamp": datetime.now(timezone.utc).isoformat()}
     except Exception as e:
         logger.exception("[hypothesis-suggest] failed")
         return {"success": False, "data": None, "error": str(e),
@@ -518,12 +592,19 @@ Return ONLY valid JSON. English only. hypothesis must name a concrete element fr
                 )
                 raw = msg.content[0].text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
                 proposed = json.loads(raw)
+                cohort_ta = ta if ta != "Unknown" else None
+                cohort_country = country if country != "Unknown" else None
+                win_threshold = _lookup_benchmark(
+                    db, payload.branch_name, metric,
+                    ta=cohort_ta, country=cohort_country,
+                )
                 proposals.append({
                     **proposed,
                     "branch_name": payload.branch_name,
-                    "target_audience": ta if ta != "Unknown" else None,
-                    "market": country if country != "Unknown" else None,
+                    "target_audience": cohort_ta,
+                    "market": cohort_country,
                     "primary_metric": metric,
+                    "win_threshold": win_threshold,
                     "combo_ids": [c.combo_id for c in members],
                     "cohort_label": f"{ta} · {country} · {metric}",
                     "cohort_size": len(members),
@@ -619,6 +700,16 @@ def create_hypothesis(payload: HypothesisCreate, db: Session = Depends(get_db)) 
             if brand and brand.human_desires:
                 desires = brand.human_desires if isinstance(brand.human_desires, list) else []
                 data["human_desire"] = ", ".join(desires) if desires else None
+
+        # Auto-populate win_threshold from benchmark if not provided
+        if not data.get("win_threshold") and data.get("branch_name") and data.get("primary_metric"):
+            data["win_threshold"] = _lookup_benchmark(
+                db,
+                data["branch_name"],
+                data["primary_metric"],
+                ta=data.get("target_audience"),
+                country=data.get("market"),
+            )
 
         hyp = CreativeHypothesis(hypothesis_id=_next_hypothesis_id(db), **data)
         db.add(hyp)
