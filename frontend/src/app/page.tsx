@@ -510,7 +510,7 @@ function DashboardInner() {
         <BranchPie
           title={campaignType === 'lead' ? 'By Branch (Leads)' : 'By Branch (Conversions)'}
           rows={byBranch as BranchBreakdownRow[]}
-          valueKey="conversions"
+          valueKey={campaignType === 'lead' ? 'leads' : 'conversions'}
           selectedBranches={selectedBranches}
           onToggle={toggleBranch}
           valueFormatter={(v) => fmtNum(v)}
