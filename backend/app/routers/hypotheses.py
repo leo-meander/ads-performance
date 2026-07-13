@@ -1095,9 +1095,13 @@ def learning_dashboard(
             if threshold and threshold > 0 and current is not None:
                 beat_pct = round((current - threshold) / threshold * 100, 1)
 
+            # Win rate from combo verdicts — used as fallback when no threshold
+            combo_win_rate = (n_win / n_concluded * 100) if n_concluded > 0 else None
+
             if force_signal:
                 signal = force_signal
             elif beat_pct is not None:
+                # Threshold-based signal (preferred)
                 if n_concluded >= min_s:
                     signal = "push" if beat_pct >= 0 else "cut"
                 elif n_concluded >= 2:
@@ -1107,6 +1111,14 @@ def learning_dashboard(
                         signal = "cut"
                     else:
                         signal = "monitor"
+                else:
+                    signal = "monitor"
+            elif combo_win_rate is not None:
+                # No threshold set — fall back to combo WIN rate
+                if n_concluded >= min_s:
+                    signal = "push" if combo_win_rate >= 60 else ("cut" if combo_win_rate < 40 else "monitor")
+                elif n_concluded >= 2:
+                    signal = "watch" if combo_win_rate >= 60 else ("cut" if combo_win_rate < 30 else "monitor")
                 else:
                     signal = "monitor"
             else:
