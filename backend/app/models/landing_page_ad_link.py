@@ -41,6 +41,12 @@ class LandingPageAdLink(TimestampMixin, Base):
         index=True,
     )
     asset_group_id = Column(UUIDType, nullable=True)  # Google PMax asset_groups.id
+    ad_set_id = Column(
+        UUIDType,
+        ForeignKey("ad_sets.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )  # Google Search: ad group driving traffic to this page
     destination_url = Column(Text, nullable=False)
     utm_source = Column(String(100), nullable=True)
     utm_medium = Column(String(100), nullable=True)
