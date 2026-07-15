@@ -19,6 +19,7 @@ type BookingMatch = {
   ad_id: string | null
   ad_name: string | null
   purchase_kind: string | null
+  reservation_ids: string | null
   reservation_numbers: string | null
   guest_names: string | null
   guest_emails: string | null
@@ -975,6 +976,7 @@ export default function BookingMatchesDashboard() {
                 <th className="text-left px-3 py-2">Ad</th>
                 <th className="text-left px-3 py-2">Kind</th>
                 <th className="text-left px-3 py-2">Country</th>
+                <th className="text-left px-3 py-2">Reservation ID</th>
                 <th className="text-left px-3 py-2">Reservation #</th>
                 <th className="text-left px-3 py-2">Guest</th>
                 <th className="text-left px-3 py-2">Status</th>
@@ -987,10 +989,10 @@ export default function BookingMatchesDashboard() {
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={17} className="text-center py-8 text-gray-400">Loading...</td></tr>
+                <tr><td colSpan={18} className="text-center py-8 text-gray-400">Loading...</td></tr>
               )}
               {!loading && matches.length === 0 && (
-                <tr><td colSpan={17} className="text-center py-8 text-gray-400">No matches found</td></tr>
+                <tr><td colSpan={18} className="text-center py-8 text-gray-400">No matches found</td></tr>
               )}
               {matches.map(m => (
                 <tr key={m.id} className={`border-t border-gray-100 ${rowBgColor(m.match_result)}`}>
@@ -1010,6 +1012,7 @@ export default function BookingMatchesDashboard() {
                     )}
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">{m.ads_country}</td>
+                  <td className="px-3 py-2 max-w-[160px] truncate font-mono text-xs" title={m.reservation_ids || ''}>{m.reservation_ids}</td>
                   <td className="px-3 py-2 max-w-[140px] truncate" title={m.reservation_numbers || ''}>{m.reservation_numbers}</td>
                   <td className="px-3 py-2 max-w-[160px] truncate" title={m.guest_names || ''}>{m.guest_names}</td>
                   <td className="px-3 py-2">{m.reservation_statuses}</td>
