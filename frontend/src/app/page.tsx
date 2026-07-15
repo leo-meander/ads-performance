@@ -65,6 +65,7 @@ function DashboardInner() {
   const [responseCurrency, setResponseCurrency] = useState('VND')
   const [periodInfo, setPeriodInfo] = useState<{ from: string; to: string; prev_from: string; prev_to: string } | null>(null)
   const [daily, setDaily] = useState<DailyRow[]>([])
+  const [prevDaily, setPrevDaily] = useState<TrendRow[]>([])
   const [funnelData, setFunnelData] = useState<FunnelStage[]>([])
   const [byBranch, setByBranch] = useState<BranchBreakdownRow[]>([])
   const [byPlatform, setByPlatform] = useState<BreakdownItem[]>([])
@@ -182,7 +183,7 @@ function DashboardInner() {
         }
       }
       if (daily.success && daily.data) {
-        setDaily((daily.data.series || []).map((s: Partial<TrendRow> & { date: string }) => ({
+        const mapSeries = (arr: (Partial<TrendRow> & { date: string })[]) => arr.map(s => ({
           date: s.date,
           spend: s.spend ?? 0, revenue: s.revenue ?? 0, roas: s.roas ?? 0,
           ctr: s.ctr ?? 0, cpa: s.cpa ?? 0, cpc: s.cpc ?? 0,
@@ -192,7 +193,9 @@ function DashboardInner() {
           do_search_cart: s.do_search_cart ?? 0,
           do_cart_checkout: s.do_cart_checkout ?? 0,
           do_checkout_book: s.do_checkout_book ?? 0,
-        })))
+        }))
+        setDaily(mapSeries(daily.data.series || []))
+        setPrevDaily(mapSeries(daily.data.prev_series || []))
       }
       if (funnel.success && funnel.data) {
         // /dashboard/funnel returns {steps:[{key,label,value,...}]}, /country/funnel
@@ -643,6 +646,7 @@ function DashboardInner() {
           onAddManual={() => setManualModalOpen(true)}
           refreshKey={activityRefreshKey}
           trend={daily}
+          prevTrend={prevDaily}
           currency={responseCurrency}
         />
       </div>

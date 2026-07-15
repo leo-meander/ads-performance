@@ -7,6 +7,20 @@ import {
 } from 'recharts'
 import { fmtMoney, fmtNum } from './dashboardUtils'
 
+// Linear regression: returns [slope, intercept] for y = slope*x + intercept
+function linearRegression(ys: number[]): [number, number] {
+  const n = ys.length
+  if (n < 2) return [0, ys[0] ?? 0]
+  const xs = ys.map((_, i) => i)
+  const sumX = xs.reduce((a, b) => a + b, 0)
+  const sumY = ys.reduce((a, b) => a + b, 0)
+  const sumXY = xs.reduce((a, x, i) => a + x * ys[i], 0)
+  const sumX2 = xs.reduce((a, x) => a + x * x, 0)
+  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX)
+  const intercept = (sumY - slope * sumX) / n
+  return [slope, intercept]
+}
+
 // An activity marker overlaid on the trend at a given day.
 export type TrendMarker = { day: string; count: number; color: string; firstId: string }
 
@@ -65,28 +79,28 @@ function formatValue(v: number, kind: MetricKind, currency: string): string {
 }
 
 export default function MetricTrendChart({
-  data, currency, markers = [], onMarkerClick, title = 'Metric Trends', headerRight, bare = false,
+  data, prevData, currency, markers = [], onMarkerClick, title = 'Metric Trends', headerRight, bare = false,
 }: {
   data: TrendRow[]
+  // Optional prior-period rows for comparison overlay (dashed lines).
+  prevData?: TrendRow[]
   currency: string
   markers?: TrendMarker[]
   onMarkerClick?: (firstId: string) => void
   title?: string
   headerRight?: React.ReactNode
-  // When true, render without the card chrome so it can be embedded in another card.
   bare?: boolean
 }) {
-  // Default to the two headline metrics most people watch.
   const [selected, setSelected] = useState<MetricKey[]>(['spend', 'roas'])
-  // Indexed mode lets metrics on wildly different scales (Cost in millions vs
-  // ROAS ~4x) share one axis by plotting each as % of its own period max.
   const [indexed, setIndexed] = useState(true)
+  const [showPrev, setShowPrev] = useState(false)
+  const [showTrend, setShowTrend] = useState(false)
 
   const toggle = (key: MetricKey) => {
     setSelected(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key])
   }
 
-  // Per-metric max over the period, used to normalize when indexed.
+  // Per-metric max over current period (used for indexed normalization).
   const maxes = useMemo(() => {
     const m: Record<string, number> = {}
     for (const def of METRICS) {
@@ -95,18 +109,39 @@ export default function MetricTrendChart({
     return m
   }, [data])
 
-  // Build rows carrying both raw values (for the tooltip) and indexed values
-  // (`${key}__idx`, what the lines plot when indexed mode is on).
-  const chartData = useMemo(() => data.map(row => {
+  // Pre-compute regression coefficients once per metric (not per row).
+  const regressions = useMemo(() => {
+    const r: Record<string, [number, number]> = {}
+    for (const def of METRICS) {
+      const ys = data.map(d => Number(d[def.key]) || 0)
+      r[def.key] = linearRegression(ys)
+    }
+    return r
+  }, [data])
+
+  // Prev-period indexed relative to CURRENT period max so both lines share the
+  // same scale and are directly comparable.
+  const chartData = useMemo(() => data.map((row, i) => {
     const out: Record<string, number | string> = { date: row.date }
     for (const def of METRICS) {
       const raw = Number(row[def.key]) || 0
       out[def.key] = raw
       const max = maxes[def.key]
       out[`${def.key}__idx`] = max > 0 ? (raw / max) * 100 : 0
+
+      const [slope, intercept] = regressions[def.key]
+      const trendRaw = slope * i + intercept
+      out[`${def.key}__trend`] = trendRaw
+      out[`${def.key}__trend_idx`] = max > 0 ? (trendRaw / max) * 100 : 0
+
+      if (prevData && prevData[i]) {
+        const prevRaw = Number(prevData[i][def.key]) || 0
+        out[`${def.key}__prev`] = prevRaw
+        out[`${def.key}__prev_idx`] = max > 0 ? (prevRaw / max) * 100 : 0
+      }
     }
     return out
-  }), [data, maxes])
+  }), [data, prevData, maxes, regressions])
 
   const selectedDefs = METRICS.filter(d => selected.includes(d.key))
 
@@ -124,7 +159,7 @@ export default function MetricTrendChart({
     <div className={bare ? '' : 'bg-white rounded-xl border border-gray-200 p-6'}>
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
             <input
               type="checkbox"
@@ -134,6 +169,26 @@ export default function MetricTrendChart({
             />
             Indexed (100 = period max)
           </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showTrend}
+              onChange={() => setShowTrend(v => !v)}
+              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            Trendline
+          </label>
+          {prevData && prevData.length > 0 && (
+            <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={showPrev}
+                onChange={() => setShowPrev(v => !v)}
+                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              vs last period
+            </label>
+          )}
           {headerRight}
         </div>
       </div>
@@ -195,20 +250,31 @@ export default function MetricTrendChart({
                 return (
                   <div className="bg-white border border-gray-200 rounded-lg shadow-sm px-3 py-2 text-xs">
                     <p className="text-gray-500 mb-1">Date: {label}</p>
-                    {selectedDefs.map(def => (
-                      <div key={def.key} className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: def.color }} />
-                        <span className="text-gray-600">{def.label}:</span>
-                        <span className="font-medium text-gray-900">
-                          {formatValue(Number(row[def.key]) || 0, def.kind, currency)}
-                          {indexed && (
-                            <span className="text-gray-400 font-normal ml-1">
-                              ({Math.round(Number(row[`${def.key}__idx`]) || 0)})
+                    {selectedDefs.map(def => {
+                      const cur = Number(row[def.key]) || 0
+                      const prev = Number(row[`${def.key}__prev`]) || 0
+                      const hasPrev = showPrev && prevData && prevData.length > 0
+                      const pctDiff = hasPrev && prev !== 0 ? ((cur - prev) / Math.abs(prev)) * 100 : null
+                      return (
+                        <div key={def.key} className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: def.color }} />
+                          <span className="text-gray-600">{def.label}:</span>
+                          <span className="font-medium text-gray-900">
+                            {formatValue(cur, def.kind, currency)}
+                            {indexed && (
+                              <span className="text-gray-400 font-normal ml-1">
+                                ({Math.round(Number(row[`${def.key}__idx`]) || 0)})
+                              </span>
+                            )}
+                          </span>
+                          {hasPrev && (
+                            <span className={`text-xs font-medium ${pctDiff === null ? 'text-gray-400' : pctDiff >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                              {pctDiff !== null ? `${pctDiff >= 0 ? '+' : ''}${pctDiff.toFixed(1)}%` : '—'}
                             </span>
                           )}
-                        </span>
-                      </div>
-                    ))}
+                        </div>
+                      )
+                    })}
                   </div>
                 )
               }}
@@ -224,6 +290,36 @@ export default function MetricTrendChart({
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4 }}
+              />
+            ))}
+            {showPrev && selectedDefs.map(def => (
+              <Line
+                key={`${def.key}__prev`}
+                type="monotone"
+                dataKey={indexed ? `${def.key}__prev_idx` : `${def.key}__prev`}
+                name={`${def.label} (prev)`}
+                stroke={def.color}
+                strokeWidth={1.5}
+                strokeDasharray="4 3"
+                strokeOpacity={0.5}
+                dot={false}
+                activeDot={false}
+                legendType="none"
+              />
+            ))}
+            {showTrend && selectedDefs.map(def => (
+              <Line
+                key={`${def.key}__trend`}
+                type="linear"
+                dataKey={indexed ? `${def.key}__trend_idx` : `${def.key}__trend`}
+                name={`${def.label} trend`}
+                stroke={def.color}
+                strokeWidth={1.5}
+                strokeDasharray="6 3"
+                strokeOpacity={0.7}
+                dot={false}
+                activeDot={false}
+                legendType="none"
               />
             ))}
             {anchorKey && markers.map(m => (

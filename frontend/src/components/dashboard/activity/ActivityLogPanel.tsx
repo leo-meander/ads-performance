@@ -173,6 +173,7 @@ export type ActivityLogPanelProps = {
   // Daily metric series (already fetched by the parent dashboard) rendered as
   // the trend chart at the top of this panel, with activity markers overlaid.
   trend?: TrendRow[]
+  prevTrend?: TrendRow[]
   currency?: string
 }
 
@@ -186,6 +187,7 @@ export default function ActivityLogPanel({
   onAddManual,
   refreshKey,
   trend = [],
+  prevTrend = [],
   currency = 'VND',
 }: ActivityLogPanelProps) {
   const [items, setItems] = useState<ChangeLogItem[]>([])
@@ -315,6 +317,7 @@ export default function ActivityLogPanel({
           <MetricTrendChart
             bare
             data={trend}
+            prevData={prevTrend}
             currency={currency}
             markers={markers}
             onMarkerClick={scrollToEntry}

@@ -421,52 +421,84 @@ def daily_spend_series(
             "searches": 0, "add_to_cart": 0, "checkouts": 0,
         }
 
-        agg: dict[str, dict] = {}
-        for row in rows:
-            d = row.date.isoformat() if row.date else None
-            if not d:
-                continue
-            entry = agg.setdefault(d, dict(EMPTY_ENTRY))
-            fx = _fx(row.currency) if convert_to_vnd else 1
-            entry["spend"] += float(row.spend or 0) * fx
-            entry["revenue"] += float(row.revenue or 0) * fx
-            entry["impressions"] += int(row.impressions or 0)
-            entry["clicks"] += int(row.clicks or 0)
-            entry["conversions"] += int(row.conversions or 0)
-            entry["searches"] += int(row.searches or 0)
-            entry["add_to_cart"] += int(row.add_to_cart or 0)
-            entry["checkouts"] += int(row.checkouts or 0)
+        def _build_agg(rows_iter):
+            agg: dict[str, dict] = {}
+            for row in rows_iter:
+                d = row.date.isoformat() if row.date else None
+                if not d:
+                    continue
+                entry = agg.setdefault(d, dict(EMPTY_ENTRY))
+                fx = _fx(row.currency) if convert_to_vnd else 1
+                entry["spend"] += float(row.spend or 0) * fx
+                entry["revenue"] += float(row.revenue or 0) * fx
+                entry["impressions"] += int(row.impressions or 0)
+                entry["clicks"] += int(row.clicks or 0)
+                entry["conversions"] += int(row.conversions or 0)
+                entry["searches"] += int(getattr(row, "searches", None) or 0)
+                entry["add_to_cart"] += int(getattr(row, "add_to_cart", None) or 0)
+                entry["checkouts"] += int(getattr(row, "checkouts", None) or 0)
+            return agg
 
-        series = []
-        cursor = df
-        while cursor <= dt:
-            key = cursor.isoformat()
-            entry = agg.get(key, dict(EMPTY_ENTRY))
-            derived = _breakdown_derive(
-                entry["spend"], entry["revenue"], entry["impressions"],
-                entry["clicks"], entry["conversions"],
+        def _build_series(agg, start, end):
+            out = []
+            cursor = start
+            while cursor <= end:
+                key = cursor.isoformat()
+                entry = agg.get(key, dict(EMPTY_ENTRY))
+                derived = _breakdown_derive(
+                    entry["spend"], entry["revenue"], entry["impressions"],
+                    entry["clicks"], entry["conversions"],
+                )
+                out.append({
+                    "date": key,
+                    "spend": round(entry["spend"], 2),
+                    "revenue": round(entry["revenue"], 2),
+                    "impressions": entry["impressions"],
+                    "clicks": entry["clicks"],
+                    "conversions": entry["conversions"],
+                    **derived,
+                    "do_imp_click": _drop_off(entry["clicks"], entry["impressions"]),
+                    "do_click_search": _drop_off(entry["searches"], entry["clicks"]),
+                    "do_search_cart": _drop_off(entry["add_to_cart"], entry["searches"]),
+                    "do_cart_checkout": _drop_off(entry["checkouts"], entry["add_to_cart"]),
+                    "do_checkout_book": _drop_off(entry["conversions"], entry["checkouts"]),
+                })
+                cursor = cursor + timedelta(days=1)
+            return out
+
+        agg = _build_agg(rows)
+        series = _build_series(agg, df, dt)
+
+        # Previous period (same length, aligned positionally with current series).
+        prev_from, prev_to = get_prev_period(df, dt)
+        q_prev = (
+            db.query(
+                MetricsCache.date.label("date"),
+                AdAccount.currency.label("currency"),
+                func.sum(MetricsCache.spend).label("spend"),
+                func.sum(MetricsCache.revenue).label("revenue"),
+                func.sum(MetricsCache.impressions).label("impressions"),
+                func.sum(MetricsCache.clicks).label("clicks"),
+                func.sum(MetricsCache.conversions).label("conversions"),
+                func.sum(MetricsCache.searches).label("searches"),
+                func.sum(MetricsCache.add_to_cart).label("add_to_cart"),
+                func.sum(MetricsCache.checkouts).label("checkouts"),
             )
-            series.append({
-                "date": key,
-                "spend": round(entry["spend"], 2),
-                "revenue": round(entry["revenue"], 2),
-                "impressions": entry["impressions"],
-                "clicks": entry["clicks"],
-                "conversions": entry["conversions"],
-                **derived,
-                # Funnel drop-off rates (% lost between consecutive stages)
-                "do_imp_click": _drop_off(entry["clicks"], entry["impressions"]),
-                "do_click_search": _drop_off(entry["searches"], entry["clicks"]),
-                "do_search_cart": _drop_off(entry["add_to_cart"], entry["searches"]),
-                "do_cart_checkout": _drop_off(entry["checkouts"], entry["add_to_cart"]),
-                "do_checkout_book": _drop_off(entry["conversions"], entry["checkouts"]),
-            })
-            cursor = cursor + timedelta(days=1)
+            .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+            .join(AdAccount, AdAccount.id == Campaign.account_id)
+            .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
+        )
+        q_prev = _apply_common_filters(q_prev, country, platform, prev_from, prev_to, funnel_stage, account_id, scoped_ids, campaign_type)
+        prev_rows = q_prev.group_by(MetricsCache.date, AdAccount.currency).all()
+        prev_agg = _build_agg(prev_rows)
+        prev_series = _build_series(prev_agg, prev_from, prev_to)
 
         return _api_response(data={
             "series": series,
+            "prev_series": prev_series,
             "currency": display_currency,
             "period": {"from": date_from, "to": date_to},
+            "prev_period": {"from": prev_from.isoformat(), "to": prev_to.isoformat()},
         })
     except Exception as e:
         return _api_response(error=str(e))
