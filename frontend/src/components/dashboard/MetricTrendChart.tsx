@@ -346,7 +346,7 @@ export default function MetricTrendChart({
                 legendType="none"
               />
             ))}
-            {showTrend && selectedDefs.map(def => {
+            {showTrend && selectedDefs.flatMap(def => {
               const avg = averages[def.key] || 0
               const avgIdx = maxes[def.key] > 0 ? (avg / maxes[def.key]) * 100 : 0
               const avgVal = indexed ? avgIdx : avg
