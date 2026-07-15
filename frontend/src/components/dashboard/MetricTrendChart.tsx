@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend, ReferenceDot,
+  Tooltip, ResponsiveContainer, Legend, ReferenceDot, ReferenceLine,
 } from 'recharts'
 import { fmtMoney, fmtNum } from './dashboardUtils'
 
@@ -108,6 +108,26 @@ export default function MetricTrendChart({
     }
     return m
   }, [data])
+
+  // Per-metric averages (current + prev period).
+  const averages = useMemo(() => {
+    const a: Record<string, number> = {}
+    for (const def of METRICS) {
+      const ys = data.map(d => Number(d[def.key]) || 0).filter(v => v > 0)
+      a[def.key] = ys.length > 0 ? ys.reduce((s, v) => s + v, 0) / ys.length : 0
+    }
+    return a
+  }, [data])
+
+  const prevAverages = useMemo(() => {
+    if (!prevData || prevData.length === 0) return {} as Record<string, number>
+    const a: Record<string, number> = {}
+    for (const def of METRICS) {
+      const ys = prevData.map(d => Number(d[def.key]) || 0).filter(v => v > 0)
+      a[def.key] = ys.length > 0 ? ys.reduce((s, v) => s + v, 0) / ys.length : 0
+    }
+    return a
+  }, [prevData])
 
   // Pre-compute regression coefficients once per metric (not per row).
   const regressions = useMemo(() => {
@@ -326,36 +346,60 @@ export default function MetricTrendChart({
                 legendType="none"
               />
             ))}
-            {showTrend && selectedDefs.map(def => (
-              <Line
-                key={`${def.key}__trend`}
-                type="linear"
-                dataKey={indexed ? `${def.key}__trend_idx` : `${def.key}__trend`}
-                name={`${def.label} trend`}
-                stroke={def.color}
-                strokeWidth={1.5}
-                strokeDasharray="6 3"
-                strokeOpacity={0.7}
-                dot={false}
-                activeDot={false}
-                legendType="none"
-              />
-            ))}
-            {showTrend && showPrev && selectedDefs.map(def => (
-              <Line
-                key={`${def.key}__prev_trend`}
-                type="linear"
-                dataKey={indexed ? `${def.key}__prev_trend_idx` : `${def.key}__prev_trend`}
-                name={`${def.label} prev trend`}
-                stroke={def.color}
-                strokeWidth={1.5}
-                strokeDasharray="6 3"
-                strokeOpacity={0.35}
-                dot={false}
-                activeDot={false}
-                legendType="none"
-              />
-            ))}
+            {showTrend && selectedDefs.map(def => {
+              const avg = averages[def.key] || 0
+              const avgIdx = maxes[def.key] > 0 ? (avg / maxes[def.key]) * 100 : 0
+              const avgVal = indexed ? avgIdx : avg
+              const prevAvg = prevAverages[def.key] || 0
+              const prevAvgIdx = maxes[def.key] > 0 ? (prevAvg / maxes[def.key]) * 100 : 0
+              const prevAvgVal = indexed ? prevAvgIdx : prevAvg
+              return [
+                // Current trendline — thick, solid
+                <Line
+                  key={`${def.key}__trend`}
+                  type="linear"
+                  dataKey={indexed ? `${def.key}__trend_idx` : `${def.key}__trend`}
+                  stroke={def.color}
+                  strokeWidth={3}
+                  strokeOpacity={1}
+                  dot={false}
+                  activeDot={false}
+                  legendType="none"
+                />,
+                // Prev trendline — same thickness, muted
+                ...(showPrev ? [<Line
+                  key={`${def.key}__prev_trend`}
+                  type="linear"
+                  dataKey={indexed ? `${def.key}__prev_trend_idx` : `${def.key}__prev_trend`}
+                  stroke={def.color}
+                  strokeWidth={3}
+                  strokeOpacity={0.35}
+                  dot={false}
+                  activeDot={false}
+                  legendType="none"
+                />] : []),
+                // Current period average — thin horizontal line
+                <ReferenceLine
+                  key={`${def.key}__avg`}
+                  y={avgVal}
+                  stroke={def.color}
+                  strokeWidth={1}
+                  strokeDasharray="3 3"
+                  strokeOpacity={0.6}
+                  label={{ value: `avg ${formatValue(avg, def.kind, currency)}`, fill: def.color, fontSize: 10, position: 'insideTopRight' }}
+                />,
+                // Prev average — same but muted
+                ...(showPrev && prevAvg > 0 ? [<ReferenceLine
+                  key={`${def.key}__prev_avg`}
+                  y={prevAvgVal}
+                  stroke={def.color}
+                  strokeWidth={1}
+                  strokeDasharray="3 3"
+                  strokeOpacity={0.3}
+                  label={{ value: `prev avg ${formatValue(prevAvg, def.kind, currency)}`, fill: def.color, fontSize: 10, position: 'insideBottomRight' }}
+                />] : []),
+              ]
+            })}
             {anchorKey && markers.map(m => (
               <ReferenceDot
                 key={m.day}
