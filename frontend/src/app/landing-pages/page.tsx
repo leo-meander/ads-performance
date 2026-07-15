@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { Sparkles, X, ArrowLeftRight } from 'lucide-react'
+import { Sparkles, X, ArrowLeftRight, BarChart2 } from 'lucide-react'
 import { useAuth } from '@/components/AuthContext'
 import { API_BASE } from '@/lib/api'
 import type { LandingPage } from '@/lib/landingPage'
@@ -110,6 +110,14 @@ function LandingPagesListInner() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Link
+            href="/landing-pages/version-overview"
+            className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-1.5"
+            title="Version 1 vs Version 2 comparison"
+          >
+            <BarChart2 className="w-4 h-4" />
+            V1 vs V2
+          </Link>
           <Link
             href="/landing-pages/compare"
             className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-1.5"

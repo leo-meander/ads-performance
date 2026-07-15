@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -131,6 +131,174 @@ class GenerateUrlReq(BaseModel):
     utm_campaign: str | None = None
     utm_content: str | None = None
     utm_term: str | None = None
+
+
+# ────────────────────────── version overview ────────────────────────────────
+
+# V2 slug patterns — pages launched June-July 2026.
+# All others in these domains are considered V1.
+_V2_PATTERNS: list[tuple[str, str]] = [
+    ("osk.staymeander.com", "couple-explore-osaka%"),
+    ("1948.staymeander.com", "taipei-heritage-hotel%"),
+    ("tpe.staymeander.com", "ximen-social-hotel%"),
+    ("oani-taipei.staymeander.com", "retreat-hotel%"),
+    ("sgn.staymeander.com", "stay-work-wander%"),
+]
+_OVERVIEW_DOMAINS = (
+    "osk.staymeander.com",
+    "1948.staymeander.com",
+    "tpe.staymeander.com",
+    "oani-taipei.staymeander.com",
+    "sgn.staymeander.com",
+)
+_BRANCH_LABELS: dict[str, str] = {
+    "osk.staymeander.com": "Meander Osaka",
+    "1948.staymeander.com": "Meander 1948",
+    "tpe.staymeander.com": "Meander Taipei",
+    "oani-taipei.staymeander.com": "Oani Taipei",
+    "sgn.staymeander.com": "Meander Saigon",
+}
+_EXCLUDE_SLUGS = ("day-by-day-plan%", "thank-you%", "%travel-guide%")
+
+
+@router.get("/landing-pages/version-overview")
+def version_overview(
+    current_user: User = Depends(require_section("landing_pages", "view")),
+    db: Session = Depends(get_db),
+):
+    """Return V1 vs V2 aggregate metrics for the 5 active landing page domains.
+
+    Each row in the response has:
+      domain, branch, version (Version 1 | Version 2), slug,
+      spend, revenue, conversions, sessions, roas, conv_rate_pct,
+      avg_scroll_pct, rage_clicks, quickback_clicks
+    """
+    try:
+        # Build CASE expression for version tagging
+        version_cases = "\n".join(
+            f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN 'Version 2'"
+            for d, s in _V2_PATTERNS
+        )
+        exclude_where = " AND ".join(
+            f"lp.slug NOT LIKE '{pat}'" for pat in _EXCLUDE_SLUGS
+        )
+        domain_list = ", ".join(f"'{d}'" for d in _OVERVIEW_DOMAINS)
+
+        sql = text(f"""
+            WITH page_tags AS (
+                SELECT lp.id, lp.domain, lp.slug,
+                    CASE
+                        {version_cases}
+                        ELSE 'Version 1'
+                    END AS version
+                FROM landing_pages lp
+                WHERE lp.is_active = TRUE
+                  AND lp.domain IN ({domain_list})
+                  AND {exclude_where}
+            ),
+            ad_metrics AS (
+                SELECT lpal.landing_page_id,
+                    SUM(mc.spend)       AS spend,
+                    SUM(mc.impressions) AS impressions,
+                    SUM(mc.link_clicks) AS link_clicks,
+                    SUM(mc.conversions) AS conversions,
+                    SUM(mc.revenue)     AS revenue
+                FROM landing_page_ad_links lpal
+                JOIN metrics_cache mc ON mc.campaign_id = lpal.campaign_id
+                  AND mc.ad_set_id IS NULL AND mc.ad_id IS NULL
+                GROUP BY lpal.landing_page_id
+            ),
+            clarity_metrics AS (
+                SELECT landing_page_id,
+                    SUM(sessions)         AS sessions,
+                    AVG(avg_scroll_depth) AS avg_scroll_pct,
+                    SUM(rage_clicks)      AS rage_clicks,
+                    SUM(quickback_clicks) AS quickback_clicks
+                FROM landing_page_clarity_snapshots
+                WHERE utm_source IS NULL
+                  AND utm_campaign IS NULL
+                  AND utm_content IS NULL
+                GROUP BY landing_page_id
+            )
+            SELECT
+                pt.domain,
+                pt.version,
+                pt.slug,
+                ROUND(COALESCE(am.spend, 0)::numeric, 0)       AS spend,
+                ROUND(COALESCE(am.revenue, 0)::numeric, 0)     AS revenue,
+                COALESCE(am.conversions, 0)                     AS conversions,
+                COALESCE(cm.sessions, 0)                        AS sessions,
+                CASE WHEN COALESCE(am.spend, 0) > 0
+                    THEN ROUND((am.revenue / am.spend)::numeric, 2)
+                END                                             AS roas,
+                CASE WHEN COALESCE(cm.sessions, 0) > 0
+                    THEN ROUND((am.conversions::numeric / cm.sessions * 100), 3)
+                END                                             AS conv_rate_pct,
+                ROUND(COALESCE(cm.avg_scroll_pct, 0)::numeric, 1) AS avg_scroll_pct,
+                COALESCE(cm.rage_clicks, 0)                     AS rage_clicks,
+                COALESCE(cm.quickback_clicks, 0)                AS quickback_clicks
+            FROM page_tags pt
+            LEFT JOIN ad_metrics am ON am.landing_page_id = pt.id
+            LEFT JOIN clarity_metrics cm ON cm.landing_page_id = pt.id
+            WHERE COALESCE(am.spend, 0) > 0 OR COALESCE(cm.sessions, 0) > 0
+            ORDER BY pt.domain, pt.version DESC, COALESCE(am.spend, 0) DESC
+        """)
+
+        rows = db.execute(sql).mappings().all()
+
+        # Group into per-domain structure
+        from collections import defaultdict
+        by_domain: dict[str, dict] = {}
+        for r in rows:
+            domain = r["domain"]
+            if domain not in by_domain:
+                by_domain[domain] = {
+                    "domain": domain,
+                    "branch": _BRANCH_LABELS.get(domain, domain),
+                    "versions": {"Version 1": [], "Version 2": []},
+                }
+            page = {
+                "slug": r["slug"],
+                "spend": float(r["spend"] or 0),
+                "revenue": float(r["revenue"] or 0),
+                "conversions": float(r["conversions"] or 0),
+                "sessions": int(r["sessions"] or 0),
+                "roas": float(r["roas"]) if r["roas"] is not None else None,
+                "conv_rate_pct": float(r["conv_rate_pct"]) if r["conv_rate_pct"] is not None else None,
+                "avg_scroll_pct": float(r["avg_scroll_pct"] or 0),
+                "rage_clicks": int(r["rage_clicks"] or 0),
+                "quickback_clicks": int(r["quickback_clicks"] or 0),
+                "low_confidence": int(r["sessions"] or 0) < 10,
+            }
+            version = r["version"]
+            by_domain[domain]["versions"][version].append(page)
+
+        def _agg(pages: list[dict]) -> dict:
+            total_sessions = sum(p["sessions"] for p in pages)
+            total_conv = sum(p["conversions"] for p in pages)
+            return {
+                "sessions": total_sessions,
+                "conversions": total_conv,
+                "conv_rate_pct": round(total_conv / total_sessions * 100, 3) if total_sessions else None,
+                "page_count": len(pages),
+                "pages": pages,
+            }
+
+        result = []
+        for domain in _OVERVIEW_DOMAINS:
+            if domain not in by_domain:
+                continue
+            d = by_domain[domain]
+            result.append({
+                "domain": domain,
+                "branch": d["branch"],
+                "v1": _agg(d["versions"]["Version 1"]),
+                "v2": _agg(d["versions"]["Version 2"]),
+            })
+
+        return _api(result)
+    except Exception as e:
+        return _api(error=str(e))
 
 
 # ────────────────────────── list + CRUD ─────────────────────────────────────
