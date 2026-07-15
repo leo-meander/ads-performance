@@ -199,26 +199,54 @@ def rollup_metrics(
     #     manual campaign link) → that campaign's campaign-level row only
     #     (ad_set_id IS NULL AND ad_id IS NULL), counted once.
     links = (
-        db.query(LandingPageAdLink.campaign_id, LandingPageAdLink.ad_id)
+        db.query(
+            LandingPageAdLink.campaign_id,
+            LandingPageAdLink.ad_set_id,
+            LandingPageAdLink.ad_id,
+        )
         .filter(LandingPageAdLink.landing_page_id == landing_page_id)
         .all()
     )
+    # Tier 1: ad-level links (Meta — precise per-ad attribution)
     ad_ids = sorted({l.ad_id for l in links if l.ad_id is not None})
     campaigns_with_ad = {
         l.campaign_id for l in links if l.ad_id is not None and l.campaign_id is not None
     }
-    # Campaign-only fallback excludes campaigns already covered ad-precisely,
-    # so a campaign linked both ways isn't counted twice.
+    # Tier 2: ad_set-level links (Google Search — avoids brand-KW ad group bleed)
+    # Stored as (campaign_id, ad_set_id, ad_id=None) tuples for exact join.
+    adset_links = [
+        (l.campaign_id, l.ad_set_id)
+        for l in links
+        if l.ad_set_id is not None and l.ad_id is None
+    ]
+    campaigns_with_adset = {c for c, _ in adset_links}
+    # Tier 3: campaign-only fallback — used for PMax and Clarity-UTM links.
+    # Excludes campaigns already covered by tier 1 or tier 2 to avoid double-count.
     campaign_only_ids = sorted({
         l.campaign_id
         for l in links
-        if l.ad_id is None and l.campaign_id is not None and l.campaign_id not in campaigns_with_ad
+        if l.ad_id is None
+        and l.ad_set_id is None
+        and l.campaign_id is not None
+        and l.campaign_id not in campaigns_with_ad
+        and l.campaign_id not in campaigns_with_adset
     })
-    all_campaign_ids = sorted(campaigns_with_ad | set(campaign_only_ids))
+    all_campaign_ids = sorted(
+        campaigns_with_ad | campaigns_with_adset | set(campaign_only_ids)
+    )
 
     attribution_terms = []
     if ad_ids:
         attribution_terms.append(MetricsCache.ad_id.in_(ad_ids))
+    if adset_links:
+        for camp_id, adset_id in adset_links:
+            attribution_terms.append(
+                and_(
+                    MetricsCache.campaign_id == camp_id,
+                    MetricsCache.ad_set_id == adset_id,
+                    MetricsCache.ad_id.is_(None),
+                )
+            )
     if campaign_only_ids:
         attribution_terms.append(
             and_(

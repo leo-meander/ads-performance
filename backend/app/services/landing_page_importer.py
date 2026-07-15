@@ -105,12 +105,13 @@ def _upsert_ad_link(
     platform: str,
     campaign_id: str | None,
     ad_id: str | None,
+    ad_set_id: str | None,
     asset_group_id: str | None,
     destination_url: str,
     utm: dict[str, str],
     now: datetime,
 ) -> tuple[LandingPageAdLink, bool]:
-    """Upsert keyed by (landing_page_id, platform, campaign_id, ad_id, asset_group_id, destination_url).
+    """Upsert keyed by (landing_page_id, platform, campaign_id, ad_set_id, ad_id, destination_url).
 
     Returns (row, created).
     """
@@ -123,6 +124,10 @@ def _upsert_ad_link(
         q = q.filter(LandingPageAdLink.campaign_id == campaign_id)
     else:
         q = q.filter(LandingPageAdLink.campaign_id.is_(None))
+    if ad_set_id is not None:
+        q = q.filter(LandingPageAdLink.ad_set_id == ad_set_id)
+    else:
+        q = q.filter(LandingPageAdLink.ad_set_id.is_(None))
     if ad_id is not None:
         q = q.filter(LandingPageAdLink.ad_id == ad_id)
     else:
@@ -136,6 +141,7 @@ def _upsert_ad_link(
             platform=platform,
             campaign_id=campaign_id,
             ad_id=ad_id,
+            ad_set_id=ad_set_id,
             asset_group_id=asset_group_id,
             destination_url=destination_url,
             utm_source=utm.get("utm_source"),
@@ -252,6 +258,7 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
             platform=platform,
             campaign_id=campaign_id,
             ad_id=None,
+            ad_set_id=None,
             asset_group_id=None,
             destination_url=destination_url,
             utm={"utm_source": utm_s, "utm_campaign": utm_c, "utm_content": utm_ct},
@@ -315,6 +322,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
                     platform="meta",
                     campaign_id=ad.campaign_id,
                     ad_id=ad.id,
+                    ad_set_id=None,
                     asset_group_id=None,
                     destination_url=url,
                     utm=n.utm,
@@ -355,6 +363,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
                     platform="google",
                     campaign_id=ag.campaign_id,
                     ad_id=None,
+                    ad_set_id=None,
                     asset_group_id=ag.id,
                     destination_url=url,
                     utm=n.utm,
@@ -396,7 +405,8 @@ def import_from_ads(db: Session) -> dict[str, Any]:
                     landing_page_id=page.id,
                     platform="google",
                     campaign_id=ad.campaign_id,
-                    ad_id=ad.id,
+                    ad_id=None,           # Google has no ad-level metrics_cache rows
+                    ad_set_id=ad.ad_set_id,  # use ad_set level for precise attribution
                     asset_group_id=None,
                     destination_url=url,
                     utm=n.utm,
