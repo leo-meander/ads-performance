@@ -189,7 +189,7 @@ export default function VersionOverviewPage() {
   const [activeTab, setActiveTab] = useState(0)
 
   useEffect(() => {
-    fetch(`${API_BASE}/landing-pages/version-overview`, { credentials: 'include' })
+    fetch(`${API_BASE}/api/landing-pages/version-overview`, { credentials: 'include' })
       .then(r => r.json())
       .then(res => {
         if (res.success) setBranches(res.data)
