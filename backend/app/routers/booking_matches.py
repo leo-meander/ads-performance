@@ -157,6 +157,7 @@ def _serialize_match(m: BookingMatch) -> dict:
         "ad_id": m.ad_id,
         "ad_name": m.ad_name,
         "purchase_kind": m.purchase_kind,
+        "reservation_ids": m.reservation_ids,
         "reservation_numbers": m.reservation_numbers,
         "guest_names": m.guest_names,
         "guest_emails": m.guest_emails,
