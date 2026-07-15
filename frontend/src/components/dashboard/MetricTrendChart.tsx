@@ -119,6 +119,17 @@ export default function MetricTrendChart({
     return r
   }, [data])
 
+  // Prev-period regression — same number of points as prevData.
+  const prevRegressions = useMemo(() => {
+    if (!prevData || prevData.length === 0) return {} as Record<string, [number, number]>
+    const r: Record<string, [number, number]> = {}
+    for (const def of METRICS) {
+      const ys = prevData.map(d => Number(d[def.key]) || 0)
+      r[def.key] = linearRegression(ys)
+    }
+    return r
+  }, [prevData])
+
   // Prev-period indexed relative to CURRENT period max so both lines share the
   // same scale and are directly comparable.
   const chartData = useMemo(() => data.map((row, i) => {
@@ -138,10 +149,18 @@ export default function MetricTrendChart({
         const prevRaw = Number(prevData[i][def.key]) || 0
         out[`${def.key}__prev`] = prevRaw
         out[`${def.key}__prev_idx`] = max > 0 ? (prevRaw / max) * 100 : 0
+
+        // Prev trendline — regression over prev series, indexed vs current max
+        if (prevRegressions[def.key]) {
+          const [ps, pi] = prevRegressions[def.key]
+          const prevTrendRaw = ps * i + pi
+          out[`${def.key}__prev_trend`] = prevTrendRaw
+          out[`${def.key}__prev_trend_idx`] = max > 0 ? (prevTrendRaw / max) * 100 : 0
+        }
       }
     }
     return out
-  }), [data, prevData, maxes, regressions])
+  }), [data, prevData, maxes, regressions, prevRegressions])
 
   const selectedDefs = METRICS.filter(d => selected.includes(d.key))
 
@@ -317,6 +336,21 @@ export default function MetricTrendChart({
                 strokeWidth={1.5}
                 strokeDasharray="6 3"
                 strokeOpacity={0.7}
+                dot={false}
+                activeDot={false}
+                legendType="none"
+              />
+            ))}
+            {showTrend && showPrev && selectedDefs.map(def => (
+              <Line
+                key={`${def.key}__prev_trend`}
+                type="linear"
+                dataKey={indexed ? `${def.key}__prev_trend_idx` : `${def.key}__prev_trend`}
+                name={`${def.label} prev trend`}
+                stroke={def.color}
+                strokeWidth={1.5}
+                strokeDasharray="6 3"
+                strokeOpacity={0.35}
                 dot={false}
                 activeDot={false}
                 legendType="none"
