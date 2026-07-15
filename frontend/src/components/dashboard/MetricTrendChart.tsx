@@ -299,7 +299,7 @@ export default function MetricTrendChart({
               }}
             />
             <Legend />
-            {selectedDefs.map(def => (
+            {!showTrend && selectedDefs.map(def => (
               <Line
                 key={def.key}
                 type="monotone"
@@ -311,7 +311,7 @@ export default function MetricTrendChart({
                 activeDot={{ r: 4 }}
               />
             ))}
-            {showPrev && selectedDefs.map(def => (
+            {!showTrend && showPrev && selectedDefs.map(def => (
               <Line
                 key={`${def.key}__prev`}
                 type="monotone"
