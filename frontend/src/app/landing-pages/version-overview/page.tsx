@@ -142,9 +142,8 @@ function VersionCard({ label, agg, color, baseAgg }: {
       </div>
 
       {/* Row 3: funnel */}
-      <div className="grid grid-cols-3 gap-2 mb-3">
+      <div className="grid grid-cols-2 gap-2 mb-3">
         <StatCard label="ATC rate" value={fmtRawPct(agg.atc_rate_pct)} />
-        <StatCard label="Checkout rate" value={fmtRawPct(agg.begin_checkout_rate)} />
         <StatCard label="Avg scroll" value={agg.avg_scroll_pct !== null ? `${agg.avg_scroll_pct?.toFixed(1)}%` : '—'} />
       </div>
 
