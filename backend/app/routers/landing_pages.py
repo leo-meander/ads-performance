@@ -166,15 +166,15 @@ def version_overview(
     current_user: User = Depends(require_section("landing_pages", "view")),
     db: Session = Depends(get_db),
 ):
-    """Return V1 vs V2 aggregate metrics for the 5 active landing page domains.
+    """Return per-version aggregate metrics for the 5 active landing page domains.
 
-    Each row in the response has:
-      domain, branch, version (Version 1 | Version 2), slug,
-      spend, revenue, conversions, sessions, roas, conv_rate_pct,
-      avg_scroll_pct, rage_clicks, quickback_clicks
+    Response shape:
+      [{ domain, branch, versions: { "Version 1": VersionAgg, "Version 2": VersionAgg, ... } }]
+
+    VersionAgg: { sessions, conversions, conv_rate_pct, avg_roas, avg_scroll_pct,
+                  atc_rate_pct, page_count, pages: [PageRow] }
     """
     try:
-        # Build CASE expression for version tagging
         version_cases = "\n".join(
             f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN 'Version 2'"
             for d, s in _V2_PATTERNS
@@ -198,14 +198,20 @@ def version_overview(
             ),
             ad_metrics AS (
                 SELECT lpal.landing_page_id,
-                    SUM(mc.spend)       AS spend,
-                    SUM(mc.impressions) AS impressions,
-                    SUM(mc.link_clicks) AS link_clicks,
-                    SUM(mc.conversions) AS conversions,
-                    SUM(mc.revenue)     AS revenue
+                    SUM(mc.spend)        AS spend,
+                    SUM(mc.impressions)  AS impressions,
+                    SUM(mc.link_clicks)  AS link_clicks,
+                    SUM(mc.conversions)  AS conversions,
+                    SUM(mc.revenue)      AS revenue,
+                    SUM(mc.add_to_cart)  AS add_to_cart
                 FROM landing_page_ad_links lpal
                 JOIN metrics_cache mc ON mc.campaign_id = lpal.campaign_id
-                  AND mc.ad_set_id IS NULL AND mc.ad_id IS NULL
+                  AND mc.ad_id IS NULL
+                  AND (
+                    (lpal.ad_set_id IS NOT NULL AND mc.ad_set_id = lpal.ad_set_id)
+                    OR
+                    (lpal.ad_set_id IS NULL AND mc.ad_set_id IS NULL)
+                  )
                 GROUP BY lpal.landing_page_id
             ),
             clarity_metrics AS (
@@ -228,12 +234,16 @@ def version_overview(
                 ROUND(COALESCE(am.revenue, 0)::numeric, 0)     AS revenue,
                 COALESCE(am.conversions, 0)                     AS conversions,
                 COALESCE(cm.sessions, 0)                        AS sessions,
+                COALESCE(am.add_to_cart, 0)                     AS add_to_cart,
                 CASE WHEN COALESCE(am.spend, 0) > 0
                     THEN ROUND((am.revenue / am.spend)::numeric, 2)
                 END                                             AS roas,
                 CASE WHEN COALESCE(cm.sessions, 0) > 0
                     THEN ROUND((am.conversions::numeric / cm.sessions * 100), 3)
                 END                                             AS conv_rate_pct,
+                CASE WHEN COALESCE(cm.sessions, 0) > 0
+                    THEN ROUND((am.add_to_cart::numeric / cm.sessions * 100), 2)
+                END                                             AS atc_rate_pct,
                 ROUND(COALESCE(cm.avg_scroll_pct, 0)::numeric, 1) AS avg_scroll_pct,
                 COALESCE(cm.rage_clicks, 0)                     AS rage_clicks,
                 COALESCE(cm.quickback_clicks, 0)                AS quickback_clicks
@@ -246,8 +256,6 @@ def version_overview(
 
         rows = db.execute(sql).mappings().all()
 
-        # Group into per-domain structure
-        from collections import defaultdict
         by_domain: dict[str, dict] = {}
         for r in rows:
             domain = r["domain"]
@@ -255,7 +263,7 @@ def version_overview(
                 by_domain[domain] = {
                     "domain": domain,
                     "branch": _BRANCH_LABELS.get(domain, domain),
-                    "versions": {"Version 1": [], "Version 2": []},
+                    "versions": {},
                 }
             page = {
                 "slug": r["slug"],
@@ -263,40 +271,64 @@ def version_overview(
                 "revenue": float(r["revenue"] or 0),
                 "conversions": float(r["conversions"] or 0),
                 "sessions": int(r["sessions"] or 0),
+                "add_to_cart": int(r["add_to_cart"] or 0),
                 "roas": float(r["roas"]) if r["roas"] is not None else None,
                 "conv_rate_pct": float(r["conv_rate_pct"]) if r["conv_rate_pct"] is not None else None,
+                "atc_rate_pct": float(r["atc_rate_pct"]) if r["atc_rate_pct"] is not None else None,
                 "avg_scroll_pct": float(r["avg_scroll_pct"] or 0),
                 "rage_clicks": int(r["rage_clicks"] or 0),
                 "quickback_clicks": int(r["quickback_clicks"] or 0),
                 "low_confidence": int(r["sessions"] or 0) < 10,
             }
             version = r["version"]
-            by_domain[domain]["versions"][version].append(page)
+            by_domain[domain]["versions"].setdefault(version, []).append(page)
 
         def _agg(pages: list[dict]) -> dict:
             total_sessions = sum(p["sessions"] for p in pages)
             total_conv = sum(p["conversions"] for p in pages)
+            total_spend = sum(p["spend"] for p in pages)
+            total_revenue = sum(p["revenue"] for p in pages)
+            total_atc = sum(p["add_to_cart"] for p in pages)
+            total_scroll = sum(p["avg_scroll_pct"] * p["sessions"] for p in pages)
             return {
                 "sessions": total_sessions,
-                "conversions": total_conv,
+                "conversions": round(total_conv, 1),
                 "conv_rate_pct": round(total_conv / total_sessions * 100, 3) if total_sessions else None,
+                "avg_roas": round(total_revenue / total_spend, 2) if total_spend else None,
+                "avg_scroll_pct": round(total_scroll / total_sessions, 1) if total_sessions else None,
+                "atc_rate_pct": round(total_atc / total_sessions * 100, 2) if total_sessions else None,
                 "page_count": len(pages),
                 "pages": pages,
             }
+
+        # Determine all version labels present across all domains (sorted)
+        all_versions: list[str] = []
+        seen: set[str] = set()
+        for domain in _OVERVIEW_DOMAINS:
+            if domain not in by_domain:
+                continue
+            for v in by_domain[domain]["versions"]:
+                if v not in seen:
+                    seen.add(v)
+                    all_versions.append(v)
+        all_versions.sort()
 
         result = []
         for domain in _OVERVIEW_DOMAINS:
             if domain not in by_domain:
                 continue
             d = by_domain[domain]
+            versions_agg = {
+                v: _agg(d["versions"].get(v, []))
+                for v in all_versions
+            }
             result.append({
                 "domain": domain,
                 "branch": d["branch"],
-                "v1": _agg(d["versions"]["Version 1"]),
-                "v2": _agg(d["versions"]["Version 2"]),
+                "versions": versions_agg,
             })
 
-        return _api(result)
+        return _api({"branches": result, "version_labels": all_versions})
     except Exception as e:
         return _api(error=str(e))
 
