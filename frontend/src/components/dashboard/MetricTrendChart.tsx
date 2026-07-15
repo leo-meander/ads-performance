@@ -35,14 +35,21 @@ export type TrendRow = {
   cr: number
   aov: number
   conversions: number
+  // Funnel drop-off rates (% lost between consecutive stages)
+  do_imp_click: number   // Impression → Click
+  do_click_search: number // Click → Search
+  do_search_cart: number  // Search → Add to Cart
+  do_cart_checkout: number // Add to Cart → Checkout
+  do_checkout_book: number // Checkout → Booking
 }
 
 type MetricKind = 'money' | 'x' | 'pct' | 'num'
 type MetricKey = keyof Omit<TrendRow, 'date'>
 
-type MetricDef = { key: MetricKey; label: string; color: string; kind: MetricKind }
+type MetricDef = { key: MetricKey; label: string; color: string; kind: MetricKind; group?: string }
 
-// Order mirrors the KPI cards above (Cost first), then ROAS decomposition.
+// Order mirrors the KPI cards above (Cost first), then ROAS decomposition,
+// then funnel drop-off rates.
 const METRICS: MetricDef[] = [
   { key: 'spend', label: 'Cost', color: '#ef4444', kind: 'money' },
   { key: 'revenue', label: 'Revenue', color: '#10b981', kind: 'money' },
@@ -53,6 +60,12 @@ const METRICS: MetricDef[] = [
   { key: 'cr', label: 'CR', color: '#14b8a6', kind: 'pct' },
   { key: 'aov', label: 'AOV', color: '#a68a64', kind: 'money' },
   { key: 'cpc', label: 'CPC', color: '#ec4899', kind: 'money' },
+  // Funnel drop-off metrics — shown in a second row with a visual separator.
+  { key: 'do_imp_click', label: 'Drop: Imp→Click', color: '#64748b', kind: 'pct', group: 'funnel' },
+  { key: 'do_click_search', label: 'Drop: Click→Search', color: '#475569', kind: 'pct', group: 'funnel' },
+  { key: 'do_search_cart', label: 'Drop: Search→Cart', color: '#94a3b8', kind: 'pct', group: 'funnel' },
+  { key: 'do_cart_checkout', label: 'Drop: Cart→Checkout', color: '#f97316', kind: 'pct', group: 'funnel' },
+  { key: 'do_checkout_book', label: 'Drop: Checkout→Book', color: '#dc2626', kind: 'pct', group: 'funnel' },
 ]
 
 function formatValue(v: number, kind: MetricKind, currency: string): string {
@@ -106,6 +119,17 @@ export default function MetricTrendChart({
     return r
   }, [data])
 
+  // Prev-period regression — same number of points as prevData.
+  const prevRegressions = useMemo(() => {
+    if (!prevData || prevData.length === 0) return {} as Record<string, [number, number]>
+    const r: Record<string, [number, number]> = {}
+    for (const def of METRICS) {
+      const ys = prevData.map(d => Number(d[def.key]) || 0)
+      r[def.key] = linearRegression(ys)
+    }
+    return r
+  }, [prevData])
+
   // Prev-period indexed relative to CURRENT period max so both lines share the
   // same scale and are directly comparable.
   const chartData = useMemo(() => data.map((row, i) => {
@@ -125,10 +149,18 @@ export default function MetricTrendChart({
         const prevRaw = Number(prevData[i][def.key]) || 0
         out[`${def.key}__prev`] = prevRaw
         out[`${def.key}__prev_idx`] = max > 0 ? (prevRaw / max) * 100 : 0
+
+        // Prev trendline — regression over prev series, indexed vs current max
+        if (prevRegressions[def.key]) {
+          const [ps, pi] = prevRegressions[def.key]
+          const prevTrendRaw = ps * i + pi
+          out[`${def.key}__prev_trend`] = prevTrendRaw
+          out[`${def.key}__prev_trend_idx`] = max > 0 ? (prevTrendRaw / max) * 100 : 0
+        }
       }
     }
     return out
-  }), [data, prevData, maxes, regressions])
+  }), [data, prevData, maxes, regressions, prevRegressions])
 
   const selectedDefs = METRICS.filter(d => selected.includes(d.key))
 
@@ -180,9 +212,9 @@ export default function MetricTrendChart({
         </div>
       </div>
 
-      {/* Metric toggles — tick any combination to overlay their trend lines. */}
-      <div className="flex flex-wrap gap-2 mb-4">
-        {METRICS.map(def => {
+      {/* Metric toggles — split into two rows: performance metrics and funnel drop-offs. */}
+      <div className="flex flex-wrap gap-2 mb-1">
+        {METRICS.filter(d => !d.group).map(def => {
           const on = selected.includes(def.key)
           return (
             <button
@@ -192,10 +224,25 @@ export default function MetricTrendChart({
                 on ? 'border-gray-300 bg-gray-50 text-gray-800' : 'border-gray-200 text-gray-400 hover:text-gray-600'
               }`}
             >
-              <span
-                className="w-2.5 h-2.5 rounded-full"
-                style={{ backgroundColor: on ? def.color : '#d1d5db' }}
-              />
+              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: on ? def.color : '#d1d5db' }} />
+              {def.label}
+            </button>
+          )
+        })}
+      </div>
+      <div className="flex flex-wrap gap-2 mb-4 pt-1.5 border-t border-gray-100">
+        <span className="self-center text-[10px] text-gray-400 font-medium uppercase tracking-wide mr-1">Funnel drop-off</span>
+        {METRICS.filter(d => d.group === 'funnel').map(def => {
+          const on = selected.includes(def.key)
+          return (
+            <button
+              key={def.key}
+              onClick={() => toggle(def.key)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                on ? 'border-gray-300 bg-gray-50 text-gray-800' : 'border-gray-200 text-gray-400 hover:text-gray-600'
+              }`}
+            >
+              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: on ? def.color : '#d1d5db' }} />
               {def.label}
             </button>
           )
@@ -289,6 +336,21 @@ export default function MetricTrendChart({
                 strokeWidth={1.5}
                 strokeDasharray="6 3"
                 strokeOpacity={0.7}
+                dot={false}
+                activeDot={false}
+                legendType="none"
+              />
+            ))}
+            {showTrend && showPrev && selectedDefs.map(def => (
+              <Line
+                key={`${def.key}__prev_trend`}
+                type="linear"
+                dataKey={indexed ? `${def.key}__prev_trend_idx` : `${def.key}__prev_trend`}
+                name={`${def.label} prev trend`}
+                stroke={def.color}
+                strokeWidth={1.5}
+                strokeDasharray="6 3"
+                strokeOpacity={0.35}
                 dot={false}
                 activeDot={false}
                 legendType="none"

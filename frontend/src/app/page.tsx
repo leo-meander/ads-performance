@@ -188,6 +188,11 @@ function DashboardInner() {
           spend: s.spend ?? 0, revenue: s.revenue ?? 0, roas: s.roas ?? 0,
           ctr: s.ctr ?? 0, cpa: s.cpa ?? 0, cpc: s.cpc ?? 0,
           cr: s.cr ?? 0, aov: s.aov ?? 0, conversions: s.conversions ?? 0,
+          do_imp_click: s.do_imp_click ?? 0,
+          do_click_search: s.do_click_search ?? 0,
+          do_search_cart: s.do_search_cart ?? 0,
+          do_cart_checkout: s.do_cart_checkout ?? 0,
+          do_checkout_book: s.do_checkout_book ?? 0,
         }))
         setDaily(mapSeries(daily.data.series || []))
         setPrevDaily(mapSeries(daily.data.prev_series || []))
