@@ -15,11 +15,18 @@ type PageRow = {
   revenue: number
   conversions: number
   sessions: number
+  add_to_cart: number
   roas: number | null
   conv_rate_pct: number | null
+  atc_rate_pct: number | null
   avg_scroll_pct: number
   rage_clicks: number
   quickback_clicks: number
+  engaged_sessions: number
+  engagement_rate: number
+  bounce_rate: number
+  begin_checkout: number
+  avg_session_duration_sec: number
   low_confidence: boolean
 }
 
@@ -27,6 +34,13 @@ type VersionAgg = {
   sessions: number
   conversions: number
   conv_rate_pct: number | null
+  avg_roas: number | null
+  avg_scroll_pct: number | null
+  atc_rate_pct: number | null
+  engagement_rate: number | null
+  bounce_rate: number | null
+  begin_checkout_rate: number | null
+  avg_session_duration_sec: number | null
   page_count: number
   pages: PageRow[]
 }
@@ -34,15 +48,25 @@ type VersionAgg = {
 type BranchData = {
   domain: string
   branch: string
-  v1: VersionAgg
-  v2: VersionAgg
+  versions: Record<string, VersionAgg>
 }
+
+type ApiResponse = {
+  branches: BranchData[]
+  version_labels: string[]
+}
+
+const VERSION_COLORS = ['#2a78d6', '#1baf7a', '#e67e22', '#9b59b6', '#e74c3c', '#1abc9c']
 
 function fmt(n: number | null | undefined, d = 0) {
   if (n === null || n === undefined) return '—'
   return n.toLocaleString('en-US', { maximumFractionDigits: d })
 }
-function fmtCR(n: number | null | undefined) {
+function fmtPct(n: number | null | undefined, decimals = 2) {
+  if (n === null || n === undefined) return '—'
+  return `${(Number(n) * (Math.abs(Number(n)) <= 1 ? 100 : 1)).toFixed(decimals)}%`
+}
+function fmtRawPct(n: number | null | undefined) {
   if (n === null || n === undefined) return '—'
   return `${Number(n).toFixed(2)}%`
 }
@@ -50,54 +74,91 @@ function fmtROAS(n: number | null | undefined) {
   if (n === null || n === undefined) return '—'
   return `${Number(n).toFixed(2)}x`
 }
+function fmtDuration(sec: number | null | undefined) {
+  if (!sec) return '—'
+  const m = Math.floor(sec / 60)
+  const s = Math.round(sec % 60)
+  return m > 0 ? `${m}m ${s}s` : `${s}s`
+}
 
-function StatCard({ label, value }: { label: string; value: string }) {
+function StatCard({ label, value, delta }: { label: string; value: string; delta?: React.ReactNode }) {
   return (
     <div className="bg-gray-50 rounded-lg p-3">
       <p className="text-xs text-gray-500 mb-1">{label}</p>
-      <p className="text-lg font-medium text-gray-900">{value}</p>
-    </div>
-  )
-}
-
-function VersionCard({
-  version, agg, color,
-}: { version: string; agg: VersionAgg; color: 'blue' | 'emerald' }) {
-  const borderColor = color === 'blue' ? 'border-blue-500' : 'border-emerald-500'
-  const labelColor = color === 'blue' ? 'text-blue-600' : 'text-emerald-600'
-  return (
-    <div className={`bg-white border border-gray-200 border-t-2 ${borderColor} rounded-xl p-4`}>
-      <p className={`text-xs font-semibold uppercase tracking-wider mb-3 ${labelColor}`}>
-        {version}
-      </p>
-      <div className="grid grid-cols-3 gap-2 mb-3">
-        <StatCard label="Sessions" value={fmt(agg.sessions)} />
-        <StatCard label="Conversions" value={fmt(agg.conversions)} />
-        <StatCard label="Conv. rate" value={fmtCR(agg.conv_rate_pct)} />
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <p className="text-base font-medium text-gray-900">{value}</p>
+        {delta}
       </div>
-      <p className="text-xs text-gray-400">{agg.page_count} pages tracked</p>
     </div>
   )
 }
 
-function DeltaBadge({ v1cr, v2cr }: { v1cr: number | null; v2cr: number | null }) {
-  if (v1cr === null || v2cr === null) return null
-  const d = v2cr - v1cr
-  const cls = d >= 0
-    ? 'bg-emerald-100 text-emerald-700'
-    : 'bg-red-100 text-red-700'
+function DeltaBadge({ base, compare, higherIsBetter = true }: {
+  base: number | null; compare: number | null; higherIsBetter?: boolean
+}) {
+  if (base === null || compare === null) return null
+  const d = compare - base
+  const positive = higherIsBetter ? d >= 0 : d <= 0
+  const cls = positive ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
   return (
-    <span className={`text-xs font-medium px-2 py-0.5 rounded ${cls}`}>
+    <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${cls}`}>
       {d >= 0 ? '+' : ''}{d.toFixed(2)}pp
     </span>
   )
 }
 
-function PagesTable({ v1, v2 }: { v1: VersionAgg; v2: VersionAgg }) {
-  const rows = [
-    ...v2.pages.map(p => ({ ...p, ver: 'v2' })),
-    ...v1.pages.map(p => ({ ...p, ver: 'v1' })),
-  ]
+function VersionCard({ label, agg, color, baseAgg }: {
+  label: string; agg: VersionAgg; color: string; baseAgg: VersionAgg | null
+}) {
+  const b = baseAgg
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4" style={{ borderTopWidth: 2, borderTopColor: color }}>
+      <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color }}>{label}</p>
+
+      {/* Row 1: traffic */}
+      <div className="grid grid-cols-3 gap-2 mb-2">
+        <StatCard label="Sessions" value={fmt(agg.sessions)} />
+        <StatCard label="Conversions" value={fmt(agg.conversions)} />
+        <StatCard
+          label="Conv. rate"
+          value={fmtRawPct(agg.conv_rate_pct)}
+          delta={b && <DeltaBadge base={b.conv_rate_pct} compare={agg.conv_rate_pct} />}
+        />
+      </div>
+
+      {/* Row 2: revenue + engagement */}
+      <div className="grid grid-cols-3 gap-2 mb-2">
+        <StatCard label="ROAS" value={fmtROAS(agg.avg_roas)} />
+        <StatCard
+          label="Engagement"
+          value={fmtPct(agg.engagement_rate)}
+          delta={b && <DeltaBadge base={b.engagement_rate ? b.engagement_rate * 100 : null} compare={agg.engagement_rate ? agg.engagement_rate * 100 : null} />}
+        />
+        <StatCard
+          label="Bounce rate"
+          value={fmtPct(agg.bounce_rate)}
+          delta={b && <DeltaBadge base={b.bounce_rate ? b.bounce_rate * 100 : null} compare={agg.bounce_rate ? agg.bounce_rate * 100 : null} higherIsBetter={false} />}
+        />
+      </div>
+
+      {/* Row 3: funnel */}
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <StatCard label="ATC rate" value={fmtRawPct(agg.atc_rate_pct)} />
+        <StatCard label="Avg scroll" value={agg.avg_scroll_pct !== null ? `${agg.avg_scroll_pct?.toFixed(1)}%` : '—'} />
+      </div>
+
+      <p className="text-xs text-gray-400">{agg.page_count} pages · avg session {fmtDuration(agg.avg_session_duration_sec)}</p>
+    </div>
+  )
+}
+
+function PagesTable({ branch, selectedVersions, versionColors }: {
+  branch: BranchData; selectedVersions: string[]; versionColors: Record<string, string>
+}) {
+  const rows = selectedVersions.flatMap(v =>
+    (branch.versions[v]?.pages ?? []).map(p => ({ ...p, ver: v }))
+  )
+  if (!rows.length) return <p className="text-sm text-gray-400 px-4 py-4">No pages.</p>
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -106,76 +167,73 @@ function PagesTable({ v1, v2 }: { v1: VersionAgg; v2: VersionAgg }) {
             <th className="text-left py-2 px-3 text-xs text-gray-400 font-normal">Ver.</th>
             <th className="text-left py-2 px-3 text-xs text-gray-400 font-normal">Slug</th>
             <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Sessions</th>
-            <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Conv.</th>
-            <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Conv. rate</th>
+            <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Conv%</th>
             <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">ROAS</th>
+            <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Engage%</th>
+            <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Bounce%</th>
+            <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">ATC%</th>
             <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Scroll%</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((p, i) => (
-            <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
-              <td className="py-2 px-3">
-                <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
-                  p.ver === 'v2'
-                    ? 'bg-emerald-100 text-emerald-700'
-                    : 'bg-blue-100 text-blue-700'
-                }`}>
-                  {p.ver === 'v2' ? 'V2' : 'V1'}
-                </span>
-              </td>
-              <td className="py-2 px-3 max-w-[200px] truncate text-gray-700" title={p.slug}>
-                {p.slug || '(root)'}
-                {p.low_confidence && (
-                  <AlertTriangle className="inline w-3 h-3 text-amber-400 ml-1" />
-                )}
-              </td>
-              <td className="py-2 px-3 text-right text-gray-700">{fmt(p.sessions)}</td>
-              <td className="py-2 px-3 text-right text-gray-700">{fmt(p.conversions)}</td>
-              <td className="py-2 px-3 text-right text-gray-700">{fmtCR(p.conv_rate_pct)}</td>
-              <td className="py-2 px-3 text-right text-gray-700">{fmtROAS(p.roas)}</td>
-              <td className="py-2 px-3 text-right text-gray-700">
-                {p.avg_scroll_pct ? `${p.avg_scroll_pct.toFixed(1)}%` : '—'}
-              </td>
-            </tr>
-          ))}
+          {rows.map((p, i) => {
+            const color = versionColors[p.ver] ?? '#888'
+            return (
+              <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
+                <td className="py-2 px-3">
+                  <span className="text-xs font-medium px-1.5 py-0.5 rounded text-white" style={{ backgroundColor: color }}>
+                    {p.ver.replace('Version ', 'V')}
+                  </span>
+                </td>
+                <td className="py-2 px-3 max-w-[180px] truncate text-gray-700" title={p.slug}>
+                  {p.slug || '(root)'}
+                  {p.low_confidence && <AlertTriangle className="inline w-3 h-3 text-amber-400 ml-1" />}
+                </td>
+                <td className="py-2 px-3 text-right text-gray-700">{fmt(p.sessions)}</td>
+                <td className="py-2 px-3 text-right text-gray-700">{fmtRawPct(p.conv_rate_pct)}</td>
+                <td className="py-2 px-3 text-right text-gray-700">{fmtROAS(p.roas)}</td>
+                <td className="py-2 px-3 text-right text-gray-700">{fmtPct(p.engagement_rate)}</td>
+                <td className="py-2 px-3 text-right text-gray-700">{fmtPct(p.bounce_rate)}</td>
+                <td className="py-2 px-3 text-right text-gray-700">{fmtRawPct(p.atc_rate_pct)}</td>
+                <td className="py-2 px-3 text-right text-gray-700">
+                  {p.avg_scroll_pct ? `${p.avg_scroll_pct.toFixed(1)}%` : '—'}
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
   )
 }
 
-function OverviewChart({ branches }: { branches: BranchData[] }) {
-  const data = branches.map(b => ({
-    name: b.branch.replace('Meander ', ''),
-    'Version 1': b.v1.conv_rate_pct !== null ? parseFloat(b.v1.conv_rate_pct.toFixed(2)) : 0,
-    'Version 2': b.v2.conv_rate_pct !== null ? parseFloat(b.v2.conv_rate_pct.toFixed(2)) : 0,
-  }))
+function OverviewChart({ branches, selectedVersions, versionColors }: {
+  branches: BranchData[]; selectedVersions: string[]; versionColors: Record<string, string>
+}) {
+  const data = branches.map(b => {
+    const row: Record<string, string | number> = { name: b.branch.replace('Meander ', '') }
+    for (const v of selectedVersions) {
+      const cr = b.versions[v]?.conv_rate_pct
+      row[v] = cr !== null && cr !== undefined ? parseFloat(cr.toFixed(2)) : 0
+    }
+    return row
+  })
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-5">
-      <p className="text-sm font-medium text-gray-700 mb-4">Conv. rate by branch — V1 vs V2 (all-time)</p>
+      <p className="text-sm font-medium text-gray-700 mb-4">Conv. rate by branch (all-time)</p>
       <ResponsiveContainer width="100%" height={220}>
         <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
           <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#888' }} axisLine={false} tickLine={false} />
-          <YAxis
-            tickFormatter={v => `${v}%`}
-            tick={{ fontSize: 11, fill: '#aaa' }}
-            axisLine={false}
-            tickLine={false}
-            width={42}
-          />
+          <YAxis tickFormatter={v => `${v}%`} tick={{ fontSize: 11, fill: '#aaa' }} axisLine={false} tickLine={false} width={42} />
           <Tooltip
             formatter={(val: number) => [`${val.toFixed(2)}%`, '']}
             contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
           />
-          <Legend
-            iconType="square"
-            iconSize={10}
-            wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
-          />
-          <Bar dataKey="Version 1" fill="#2a78d6" radius={[3, 3, 0, 0]} maxBarSize={32} />
-          <Bar dataKey="Version 2" fill="#1baf7a" radius={[3, 3, 0, 0]} maxBarSize={32} />
+          <Legend iconType="square" iconSize={10} wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
+          {selectedVersions.map(v => (
+            <Bar key={v} dataKey={v} fill={versionColors[v]} radius={[3, 3, 0, 0]} maxBarSize={32} />
+          ))}
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -183,21 +241,41 @@ function OverviewChart({ branches }: { branches: BranchData[] }) {
 }
 
 export default function VersionOverviewPage() {
-  const [branches, setBranches] = useState<BranchData[]>([])
+  const [data, setData] = useState<ApiResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState(0)
+  const [selectedVersions, setSelectedVersions] = useState<string[]>([])
 
   useEffect(() => {
     fetch(`${API_BASE}/api/landing-pages/version-overview`, { credentials: 'include' })
       .then(r => r.json())
       .then(res => {
-        if (res.success) setBranches(res.data)
-        else setError(res.error)
+        if (res.success) {
+          setData(res.data)
+          setSelectedVersions((res.data.version_labels ?? []).slice(0, 2))
+        } else {
+          setError(res.error)
+        }
       })
       .catch(() => setError('Failed to load'))
       .finally(() => setLoading(false))
   }, [])
+
+  const versionColors: Record<string, string> = {}
+  ;(data?.version_labels ?? []).forEach((v, i) => {
+    versionColors[v] = VERSION_COLORS[i % VERSION_COLORS.length]
+  })
+
+  function toggleVersion(v: string) {
+    setSelectedVersions(prev =>
+      prev.includes(v)
+        ? prev.length > 1 ? prev.filter(x => x !== v) : prev
+        : [...prev, v]
+    )
+  }
+
+  const baseVersion = selectedVersions[0] ?? null
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
@@ -207,26 +285,44 @@ export default function VersionOverviewPage() {
         </Link>
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Landing Page Version Overview</h1>
-          <p className="text-sm text-gray-500">Version 1 vs Version 2 — all-time, by branch</p>
+          <p className="text-sm text-gray-500">Compare versions — all-time, by branch</p>
         </div>
       </div>
 
-      {loading && (
-        <div className="text-sm text-gray-400 py-12 text-center">Loading…</div>
-      )}
-      {error && (
-        <div className="text-sm text-red-500 py-4">{error}</div>
-      )}
+      {loading && <div className="text-sm text-gray-400 py-12 text-center">Loading…</div>}
+      {error && <div className="text-sm text-red-500 py-4">{error}</div>}
 
-      {!loading && !error && branches.length > 0 && (
+      {!loading && !error && data && data.branches.length > 0 && (
         <>
+          {/* Version selector — only show when >2 versions exist */}
+          {data.version_labels.length > 2 && (
+            <div className="mb-4 flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-500 mr-1">Compare:</span>
+              {data.version_labels.map(v => {
+                const active = selectedVersions.includes(v)
+                return (
+                  <button
+                    key={v}
+                    onClick={() => toggleVersion(v)}
+                    className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                      active ? 'text-white border-transparent' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                    }`}
+                    style={active ? { backgroundColor: versionColors[v] } : {}}
+                  >
+                    {v}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
           <div className="mb-6">
-            <OverviewChart branches={branches} />
+            <OverviewChart branches={data.branches} selectedVersions={selectedVersions} versionColors={versionColors} />
           </div>
 
           {/* Branch tabs */}
           <div className="flex gap-2 flex-wrap mb-4">
-            {branches.map((b, i) => (
+            {data.branches.map((b, i) => (
               <button
                 key={b.domain}
                 onClick={() => setActiveTab(i)}
@@ -241,27 +337,31 @@ export default function VersionOverviewPage() {
             ))}
           </div>
 
-          {branches[activeTab] && (() => {
-            const b = branches[activeTab]
+          {data.branches[activeTab] && (() => {
+            const b = data.branches[activeTab]
+            const versionsToShow = selectedVersions.filter(v => b.versions[v])
+            const base = baseVersion ? b.versions[baseVersion] ?? null : null
             return (
               <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <VersionCard version="Version 1" agg={b.v1} color="blue" />
-                  <div className="relative">
-                    <VersionCard version="Version 2" agg={b.v2} color="emerald" />
-                    <div className="absolute top-4 right-4">
-                      <DeltaBadge v1cr={b.v1.conv_rate_pct} v2cr={b.v2.conv_rate_pct} />
-                    </div>
-                  </div>
+                <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${versionsToShow.length}, 1fr)` }}>
+                  {versionsToShow.map((v, idx) => (
+                    <VersionCard
+                      key={v}
+                      label={v}
+                      agg={b.versions[v]}
+                      color={versionColors[v]}
+                      baseAgg={idx === 0 ? null : base}
+                    />
+                  ))}
                 </div>
 
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-100">
                     <p className="text-xs text-gray-400">
-                      All pages — native ad currency (mixed). ⚠ = low session count (&lt;10).
+                      All pages — native ad currency. ⚠ = low session count (&lt;10). Engagement/Bounce from GA4.
                     </p>
                   </div>
-                  <PagesTable v1={b.v1} v2={b.v2} />
+                  <PagesTable branch={b} selectedVersions={versionsToShow} versionColors={versionColors} />
                 </div>
               </div>
             )

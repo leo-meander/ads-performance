@@ -166,15 +166,13 @@ def version_overview(
     current_user: User = Depends(require_section("landing_pages", "view")),
     db: Session = Depends(get_db),
 ):
-    """Return V1 vs V2 aggregate metrics for the 5 active landing page domains.
+    """Return per-version aggregate metrics for the 5 active landing page domains.
 
-    Each row in the response has:
-      domain, branch, version (Version 1 | Version 2), slug,
-      spend, revenue, conversions, sessions, roas, conv_rate_pct,
-      avg_scroll_pct, rage_clicks, quickback_clicks
+    Response: { branches: [{ domain, branch, versions: { "Version 1": VersionAgg, ... } }],
+                version_labels: ["Version 1", "Version 2", ...] }
+    VersionAgg includes ads + Clarity + GA4 metrics.
     """
     try:
-        # Build CASE expression for version tagging
         version_cases = "\n".join(
             f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN 'Version 2'"
             for d, s in _V2_PATTERNS
@@ -198,14 +196,18 @@ def version_overview(
             ),
             ad_metrics AS (
                 SELECT lpal.landing_page_id,
-                    SUM(mc.spend)       AS spend,
-                    SUM(mc.impressions) AS impressions,
-                    SUM(mc.link_clicks) AS link_clicks,
-                    SUM(mc.conversions) AS conversions,
-                    SUM(mc.revenue)     AS revenue
+                    SUM(mc.spend)        AS spend,
+                    SUM(mc.conversions)  AS conversions,
+                    SUM(mc.revenue)      AS revenue,
+                    SUM(mc.add_to_cart)  AS add_to_cart
                 FROM landing_page_ad_links lpal
                 JOIN metrics_cache mc ON mc.campaign_id = lpal.campaign_id
-                  AND mc.ad_set_id IS NULL AND mc.ad_id IS NULL
+                  AND mc.ad_id IS NULL
+                  AND (
+                    (lpal.ad_set_id IS NOT NULL AND mc.ad_set_id = lpal.ad_set_id)
+                    OR
+                    (lpal.ad_set_id IS NULL AND mc.ad_set_id IS NULL)
+                  )
                 GROUP BY lpal.landing_page_id
             ),
             clarity_metrics AS (
@@ -215,39 +217,57 @@ def version_overview(
                     SUM(rage_clicks)      AS rage_clicks,
                     SUM(quickback_clicks) AS quickback_clicks
                 FROM landing_page_clarity_snapshots
-                WHERE utm_source IS NULL
-                  AND utm_campaign IS NULL
-                  AND utm_content IS NULL
+                WHERE utm_source IS NULL AND utm_campaign IS NULL AND utm_content IS NULL
+                GROUP BY landing_page_id
+            ),
+            ga4_metrics AS (
+                SELECT landing_page_id,
+                    SUM(engaged_sessions)          AS engaged_sessions,
+                    SUM(sessions)                  AS ga4_sessions,
+                    AVG(engagement_rate)           AS engagement_rate,
+                    AVG(bounce_rate)               AS bounce_rate,
+                    SUM(begin_checkout)            AS begin_checkout,
+                    AVG(avg_session_duration_sec)  AS avg_session_duration_sec
+                FROM landing_page_ga4_snapshots
+                WHERE source IS NULL AND medium IS NULL AND campaign IS NULL
                 GROUP BY landing_page_id
             )
             SELECT
                 pt.domain,
                 pt.version,
                 pt.slug,
-                ROUND(COALESCE(am.spend, 0)::numeric, 0)       AS spend,
-                ROUND(COALESCE(am.revenue, 0)::numeric, 0)     AS revenue,
-                COALESCE(am.conversions, 0)                     AS conversions,
-                COALESCE(cm.sessions, 0)                        AS sessions,
+                ROUND(COALESCE(am.spend, 0)::numeric, 0)        AS spend,
+                ROUND(COALESCE(am.revenue, 0)::numeric, 0)      AS revenue,
+                COALESCE(am.conversions, 0)                      AS conversions,
+                COALESCE(cm.sessions, 0)                         AS sessions,
+                COALESCE(am.add_to_cart, 0)                      AS add_to_cart,
                 CASE WHEN COALESCE(am.spend, 0) > 0
                     THEN ROUND((am.revenue / am.spend)::numeric, 2)
-                END                                             AS roas,
+                END                                              AS roas,
                 CASE WHEN COALESCE(cm.sessions, 0) > 0
                     THEN ROUND((am.conversions::numeric / cm.sessions * 100), 3)
-                END                                             AS conv_rate_pct,
+                END                                              AS conv_rate_pct,
+                CASE WHEN COALESCE(cm.sessions, 0) > 0
+                    THEN ROUND((am.add_to_cart::numeric / cm.sessions * 100), 2)
+                END                                              AS atc_rate_pct,
                 ROUND(COALESCE(cm.avg_scroll_pct, 0)::numeric, 1) AS avg_scroll_pct,
-                COALESCE(cm.rage_clicks, 0)                     AS rage_clicks,
-                COALESCE(cm.quickback_clicks, 0)                AS quickback_clicks
+                COALESCE(cm.rage_clicks, 0)                      AS rage_clicks,
+                COALESCE(cm.quickback_clicks, 0)                 AS quickback_clicks,
+                COALESCE(gm.engaged_sessions, 0)                 AS engaged_sessions,
+                ROUND(COALESCE(gm.engagement_rate, 0)::numeric, 4) AS engagement_rate,
+                ROUND(COALESCE(gm.bounce_rate, 0)::numeric, 4)  AS bounce_rate,
+                COALESCE(gm.begin_checkout, 0)                   AS begin_checkout,
+                ROUND(COALESCE(gm.avg_session_duration_sec, 0)::numeric, 1) AS avg_session_duration_sec
             FROM page_tags pt
             LEFT JOIN ad_metrics am ON am.landing_page_id = pt.id
             LEFT JOIN clarity_metrics cm ON cm.landing_page_id = pt.id
+            LEFT JOIN ga4_metrics gm ON gm.landing_page_id = pt.id
             WHERE COALESCE(am.spend, 0) > 0 OR COALESCE(cm.sessions, 0) > 0
             ORDER BY pt.domain, pt.version DESC, COALESCE(am.spend, 0) DESC
         """)
 
         rows = db.execute(sql).mappings().all()
 
-        # Group into per-domain structure
-        from collections import defaultdict
         by_domain: dict[str, dict] = {}
         for r in rows:
             domain = r["domain"]
@@ -255,7 +275,7 @@ def version_overview(
                 by_domain[domain] = {
                     "domain": domain,
                     "branch": _BRANCH_LABELS.get(domain, domain),
-                    "versions": {"Version 1": [], "Version 2": []},
+                    "versions": {},
                 }
             page = {
                 "slug": r["slug"],
@@ -263,26 +283,62 @@ def version_overview(
                 "revenue": float(r["revenue"] or 0),
                 "conversions": float(r["conversions"] or 0),
                 "sessions": int(r["sessions"] or 0),
+                "add_to_cart": int(r["add_to_cart"] or 0),
                 "roas": float(r["roas"]) if r["roas"] is not None else None,
                 "conv_rate_pct": float(r["conv_rate_pct"]) if r["conv_rate_pct"] is not None else None,
+                "atc_rate_pct": float(r["atc_rate_pct"]) if r["atc_rate_pct"] is not None else None,
                 "avg_scroll_pct": float(r["avg_scroll_pct"] or 0),
                 "rage_clicks": int(r["rage_clicks"] or 0),
                 "quickback_clicks": int(r["quickback_clicks"] or 0),
+                "engaged_sessions": int(r["engaged_sessions"] or 0),
+                "engagement_rate": float(r["engagement_rate"] or 0),
+                "bounce_rate": float(r["bounce_rate"] or 0),
+                "begin_checkout": int(r["begin_checkout"] or 0),
+                "avg_session_duration_sec": float(r["avg_session_duration_sec"] or 0),
                 "low_confidence": int(r["sessions"] or 0) < 10,
             }
             version = r["version"]
-            by_domain[domain]["versions"][version].append(page)
+            by_domain[domain]["versions"].setdefault(version, []).append(page)
 
         def _agg(pages: list[dict]) -> dict:
             total_sessions = sum(p["sessions"] for p in pages)
             total_conv = sum(p["conversions"] for p in pages)
+            total_spend = sum(p["spend"] for p in pages)
+            total_revenue = sum(p["revenue"] for p in pages)
+            total_atc = sum(p["add_to_cart"] for p in pages)
+            total_scroll = sum(p["avg_scroll_pct"] * p["sessions"] for p in pages)
+            total_engaged = sum(p["engaged_sessions"] for p in pages)
+            ga4_sessions = sum(p.get("engaged_sessions", 0) + 1 for p in pages)  # approx denom
+            total_checkout = sum(p["begin_checkout"] for p in pages)
+            # engagement_rate weighted by GA4 sessions
+            eng_num = sum(p["engagement_rate"] * p["sessions"] for p in pages)
+            bounce_num = sum(p["bounce_rate"] * p["sessions"] for p in pages)
+            avg_dur_num = sum(p["avg_session_duration_sec"] * p["sessions"] for p in pages)
             return {
                 "sessions": total_sessions,
-                "conversions": total_conv,
+                "conversions": round(total_conv, 1),
                 "conv_rate_pct": round(total_conv / total_sessions * 100, 3) if total_sessions else None,
+                "avg_roas": round(total_revenue / total_spend, 2) if total_spend else None,
+                "avg_scroll_pct": round(total_scroll / total_sessions, 1) if total_sessions else None,
+                "atc_rate_pct": round(total_atc / total_sessions * 100, 2) if total_sessions else None,
+                "engagement_rate": round(eng_num / total_sessions, 4) if total_sessions else None,
+                "bounce_rate": round(bounce_num / total_sessions, 4) if total_sessions else None,
+                "begin_checkout_rate": round(total_checkout / total_sessions * 100, 2) if total_sessions else None,
+                "avg_session_duration_sec": round(avg_dur_num / total_sessions, 1) if total_sessions else None,
                 "page_count": len(pages),
                 "pages": pages,
             }
+
+        all_versions: list[str] = []
+        seen: set[str] = set()
+        for domain in _OVERVIEW_DOMAINS:
+            if domain not in by_domain:
+                continue
+            for v in by_domain[domain]["versions"]:
+                if v not in seen:
+                    seen.add(v)
+                    all_versions.append(v)
+        all_versions.sort()
 
         result = []
         for domain in _OVERVIEW_DOMAINS:
@@ -292,11 +348,10 @@ def version_overview(
             result.append({
                 "domain": domain,
                 "branch": d["branch"],
-                "v1": _agg(d["versions"]["Version 1"]),
-                "v2": _agg(d["versions"]["Version 2"]),
+                "versions": {v: _agg(d["versions"].get(v, [])) for v in all_versions},
             })
 
-        return _api(result)
+        return _api({"branches": result, "version_labels": all_versions})
     except Exception as e:
         return _api(error=str(e))
 
