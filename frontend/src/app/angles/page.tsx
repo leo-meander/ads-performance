@@ -205,6 +205,7 @@ function AnglesPageInner() {
     hypothesis: string; hypothesis_category: string; customer_insight: string
     expected_outcome: string; rationale: string; branch_name: string
     target_audience: string | null; market: string | null; primary_metric: string
+    win_threshold: number | null
     combo_ids: string[]; cohort_label: string; cohort_size: number; top_combo: string | null
   }
   const [showBulkGen, setShowBulkGen] = useState(false)
@@ -250,6 +251,7 @@ function AnglesPageInner() {
           market: p.market,
           primary_metric: p.primary_metric,
           primary_kpi: p.primary_metric,
+          win_threshold: p.win_threshold ?? null,
           combo_ids: p.combo_ids,
           status: 'pending',
         }),
@@ -418,7 +420,13 @@ function AnglesPageInner() {
         win_threshold: hypoForm.win_threshold ? parseFloat(hypoForm.win_threshold) : null,
       }),
     }).then(r => r.json()).then(d => {
-      if (d.success) setSuggestions(d.data.suggestions)
+      if (d.success) {
+        setSuggestions(d.data.suggestions)
+        // Auto-fill win_threshold from server-side benchmark lookup
+        if (d.data.win_threshold != null && !hypoForm.win_threshold) {
+          setHypoForm(prev => ({ ...prev, win_threshold: String(d.data.win_threshold) }))
+        }
+      }
     }).catch(() => {}).finally(() => setSuggestLoading(false))
   }
 
