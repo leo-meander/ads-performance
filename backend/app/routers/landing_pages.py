@@ -210,7 +210,8 @@ def version_overview(
                     SUM(mc.spend)        AS spend,
                     SUM(mc.conversions)  AS conversions,
                     SUM(mc.revenue)      AS revenue,
-                    SUM(mc.add_to_cart)  AS add_to_cart
+                    SUM(mc.add_to_cart)  AS add_to_cart,
+                    SUM(mc.clicks)       AS clicks
                 FROM (
                     SELECT DISTINCT landing_page_id, campaign_id, ad_set_id
                     FROM landing_page_ad_links
@@ -266,8 +267,8 @@ def version_overview(
                 CASE WHEN COALESCE(cm.sessions, 0) > 0
                     THEN ROUND((am.conversions::numeric / cm.sessions * 100), 3)
                 END                                              AS conv_rate_pct,
-                CASE WHEN COALESCE(cm.sessions, 0) > 0
-                    THEN ROUND((am.add_to_cart::numeric / cm.sessions * 100), 2)
+                CASE WHEN COALESCE(am.clicks, 0) > 0
+                    THEN ROUND((am.add_to_cart::numeric / am.clicks * 100), 2)
                 END                                              AS atc_rate_pct,
                 ROUND(COALESCE(cm.avg_scroll_pct, 0)::numeric, 1) AS avg_scroll_pct,
                 COALESCE(cm.rage_clicks, 0)                      AS rage_clicks,
