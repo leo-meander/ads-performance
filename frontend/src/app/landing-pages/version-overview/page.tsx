@@ -93,16 +93,30 @@ function StatCard({ label, value, delta }: { label: string; value: string; delta
   )
 }
 
-function DeltaBadge({ base, compare, higherIsBetter = true }: {
-  base: number | null; compare: number | null; higherIsBetter?: boolean
+function DeltaBadge({ base, compare, unit = '%', decimals = 2, higherIsBetter = true }: {
+  base: number | null; compare: number | null; unit?: string; decimals?: number; higherIsBetter?: boolean
 }) {
-  if (base === null || compare === null) return null
+  if (base === null || compare === null || base === 0) return null
   const d = compare - base
   const positive = higherIsBetter ? d >= 0 : d <= 0
   const cls = positive ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
   return (
     <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${cls}`}>
-      {d >= 0 ? '+' : ''}{d.toFixed(2)}pp
+      {d >= 0 ? '+' : ''}{d.toFixed(decimals)}{unit}
+    </span>
+  )
+}
+
+function RelDelta({ base, compare, higherIsBetter = true }: {
+  base: number | null; compare: number | null; higherIsBetter?: boolean
+}) {
+  if (!base || !compare) return null
+  const pct = ((compare - base) / Math.abs(base)) * 100
+  const positive = higherIsBetter ? pct >= 0 : pct <= 0
+  const cls = positive ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
+  return (
+    <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${cls}`}>
+      {pct >= 0 ? '+' : ''}{pct.toFixed(0)}%
     </span>
   )
 }
@@ -117,8 +131,10 @@ function VersionCard({ label, agg, color, baseAgg }: {
 
       {/* Row 1: traffic */}
       <div className="grid grid-cols-3 gap-2 mb-2">
-        <StatCard label="Sessions" value={fmt(agg.sessions)} />
-        <StatCard label="Conversions" value={fmt(agg.conversions)} />
+        <StatCard label="Sessions" value={fmt(agg.sessions)}
+          delta={b && <RelDelta base={b.sessions} compare={agg.sessions} />} />
+        <StatCard label="Conversions" value={fmt(agg.conversions)}
+          delta={b && <RelDelta base={b.conversions} compare={agg.conversions} />} />
         <StatCard
           label="Conv. rate"
           value={fmtRawPct(agg.conv_rate_pct)}
@@ -128,7 +144,8 @@ function VersionCard({ label, agg, color, baseAgg }: {
 
       {/* Row 2: revenue + engagement */}
       <div className="grid grid-cols-3 gap-2 mb-2">
-        <StatCard label="ROAS" value={fmtROAS(agg.avg_roas)} />
+        <StatCard label="ROAS" value={fmtROAS(agg.avg_roas)}
+          delta={b && <DeltaBadge base={b.avg_roas} compare={agg.avg_roas} unit="x" decimals={2} />} />
         <StatCard
           label="Engagement"
           value={fmtPct(agg.engagement_rate)}
@@ -143,8 +160,10 @@ function VersionCard({ label, agg, color, baseAgg }: {
 
       {/* Row 3: funnel */}
       <div className="grid grid-cols-2 gap-2 mb-3">
-        <StatCard label="ATC rate" value={fmtRawPct(agg.atc_rate_pct)} />
-        <StatCard label="Avg scroll" value={agg.avg_scroll_pct !== null ? `${agg.avg_scroll_pct?.toFixed(1)}%` : '—'} />
+        <StatCard label="ATC rate" value={fmtRawPct(agg.atc_rate_pct)}
+          delta={b && <DeltaBadge base={b.atc_rate_pct} compare={agg.atc_rate_pct} />} />
+        <StatCard label="Avg scroll" value={agg.avg_scroll_pct !== null ? `${agg.avg_scroll_pct?.toFixed(1)}%` : '—'}
+          delta={b && <DeltaBadge base={b.avg_scroll_pct} compare={agg.avg_scroll_pct} />} />
       </div>
 
       <p className="text-xs text-gray-400">{agg.page_count} pages · avg session {fmtDuration(agg.avg_session_duration_sec)}</p>
