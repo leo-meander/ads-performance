@@ -206,22 +206,25 @@ def version_overview(
                   AND {exclude_where}
             ),
             ad_metrics AS (
-                SELECT lpal.landing_page_id,
+                SELECT lpal_dedup.landing_page_id,
                     SUM(mc.spend)        AS spend,
                     SUM(mc.conversions)  AS conversions,
                     SUM(mc.revenue)      AS revenue,
                     SUM(mc.add_to_cart)  AS add_to_cart
-                FROM landing_page_ad_links lpal
-                JOIN page_tags pt ON pt.id = lpal.landing_page_id
-                JOIN metrics_cache mc ON mc.campaign_id = lpal.campaign_id
+                FROM (
+                    SELECT DISTINCT landing_page_id, campaign_id, ad_set_id
+                    FROM landing_page_ad_links
+                ) lpal_dedup
+                JOIN page_tags pt ON pt.id = lpal_dedup.landing_page_id
+                JOIN metrics_cache mc ON mc.campaign_id = lpal_dedup.campaign_id
                   AND mc.ad_id IS NULL
                   AND mc.date >= pt.metrics_from
                   AND (
-                    (lpal.ad_set_id IS NOT NULL AND mc.ad_set_id = lpal.ad_set_id)
+                    (lpal_dedup.ad_set_id IS NOT NULL AND mc.ad_set_id = lpal_dedup.ad_set_id)
                     OR
-                    (lpal.ad_set_id IS NULL AND mc.ad_set_id IS NULL)
+                    (lpal_dedup.ad_set_id IS NULL AND mc.ad_set_id IS NULL)
                   )
-                GROUP BY lpal.landing_page_id
+                GROUP BY lpal_dedup.landing_page_id
             ),
             clarity_metrics AS (
                 SELECT cs.landing_page_id,
