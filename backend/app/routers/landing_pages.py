@@ -159,6 +159,8 @@ _BRANCH_LABELS: dict[str, str] = {
     "sgn.staymeander.com": "Meander Saigon",
 }
 _EXCLUDE_SLUGS = ("day-by-day-plan%", "thank-you%", "%travel-guide%")
+# Date from which V2 metrics are counted (campaigns switched landing page URLs on this date)
+_V2_METRICS_FROM = "2026-06-19"
 
 
 @router.get("/landing-pages/version-overview")
@@ -177,6 +179,11 @@ def version_overview(
             f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN 'Version 2'"
             for d, s in _V2_PATTERNS
         )
+        # Reuse same WHEN conditions for metrics_from date filter
+        metrics_from_cases = "\n".join(
+            f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN '{_V2_METRICS_FROM}'"
+            for d, s in _V2_PATTERNS
+        )
         exclude_where = " AND ".join(
             f"lp.slug NOT LIKE '{pat}'" for pat in _EXCLUDE_SLUGS
         )
@@ -188,7 +195,11 @@ def version_overview(
                     CASE
                         {version_cases}
                         ELSE 'Version 1'
-                    END AS version
+                    END AS version,
+                    CASE
+                        {metrics_from_cases}
+                        ELSE '2000-01-01'
+                    END::date AS metrics_from
                 FROM landing_pages lp
                 WHERE lp.is_active = TRUE
                   AND lp.domain IN ({domain_list})
@@ -201,8 +212,10 @@ def version_overview(
                     SUM(mc.revenue)      AS revenue,
                     SUM(mc.add_to_cart)  AS add_to_cart
                 FROM landing_page_ad_links lpal
+                JOIN page_tags pt ON pt.id = lpal.landing_page_id
                 JOIN metrics_cache mc ON mc.campaign_id = lpal.campaign_id
                   AND mc.ad_id IS NULL
+                  AND mc.date >= pt.metrics_from
                   AND (
                     (lpal.ad_set_id IS NOT NULL AND mc.ad_set_id = lpal.ad_set_id)
                     OR
@@ -211,26 +224,29 @@ def version_overview(
                 GROUP BY lpal.landing_page_id
             ),
             clarity_metrics AS (
-                SELECT landing_page_id,
-                    SUM(sessions)         AS sessions,
-                    AVG(avg_scroll_depth) AS avg_scroll_pct,
-                    SUM(rage_clicks)      AS rage_clicks,
-                    SUM(quickback_clicks) AS quickback_clicks
-                FROM landing_page_clarity_snapshots
-                WHERE utm_source IS NULL AND utm_campaign IS NULL AND utm_content IS NULL
-                GROUP BY landing_page_id
+                SELECT cs.landing_page_id,
+                    SUM(cs.sessions)         AS sessions,
+                    AVG(cs.avg_scroll_depth) AS avg_scroll_pct,
+                    SUM(cs.rage_clicks)      AS rage_clicks,
+                    SUM(cs.quickback_clicks) AS quickback_clicks
+                FROM landing_page_clarity_snapshots cs
+                JOIN page_tags pt ON pt.id = cs.landing_page_id
+                WHERE cs.utm_source IS NULL AND cs.utm_campaign IS NULL AND cs.utm_content IS NULL
+                  AND cs.date >= pt.metrics_from
+                GROUP BY cs.landing_page_id
             ),
             ga4_metrics AS (
-                SELECT landing_page_id,
-                    SUM(engaged_sessions)          AS engaged_sessions,
-                    SUM(sessions)                  AS ga4_sessions,
-                    AVG(engagement_rate)           AS engagement_rate,
-                    AVG(bounce_rate)               AS bounce_rate,
-                    SUM(begin_checkout)            AS begin_checkout,
-                    AVG(avg_session_duration_sec)  AS avg_session_duration_sec
-                FROM landing_page_ga4_snapshots
-                WHERE source IS NULL AND medium IS NULL AND campaign IS NULL
-                GROUP BY landing_page_id
+                SELECT g.landing_page_id,
+                    SUM(g.engaged_sessions)         AS engaged_sessions,
+                    AVG(g.engagement_rate)          AS engagement_rate,
+                    AVG(g.bounce_rate)              AS bounce_rate,
+                    SUM(g.begin_checkout)           AS begin_checkout,
+                    AVG(g.avg_session_duration_sec) AS avg_session_duration_sec
+                FROM landing_page_ga4_snapshots g
+                JOIN page_tags pt ON pt.id = g.landing_page_id
+                WHERE g.source IS NULL AND g.medium IS NULL AND g.campaign IS NULL
+                  AND g.date >= pt.metrics_from
+                GROUP BY g.landing_page_id
             )
             SELECT
                 pt.domain,
