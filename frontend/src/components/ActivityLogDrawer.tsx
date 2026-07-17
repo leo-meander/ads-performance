@@ -211,10 +211,11 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
     if (!open) return
     setLoading(true)
     apiFetch(`/api/dashboard/country/changelog?date_from=${dateFrom}&date_to=${dateTo}&limit=200`)
-      .then((res: { success: boolean; data: { items: ChangeLogItem[]; total: number } }) => {
+      .then((res) => {
         if (res.success) {
-          setItems(res.data.items)
-          setTotal(res.data.total)
+          const d = res.data as { items: ChangeLogItem[]; total: number }
+          setItems(d.items)
+          setTotal(d.total)
         }
       })
       .finally(() => setLoading(false))
