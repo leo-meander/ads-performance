@@ -110,6 +110,7 @@ class UpdatePageReq(BaseModel):
     branch_id: str | None = None
     clarity_project_id: str | None = None
     notes: str | None = None
+    ver: str | None = None
 
 
 class CreateVersionReq(BaseModel):
@@ -192,10 +193,12 @@ def version_overview(
         sql = text(f"""
             WITH page_tags AS (
                 SELECT lp.id, lp.domain, lp.slug,
-                    CASE
-                        {version_cases}
-                        ELSE 'Version 1'
-                    END AS version,
+                    COALESCE(lp.ver,
+                        CASE
+                            {version_cases}
+                            ELSE 'Version 1'
+                        END
+                    ) AS version,
                     CASE
                         {metrics_from_cases}
                         ELSE '2000-01-01'
@@ -253,6 +256,7 @@ def version_overview(
                 GROUP BY g.landing_page_id
             )
             SELECT
+                pt.id AS page_id,
                 pt.domain,
                 pt.version,
                 pt.slug,
@@ -298,6 +302,7 @@ def version_overview(
                     "versions": {},
                 }
             page = {
+                "page_id": str(r["page_id"]),
                 "slug": r["slug"],
                 "spend": float(r["spend"] or 0),
                 "revenue": float(r["revenue"] or 0),
@@ -514,6 +519,8 @@ def update_page(
             page.clarity_project_id = body.clarity_project_id
         if body.notes is not None:
             page.notes = body.notes
+        if body.ver is not None:
+            page.ver = body.ver if body.ver != "" else None
         db.commit()
         db.refresh(page)
         return _api(_serialize_page(page))
