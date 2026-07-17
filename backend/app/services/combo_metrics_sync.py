@@ -38,8 +38,16 @@ def _first_value(arr) -> int:
     if not arr:
         return 0
     try:
-        return int(arr[0].get("value", 0))
+        return round(float(arr[0].get("value", 0)))
     except (KeyError, ValueError, TypeError):
+        return 0
+
+
+def _action_value(val) -> int:
+    """Parse Meta action value string → int, tolerating fractional values."""
+    try:
+        return round(float(val))
+    except (ValueError, TypeError):
         return 0
 
 
@@ -97,28 +105,34 @@ def sync_combo_metrics_for_account(
         return summary
 
     for row in rows:
-        ad_name = (row.get("ad_name") or "").strip()
-        if not ad_name:
-            continue
-        b = agg[ad_name]
-        b["spend"] += float(row.get("spend", 0) or 0)
-        b["impressions"] += int(row.get("impressions", 0) or 0)
-        b["clicks"] += int(row.get("clicks", 0) or 0)
-        b["engagement"] += int(row.get("inline_post_engagement", 0) or 0)
-        for a in row.get("actions") or []:
-            if a.get("action_type") == "omni_purchase":
-                b["conversions"] += int(a.get("value", 0))
-            # video_view = Meta's 3-second video plays — the Ads Manager
-            # "Hook rate" numerator. NOT video_play_actions, which counts
-            # every autoplay start and tracks impressions almost 1:1.
-            elif a.get("action_type") == "video_view":
-                b["video_3s"] += int(a.get("value", 0))
-        for av in row.get("action_values") or []:
-            if av.get("action_type") == "omni_purchase":
-                b["revenue"] += float(av.get("value", 0))
-        b["video_plays"] += _first_value(row.get("video_play_actions"))
-        b["thruplay"] += _first_value(row.get("video_thruplay_watched_actions"))
-        b["video_p100"] += _first_value(row.get("video_p100_watched_actions"))
+        try:
+            ad_name = (row.get("ad_name") or "").strip()
+            if not ad_name:
+                continue
+            b = agg[ad_name]
+            b["spend"] += float(row.get("spend", 0) or 0)
+            b["impressions"] += int(row.get("impressions", 0) or 0)
+            b["clicks"] += int(row.get("clicks", 0) or 0)
+            b["engagement"] += int(row.get("inline_post_engagement", 0) or 0)
+            for a in row.get("actions") or []:
+                if a.get("action_type") == "omni_purchase":
+                    b["conversions"] += _action_value(a.get("value", 0))
+                # video_view = Meta's 3-second video plays — the Ads Manager
+                # "Hook rate" numerator. NOT video_play_actions, which counts
+                # every autoplay start and tracks impressions almost 1:1.
+                elif a.get("action_type") == "video_view":
+                    b["video_3s"] += _action_value(a.get("value", 0))
+            for av in row.get("action_values") or []:
+                if av.get("action_type") == "omni_purchase":
+                    try:
+                        b["revenue"] += float(av.get("value", 0))
+                    except (ValueError, TypeError):
+                        pass
+            b["video_plays"] += _first_value(row.get("video_play_actions"))
+            b["thruplay"] += _first_value(row.get("video_thruplay_watched_actions"))
+            b["video_p100"] += _first_value(row.get("video_p100_watched_actions"))
+        except Exception:
+            logger.exception("Combo metrics: skipping malformed row ad_name=%r", row.get("ad_name"))
 
     summary["ad_names"] = len(agg)
 
