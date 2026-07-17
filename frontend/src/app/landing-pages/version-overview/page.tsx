@@ -10,6 +10,7 @@ import { ArrowLeft, AlertTriangle } from 'lucide-react'
 import { API_BASE } from '@/lib/api'
 
 type PageRow = {
+  page_id: string
   slug: string
   spend: number
   revenue: number
@@ -171,8 +172,79 @@ function VersionCard({ label, agg, color, baseAgg }: {
   )
 }
 
-function PagesTable({ branch, selectedVersions, versionColors }: {
-  branch: BranchData; selectedVersions: string[]; versionColors: Record<string, string>
+const VERSION_OPTIONS = ['Version 1', 'Version 2', 'Version 3', 'Version 4']
+
+function VerBadge({ pageId, ver, versionColors, allVersions, onChanged }: {
+  pageId: string
+  ver: string
+  versionColors: Record<string, string>
+  allVersions: string[]
+  onChanged: (pageId: string, newVer: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const color = versionColors[ver] ?? '#888'
+  const options = Array.from(new Set([...allVersions, ...VERSION_OPTIONS]))
+
+  async function pick(v: string) {
+    setOpen(false)
+    if (v === ver) return
+    setSaving(true)
+    try {
+      await fetch(`${API_BASE}/api/landing-pages/${pageId}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ver: v }),
+      })
+      onChanged(pageId, v)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="relative inline-block">
+      <button
+        onClick={() => setOpen(o => !o)}
+        disabled={saving}
+        className="text-xs font-medium px-1.5 py-0.5 rounded text-white cursor-pointer hover:opacity-80 transition-opacity disabled:opacity-50"
+        style={{ backgroundColor: color }}
+        title="Click to change version"
+      >
+        {ver.replace('Version ', 'V')}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded shadow-lg py-1 min-w-[90px]">
+            {options.map(v => (
+              <button
+                key={v}
+                onClick={() => pick(v)}
+                className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 flex items-center gap-2"
+              >
+                <span
+                  className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: versionColors[v] ?? '#888' }}
+                />
+                {v.replace('Version ', 'V')}
+                {v === ver && <span className="ml-auto text-gray-400">✓</span>}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function PagesTable({ branch, selectedVersions, versionColors, allVersions, onVerChanged }: {
+  branch: BranchData
+  selectedVersions: string[]
+  versionColors: Record<string, string>
+  allVersions: string[]
+  onVerChanged: (pageId: string, newVer: string) => void
 }) {
   const rows = selectedVersions.flatMap(v =>
     (branch.versions[v]?.pages ?? []).map(p => ({ ...p, ver: v }))
@@ -195,31 +267,32 @@ function PagesTable({ branch, selectedVersions, versionColors }: {
           </tr>
         </thead>
         <tbody>
-          {rows.map((p, i) => {
-            const color = versionColors[p.ver] ?? '#888'
-            return (
-              <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
-                <td className="py-2 px-3">
-                  <span className="text-xs font-medium px-1.5 py-0.5 rounded text-white" style={{ backgroundColor: color }}>
-                    {p.ver.replace('Version ', 'V')}
-                  </span>
-                </td>
-                <td className="py-2 px-3 max-w-[180px] truncate text-gray-700" title={p.slug}>
-                  {p.slug || '(root)'}
-                  {p.low_confidence && <AlertTriangle className="inline w-3 h-3 text-amber-400 ml-1" />}
-                </td>
-                <td className="py-2 px-3 text-right text-gray-700">{fmt(p.sessions)}</td>
-                <td className="py-2 px-3 text-right text-gray-700">{fmtRawPct(p.conv_rate_pct)}</td>
-                <td className="py-2 px-3 text-right text-gray-700">{fmtROAS(p.roas)}</td>
-                <td className="py-2 px-3 text-right text-gray-700">{fmtPct(p.engagement_rate)}</td>
-                <td className="py-2 px-3 text-right text-gray-700">{fmtPct(p.bounce_rate)}</td>
-                <td className="py-2 px-3 text-right text-gray-700">{fmtRawPct(p.atc_rate_pct)}</td>
-                <td className="py-2 px-3 text-right text-gray-700">
-                  {p.avg_scroll_pct ? `${p.avg_scroll_pct.toFixed(1)}%` : '—'}
-                </td>
-              </tr>
-            )
-          })}
+          {rows.map((p, i) => (
+            <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
+              <td className="py-2 px-3">
+                <VerBadge
+                  pageId={p.page_id}
+                  ver={p.ver}
+                  versionColors={versionColors}
+                  allVersions={allVersions}
+                  onChanged={onVerChanged}
+                />
+              </td>
+              <td className="py-2 px-3 max-w-[180px] truncate text-gray-700" title={p.slug}>
+                {p.slug || '(root)'}
+                {p.low_confidence && <AlertTriangle className="inline w-3 h-3 text-amber-400 ml-1" />}
+              </td>
+              <td className="py-2 px-3 text-right text-gray-700">{fmt(p.sessions)}</td>
+              <td className="py-2 px-3 text-right text-gray-700">{fmtRawPct(p.conv_rate_pct)}</td>
+              <td className="py-2 px-3 text-right text-gray-700">{fmtROAS(p.roas)}</td>
+              <td className="py-2 px-3 text-right text-gray-700">{fmtPct(p.engagement_rate)}</td>
+              <td className="py-2 px-3 text-right text-gray-700">{fmtPct(p.bounce_rate)}</td>
+              <td className="py-2 px-3 text-right text-gray-700">{fmtRawPct(p.atc_rate_pct)}</td>
+              <td className="py-2 px-3 text-right text-gray-700">
+                {p.avg_scroll_pct ? `${p.avg_scroll_pct.toFixed(1)}%` : '—'}
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -280,6 +353,37 @@ export default function VersionOverviewPage() {
       .catch(() => setError('Failed to load'))
       .finally(() => setLoading(false))
   }, [])
+
+  function handleVerChanged(pageId: string, newVer: string) {
+    setData(prev => {
+      if (!prev) return prev
+      const branches = prev.branches.map(b => {
+        let movedPage: PageRow | undefined
+        // remove page from whichever bucket currently holds it
+        const versions: typeof b.versions = {}
+        for (const [vLabel, agg] of Object.entries(b.versions)) {
+          const found = agg.pages.find(p => p.page_id === pageId)
+          if (found) movedPage = found
+          const pages = agg.pages.filter(p => p.page_id !== pageId)
+          versions[vLabel] = { ...agg, pages, page_count: pages.length }
+        }
+        // add page to target version bucket
+        if (movedPage) {
+          const existing = versions[newVer]
+          if (existing) {
+            versions[newVer] = { ...existing, pages: [...existing.pages, movedPage], page_count: existing.page_count + 1 }
+          } else {
+            // create a stub bucket (metrics will be stale until refresh, but UI shows it moved)
+            versions[newVer] = { ...Object.values(b.versions)[0], pages: [movedPage], page_count: 1 }
+          }
+        }
+        return { ...b, versions }
+      })
+      const allVersions = Array.from(new Set([...prev.version_labels, newVer])).sort()
+      return { ...prev, branches, version_labels: allVersions }
+    })
+    setSelectedVersions(prev => prev.includes(newVer) ? prev : [...prev, newVer])
+  }
 
   const versionColors: Record<string, string> = {}
   ;(data?.version_labels ?? []).forEach((v, i) => {
@@ -380,7 +484,13 @@ export default function VersionOverviewPage() {
                       All pages — native ad currency. ⚠ = low session count (&lt;10). Engagement/Bounce from GA4.
                     </p>
                   </div>
-                  <PagesTable branch={b} selectedVersions={versionsToShow} versionColors={versionColors} />
+                  <PagesTable
+                    branch={b}
+                    selectedVersions={versionsToShow}
+                    versionColors={versionColors}
+                    allVersions={data.version_labels}
+                    onVerChanged={handleVerChanged}
+                  />
                 </div>
               </div>
             )

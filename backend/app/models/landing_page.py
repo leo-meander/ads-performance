@@ -48,4 +48,5 @@ class LandingPage(TimestampMixin, Base):
         nullable=True,
     )
     notes = Column(Text, nullable=True)
+    ver = Column(String(30), nullable=True)  # manual version override ("Version 1", "Version 2", …); NULL = pattern heuristic
     is_active = Column(Boolean, nullable=False, default=True, index=True)
