@@ -9,6 +9,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.permissions import scoped_account_ids
@@ -142,6 +143,98 @@ def get_google_campaign(
             "raw_data": campaign.raw_data,
         })
     except Exception as e:
+        return _err(str(e), 500)
+
+
+@router.get("/google/ad-groups/comparison")
+def get_ad_group_comparison(
+    name_filter: str = Query("Brand", description="Filter ad group names (case-insensitive contains)"),
+    days: int = Query(30, ge=1, le=90),
+    current_user: User = Depends(require_section("google_ads")),
+    db: Session = Depends(get_db),
+):
+    """Cross-branch ad group comparison filtered by ad group name."""
+    try:
+        ok, scoped_ids, err = scoped_account_ids(db, current_user, "google_ads")
+        if not ok:
+            return _err(err, 403)
+
+        date_from = date.today() - timedelta(days=days)
+
+        q = (
+            db.query(
+                AdSet.id.label("ad_group_id"),
+                AdSet.name.label("ad_group_name"),
+                AdSet.status.label("ad_group_status"),
+                Campaign.id.label("campaign_id"),
+                Campaign.name.label("campaign_name"),
+                AdAccount.id.label("account_id"),
+                AdAccount.account_name.label("branch"),
+                AdAccount.currency.label("currency"),
+                func.sum(MetricsCache.spend).label("spend"),
+                func.sum(MetricsCache.impressions).label("impressions"),
+                func.sum(MetricsCache.clicks).label("clicks"),
+                func.sum(MetricsCache.conversions).label("conversions"),
+                func.sum(MetricsCache.revenue).label("revenue"),
+            )
+            .join(Campaign, AdSet.campaign_id == Campaign.id)
+            .join(AdAccount, Campaign.account_id == AdAccount.id)
+            .join(
+                MetricsCache,
+                (MetricsCache.ad_set_id == AdSet.id) & (MetricsCache.ad_id.is_(None)),
+                isouter=True,
+            )
+            .filter(
+                AdSet.platform == "google",
+                Campaign.objective == "SEARCH",
+                AdSet.name.ilike(f"%{name_filter}%"),
+            )
+        )
+
+        if scoped_ids is not None:
+            q = q.filter(Campaign.account_id.in_(scoped_ids or ["__no_match__"]))
+
+        q = q.filter(
+            (MetricsCache.date >= date_from) | (MetricsCache.date.is_(None))
+        )
+
+        rows = q.group_by(
+            AdSet.id, AdSet.name, AdSet.status,
+            Campaign.id, Campaign.name,
+            AdAccount.id, AdAccount.account_name, AdAccount.currency,
+        ).order_by(AdAccount.account_name, AdSet.name).all()
+
+        result = []
+        for r in rows:
+            spend = float(r.spend or 0)
+            revenue = float(r.revenue or 0)
+            clicks = int(r.clicks or 0)
+            impressions = int(r.impressions or 0)
+            conversions = float(r.conversions or 0)
+            roas = revenue / spend if spend > 0 else None
+            ctr = clicks / impressions if impressions > 0 else None
+            cpa = spend / conversions if conversions > 0 else None
+            result.append({
+                "ad_group_id": r.ad_group_id,
+                "ad_group_name": r.ad_group_name,
+                "ad_group_status": r.ad_group_status,
+                "campaign_id": r.campaign_id,
+                "campaign_name": r.campaign_name,
+                "branch": r.branch,
+                "currency": r.currency,
+                "spend": spend,
+                "impressions": impressions,
+                "clicks": clicks,
+                "conversions": conversions,
+                "revenue": revenue,
+                "roas": round(roas, 2) if roas is not None else None,
+                "ctr": round(ctr * 100, 2) if ctr is not None else None,
+                "cpa": round(cpa, 2) if cpa is not None else None,
+            })
+
+        return _ok({"ad_groups": result, "total": len(result), "days": days, "name_filter": name_filter})
+    except Exception as e:
+        logger.exception("ad_group_comparison error")
         return _err(str(e), 500)
 
 
