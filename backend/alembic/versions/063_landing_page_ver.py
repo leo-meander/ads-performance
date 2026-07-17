@@ -22,16 +22,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    conn = op.get_bind()
-    result = conn.execute(sa.text(
-        "SELECT 1 FROM information_schema.columns "
-        "WHERE table_name='landing_pages' AND column_name='ver'"
+    op.execute(sa.text(
+        "ALTER TABLE landing_pages ADD COLUMN IF NOT EXISTS ver VARCHAR(30)"
     ))
-    if not result.fetchone():
-        op.add_column(
-            "landing_pages",
-            sa.Column("ver", sa.String(30), nullable=True),
-        )
 
 
 def downgrade() -> None:
