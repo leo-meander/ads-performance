@@ -84,10 +84,10 @@ function fmtDuration(sec: number | null | undefined) {
 
 function StatCard({ label, value, delta }: { label: string; value: string; delta?: React.ReactNode }) {
   return (
-    <div className="bg-gray-50 rounded-lg p-3">
-      <p className="text-xs text-gray-500 mb-1">{label}</p>
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <p className="text-base font-medium text-gray-900">{value}</p>
+    <div className="bg-gray-50 rounded-lg p-4">
+      <p className="text-xs text-gray-500 mb-1.5">{label}</p>
+      <div className="flex items-center gap-2 flex-wrap">
+        <p className="text-lg font-semibold text-gray-900">{value}</p>
         {delta}
       </div>
     </div>
@@ -127,11 +127,11 @@ function VersionCard({ label, agg, color, baseAgg }: {
 }) {
   const b = baseAgg
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-4" style={{ borderTopWidth: 2, borderTopColor: color }}>
-      <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{ color }}>{label}</p>
+    <div className="bg-white border border-gray-200 rounded-xl p-6" style={{ borderTopWidth: 3, borderTopColor: color }}>
+      <p className="text-xs font-semibold uppercase tracking-wider mb-4" style={{ color }}>{label}</p>
 
       {/* Row 1: traffic */}
-      <div className="grid grid-cols-3 gap-2 mb-2">
+      <div className="grid grid-cols-3 gap-3 mb-3">
         <StatCard label="Sessions" value={fmt(agg.sessions)}
           delta={b && <RelDelta base={b.sessions} compare={agg.sessions} />} />
         <StatCard label="Conversions" value={fmt(agg.conversions)}
@@ -144,7 +144,7 @@ function VersionCard({ label, agg, color, baseAgg }: {
       </div>
 
       {/* Row 2: revenue + engagement */}
-      <div className="grid grid-cols-3 gap-2 mb-2">
+      <div className="grid grid-cols-3 gap-3 mb-3">
         <StatCard label="ROAS" value={fmtROAS(agg.avg_roas)}
           delta={b && <DeltaBadge base={b.avg_roas} compare={agg.avg_roas} unit="x" decimals={2} />} />
         <StatCard
@@ -160,7 +160,7 @@ function VersionCard({ label, agg, color, baseAgg }: {
       </div>
 
       {/* Row 3: funnel */}
-      <div className="grid grid-cols-2 gap-2 mb-3">
+      <div className="grid grid-cols-2 gap-3 mb-4">
         <StatCard label="ATC rate" value={fmtRawPct(agg.atc_rate_pct)}
           delta={b && <DeltaBadge base={b.atc_rate_pct} compare={agg.atc_rate_pct} />} />
         <StatCard label="Avg scroll" value={agg.avg_scroll_pct !== null ? `${agg.avg_scroll_pct?.toFixed(1)}%` : '—'}
@@ -313,7 +313,7 @@ function OverviewChart({ branches, selectedVersions, versionColors }: {
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-5">
       <p className="text-sm font-medium text-gray-700 mb-4">Conv. rate by branch (all-time)</p>
-      <ResponsiveContainer width="100%" height={220}>
+      <ResponsiveContainer width="100%" height={260}>
         <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
           <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#888' }} axisLine={false} tickLine={false} />
@@ -401,8 +401,8 @@ export default function VersionOverviewPage() {
   const baseVersion = selectedVersions[0] ?? null
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
+    <div className="p-8 max-w-7xl mx-auto">
+      <div className="flex items-center gap-3 mb-8">
         <Link href="/landing-pages" className="text-gray-400 hover:text-gray-600">
           <ArrowLeft className="w-4 h-4" />
         </Link>
@@ -439,12 +439,12 @@ export default function VersionOverviewPage() {
             </div>
           )}
 
-          <div className="mb-6">
+          <div className="mb-8">
             <OverviewChart branches={data.branches} selectedVersions={selectedVersions} versionColors={versionColors} />
           </div>
 
           {/* Branch tabs */}
-          <div className="flex gap-2 flex-wrap mb-4">
+          <div className="flex gap-2 flex-wrap mb-6">
             {data.branches.map((b, i) => (
               <button
                 key={b.domain}
@@ -465,8 +465,8 @@ export default function VersionOverviewPage() {
             const versionsToShow = selectedVersions.filter(v => b.versions[v])
             const base = baseVersion ? b.versions[baseVersion] ?? null : null
             return (
-              <div className="space-y-4">
-                <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${versionsToShow.length}, 1fr)` }}>
+              <div className="space-y-6">
+                <div className="grid gap-6" style={{ gridTemplateColumns: `repeat(${versionsToShow.length}, 1fr)` }}>
                   {versionsToShow.map((v, idx) => (
                     <VersionCard
                       key={v}
