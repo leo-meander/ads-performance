@@ -210,8 +210,8 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
   useEffect(() => {
     if (!open) return
     setLoading(true)
-    apiFetch(`/api/dashboard/country/changelog?date_from=${dateFrom}&date_to=${dateTo}&limit=200`)
-      .then((res: { success: boolean; data: { items: ChangeLogItem[]; total: number } }) => {
+    apiFetch<{ items: ChangeLogItem[]; total: number }>(`/api/dashboard/country/changelog?date_from=${dateFrom}&date_to=${dateTo}&limit=200`)
+      .then((res) => {
         if (res.success) {
           setItems(res.data.items)
           setTotal(res.data.total)
