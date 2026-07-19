@@ -216,8 +216,23 @@ def version_overview(
                     SUM(mc.add_to_cart)  AS add_to_cart,
                     SUM(mc.clicks)       AS clicks
                 FROM (
-                    SELECT DISTINCT landing_page_id, campaign_id, ad_set_id
-                    FROM landing_page_ad_links
+                    -- Prefer adset-level links; only include campaign-level (NULL) link
+                    -- when no adset-level link exists for the same (landing_page_id, campaign_id).
+                    -- Without this, both the campaign aggregate AND the adset row get summed,
+                    -- double-counting conversions for every adset that also has a NULL sibling link.
+                    SELECT lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
+                    FROM landing_page_ad_links lpal
+                    WHERE lpal.ad_set_id IS NOT NULL
+                    UNION ALL
+                    SELECT lpal.landing_page_id, lpal.campaign_id, NULL
+                    FROM landing_page_ad_links lpal
+                    WHERE lpal.ad_set_id IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM landing_page_ad_links lpal2
+                          WHERE lpal2.landing_page_id = lpal.landing_page_id
+                            AND lpal2.campaign_id = lpal.campaign_id
+                            AND lpal2.ad_set_id IS NOT NULL
+                      )
                 ) lpal_dedup
                 JOIN page_tags pt ON pt.id = lpal_dedup.landing_page_id
                 JOIN metrics_cache mc ON mc.campaign_id = lpal_dedup.campaign_id
