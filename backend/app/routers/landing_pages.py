@@ -216,42 +216,22 @@ def version_overview(
                     SUM(mc.add_to_cart)  AS add_to_cart,
                     SUM(mc.clicks)       AS clicks
                 FROM (
-                    -- Prefer adset-level links; only include campaign-level (NULL) link
-                    -- when no adset-level link exists for the same (landing_page_id, campaign_id).
-                    -- Without this, both the campaign aggregate AND the adset row get summed,
-                    -- double-counting conversions for every adset that also has a NULL sibling link.
-                    SELECT lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
-                    FROM landing_page_ad_links lpal
-                    WHERE lpal.ad_set_id IS NOT NULL
-                    UNION
-                    SELECT lpal.landing_page_id, lpal.campaign_id, NULL
-                    FROM landing_page_ad_links lpal
-                    WHERE lpal.ad_set_id IS NULL
-                      AND NOT EXISTS (
-                          SELECT 1 FROM landing_page_ad_links lpal2
-                          WHERE lpal2.landing_page_id = lpal.landing_page_id
-                            AND lpal2.campaign_id = lpal.campaign_id
-                            AND lpal2.ad_set_id IS NOT NULL
-                      )
+                    SELECT DISTINCT landing_page_id, campaign_id
+                    FROM landing_page_ad_links
                 ) lpal_dedup
                 JOIN page_tags pt ON pt.id = lpal_dedup.landing_page_id
                 JOIN (
-                    SELECT campaign_id, ad_set_id, date,
+                    SELECT campaign_id, date,
                         MAX(spend)       AS spend,
                         MAX(conversions) AS conversions,
                         MAX(revenue)     AS revenue,
                         MAX(add_to_cart) AS add_to_cart,
                         MAX(clicks)      AS clicks
                     FROM metrics_cache
-                    WHERE ad_id IS NULL
-                    GROUP BY campaign_id, ad_set_id, date
+                    WHERE ad_id IS NULL AND ad_set_id IS NULL
+                    GROUP BY campaign_id, date
                 ) mc ON mc.campaign_id = lpal_dedup.campaign_id
                   AND mc.date >= pt.metrics_from
-                  AND (
-                    (lpal_dedup.ad_set_id IS NOT NULL AND mc.ad_set_id = lpal_dedup.ad_set_id)
-                    OR
-                    (lpal_dedup.ad_set_id IS NULL AND mc.ad_set_id IS NULL)
-                  )
                 GROUP BY lpal_dedup.landing_page_id
             ),
             clarity_metrics AS (
