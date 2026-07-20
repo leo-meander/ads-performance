@@ -223,7 +223,7 @@ def version_overview(
                     SELECT lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
                     FROM landing_page_ad_links lpal
                     WHERE lpal.ad_set_id IS NOT NULL
-                    UNION ALL
+                    UNION
                     SELECT lpal.landing_page_id, lpal.campaign_id, NULL
                     FROM landing_page_ad_links lpal
                     WHERE lpal.ad_set_id IS NULL
