@@ -211,7 +211,19 @@ def version_overview(
                   AND lp.domain IN ({domain_list})
                   AND {exclude_where}
             ),
+            mc_dedup AS (
+                SELECT campaign_id, date,
+                    MAX(spend)       AS spend,
+                    MAX(conversions) AS conversions,
+                    MAX(revenue)     AS revenue,
+                    MAX(add_to_cart) AS add_to_cart,
+                    MAX(clicks)      AS clicks
+                FROM metrics_cache
+                WHERE ad_id IS NULL AND ad_set_id IS NULL
+                GROUP BY campaign_id, date
+            ),
             ad_metrics AS (
+                -- Per-page metrics for the detail table (may double-count shared campaigns).
                 SELECT lpal_dedup.landing_page_id,
                     SUM(mc.spend)        AS spend,
                     SUM(mc.conversions)  AS conversions,
@@ -223,19 +235,29 @@ def version_overview(
                     FROM landing_page_ad_links
                 ) lpal_dedup
                 JOIN page_tags pt ON pt.id = lpal_dedup.landing_page_id
-                JOIN (
-                    SELECT campaign_id, date,
-                        MAX(spend)       AS spend,
-                        MAX(conversions) AS conversions,
-                        MAX(revenue)     AS revenue,
-                        MAX(add_to_cart) AS add_to_cart,
-                        MAX(clicks)      AS clicks
-                    FROM metrics_cache
-                    WHERE ad_id IS NULL AND ad_set_id IS NULL
-                    GROUP BY campaign_id, date
-                ) mc ON mc.campaign_id = lpal_dedup.campaign_id
+                JOIN mc_dedup mc ON mc.campaign_id = lpal_dedup.campaign_id
                   AND mc.date >= pt.metrics_from
                 GROUP BY lpal_dedup.landing_page_id
+            ),
+            version_ad_metrics AS (
+                -- Version-level metrics: DISTINCT campaigns per version so shared campaigns
+                -- are not double-counted when multiple pages in the same version link to them.
+                SELECT vc.version,
+                    SUM(mc.spend)        AS spend,
+                    SUM(mc.conversions)  AS conversions,
+                    SUM(mc.revenue)      AS revenue,
+                    SUM(mc.add_to_cart)  AS add_to_cart,
+                    SUM(mc.clicks)       AS clicks
+                FROM (
+                    SELECT DISTINCT pt.version, lpal.campaign_id,
+                        MIN(pt.metrics_from) AS metrics_from
+                    FROM landing_page_ad_links lpal
+                    JOIN page_tags pt ON pt.id = lpal.landing_page_id
+                    GROUP BY pt.version, lpal.campaign_id
+                ) vc
+                JOIN mc_dedup mc ON mc.campaign_id = vc.campaign_id
+                  AND mc.date >= vc.metrics_from
+                GROUP BY vc.version
             ),
             clarity_metrics AS (
                 SELECT cs.landing_page_id,
@@ -288,9 +310,14 @@ def version_overview(
                 ROUND(COALESCE(gm.engagement_rate, 0)::numeric, 4) AS engagement_rate,
                 ROUND(COALESCE(gm.bounce_rate, 0)::numeric, 4)  AS bounce_rate,
                 COALESCE(gm.begin_checkout, 0)                   AS begin_checkout,
-                ROUND(COALESCE(gm.avg_session_duration_sec, 0)::numeric, 1) AS avg_session_duration_sec
+                ROUND(COALESCE(gm.avg_session_duration_sec, 0)::numeric, 1) AS avg_session_duration_sec,
+                ROUND(COALESCE(vam.spend, 0)::numeric, 0)       AS ver_spend,
+                ROUND(COALESCE(vam.revenue, 0)::numeric, 0)     AS ver_revenue,
+                COALESCE(vam.conversions, 0)                     AS ver_conversions,
+                COALESCE(vam.add_to_cart, 0)                     AS ver_add_to_cart
             FROM page_tags pt
             LEFT JOIN ad_metrics am ON am.landing_page_id = pt.id
+            LEFT JOIN version_ad_metrics vam ON vam.version = pt.version
             LEFT JOIN clarity_metrics cm ON cm.landing_page_id = pt.id
             LEFT JOIN ga4_metrics gm ON gm.landing_page_id = pt.id
             WHERE COALESCE(am.spend, 0) > 0 OR COALESCE(cm.sessions, 0) > 0
@@ -328,16 +355,22 @@ def version_overview(
                 "begin_checkout": int(r["begin_checkout"] or 0),
                 "avg_session_duration_sec": float(r["avg_session_duration_sec"] or 0),
                 "low_confidence": int(r["sessions"] or 0) < 10,
+                "ver_spend": float(r["ver_spend"] or 0),
+                "ver_revenue": float(r["ver_revenue"] or 0),
+                "ver_conversions": float(r["ver_conversions"] or 0),
+                "ver_add_to_cart": int(r["ver_add_to_cart"] or 0),
             }
             version = r["version"]
             by_domain[domain]["versions"].setdefault(version, []).append(page)
 
         def _agg(pages: list[dict]) -> dict:
             total_sessions = sum(p["sessions"] for p in pages)
-            total_conv = sum(p["conversions"] for p in pages)
-            total_spend = sum(p["spend"] for p in pages)
-            total_revenue = sum(p["revenue"] for p in pages)
-            total_atc = sum(p["add_to_cart"] for p in pages)
+            # Use version-level deduped metrics (same value on every page in this version).
+            # Summing per-page spend/conversions would double-count campaigns shared across pages.
+            total_conv = pages[0]["ver_conversions"] if pages else 0
+            total_spend = pages[0]["ver_spend"] if pages else 0
+            total_revenue = pages[0]["ver_revenue"] if pages else 0
+            total_atc = pages[0]["ver_add_to_cart"] if pages else 0
             total_scroll = sum(p["avg_scroll_pct"] * p["sessions"] for p in pages)
             total_engaged = sum(p["engaged_sessions"] for p in pages)
             ga4_sessions = sum(p.get("engaged_sessions", 0) + 1 for p in pages)  # approx denom
