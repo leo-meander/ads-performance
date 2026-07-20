@@ -240,24 +240,25 @@ def version_overview(
                 GROUP BY lpal_dedup.landing_page_id
             ),
             version_ad_metrics AS (
-                -- Version-level metrics: DISTINCT campaigns per version so shared campaigns
-                -- are not double-counted when multiple pages in the same version link to them.
-                SELECT vc.version,
+                -- Version-level metrics: DISTINCT campaigns per (domain, version) so shared
+                -- campaigns are not double-counted when multiple pages in the same version
+                -- link to them. Must group by domain too to avoid cross-branch contamination.
+                SELECT vc.domain, vc.version,
                     SUM(mc.spend)        AS spend,
                     SUM(mc.conversions)  AS conversions,
                     SUM(mc.revenue)      AS revenue,
                     SUM(mc.add_to_cart)  AS add_to_cart,
                     SUM(mc.clicks)       AS clicks
                 FROM (
-                    SELECT DISTINCT pt.version, lpal.campaign_id,
+                    SELECT DISTINCT pt.domain, pt.version, lpal.campaign_id,
                         MIN(pt.metrics_from) AS metrics_from
                     FROM landing_page_ad_links lpal
                     JOIN page_tags pt ON pt.id = lpal.landing_page_id
-                    GROUP BY pt.version, lpal.campaign_id
+                    GROUP BY pt.domain, pt.version, lpal.campaign_id
                 ) vc
                 JOIN mc_dedup mc ON mc.campaign_id = vc.campaign_id
                   AND mc.date >= vc.metrics_from
-                GROUP BY vc.version
+                GROUP BY vc.domain, vc.version
             ),
             clarity_metrics AS (
                 SELECT cs.landing_page_id,
@@ -317,7 +318,7 @@ def version_overview(
                 COALESCE(vam.add_to_cart, 0)                     AS ver_add_to_cart
             FROM page_tags pt
             LEFT JOIN ad_metrics am ON am.landing_page_id = pt.id
-            LEFT JOIN version_ad_metrics vam ON vam.version = pt.version
+            LEFT JOIN version_ad_metrics vam ON vam.domain = pt.domain AND vam.version = pt.version
             LEFT JOIN clarity_metrics cm ON cm.landing_page_id = pt.id
             LEFT JOIN ga4_metrics gm ON gm.landing_page_id = pt.id
             WHERE COALESCE(am.spend, 0) > 0 OR COALESCE(cm.sessions, 0) > 0
