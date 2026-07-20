@@ -180,11 +180,14 @@ def version_overview(
             f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN 'Version 2'"
             for d, s in _V2_PATTERNS
         )
-        # Reuse same WHEN conditions for metrics_from date filter
-        metrics_from_cases = "\n".join(
+        # metrics_from: V2 pages (by explicit lp.ver OR slug pattern) use _V2_METRICS_FROM.
+        # Must check lp.ver first so pages like oani-and-1948 (ver set in DB but no matching
+        # slug pattern) still get the correct cutoff instead of falling back to 2000-01-01.
+        pattern_cases = "\n".join(
             f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN '{_V2_METRICS_FROM}'"
             for d, s in _V2_PATTERNS
         )
+        metrics_from_cases = f"WHEN lp.ver = 'Version 2' THEN '{_V2_METRICS_FROM}'\n{pattern_cases}"
         exclude_where = " AND ".join(
             f"lp.slug NOT LIKE '{pat}'" for pat in _EXCLUDE_SLUGS
         )
