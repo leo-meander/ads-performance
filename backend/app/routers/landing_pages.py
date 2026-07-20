@@ -235,8 +235,17 @@ def version_overview(
                       )
                 ) lpal_dedup
                 JOIN page_tags pt ON pt.id = lpal_dedup.landing_page_id
-                JOIN metrics_cache mc ON mc.campaign_id = lpal_dedup.campaign_id
-                  AND mc.ad_id IS NULL
+                JOIN (
+                    SELECT campaign_id, ad_set_id, date,
+                        MAX(spend)       AS spend,
+                        MAX(conversions) AS conversions,
+                        MAX(revenue)     AS revenue,
+                        MAX(add_to_cart) AS add_to_cart,
+                        MAX(clicks)      AS clicks
+                    FROM metrics_cache
+                    WHERE ad_id IS NULL
+                    GROUP BY campaign_id, ad_set_id, date
+                ) mc ON mc.campaign_id = lpal_dedup.campaign_id
                   AND mc.date >= pt.metrics_from
                   AND (
                     (lpal_dedup.ad_set_id IS NOT NULL AND mc.ad_set_id = lpal_dedup.ad_set_id)
