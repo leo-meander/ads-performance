@@ -222,42 +222,88 @@ def version_overview(
                 WHERE ad_id IS NULL AND ad_set_id IS NULL
                 GROUP BY campaign_id, date
             ),
+            mc_adset_dedup AS (
+                -- Ad-group level metrics (for Google Search non-brand ad groups)
+                SELECT campaign_id, ad_set_id, date,
+                    MAX(spend)       AS spend,
+                    MAX(conversions) AS conversions,
+                    MAX(revenue)     AS revenue,
+                    MAX(add_to_cart) AS add_to_cart,
+                    MAX(clicks)      AS clicks
+                FROM metrics_cache
+                WHERE ad_id IS NULL AND ad_set_id IS NOT NULL
+                GROUP BY campaign_id, ad_set_id, date
+            ),
             ad_metrics AS (
-                -- Per-page metrics for the detail table (may double-count shared campaigns).
+                -- Per-page metrics. When lpal has a specific ad_set_id, use adset-level
+                -- metrics (e.g. Google Search non-brand only); otherwise campaign-level.
                 SELECT lpal_dedup.landing_page_id,
-                    SUM(mc.spend)        AS spend,
-                    SUM(mc.conversions)  AS conversions,
-                    SUM(mc.revenue)      AS revenue,
-                    SUM(mc.add_to_cart)  AS add_to_cart,
-                    SUM(mc.clicks)       AS clicks
+                    SUM(COALESCE(mc_a.spend, mc_c.spend, 0))        AS spend,
+                    SUM(COALESCE(mc_a.conversions, mc_c.conversions, 0)) AS conversions,
+                    SUM(COALESCE(mc_a.revenue, mc_c.revenue, 0))    AS revenue,
+                    SUM(COALESCE(mc_a.add_to_cart, mc_c.add_to_cart, 0)) AS add_to_cart,
+                    SUM(COALESCE(mc_a.clicks, mc_c.clicks, 0))      AS clicks
                 FROM (
-                    SELECT DISTINCT landing_page_id, campaign_id
-                    FROM landing_page_ad_links
+                    SELECT lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
+                    FROM landing_page_ad_links lpal
+                    WHERE lpal.campaign_id IS NOT NULL
+                      AND (
+                        lpal.ad_set_id IS NOT NULL
+                        OR NOT EXISTS (
+                            SELECT 1 FROM landing_page_ad_links lpal2
+                            WHERE lpal2.landing_page_id = lpal.landing_page_id
+                              AND lpal2.campaign_id = lpal.campaign_id
+                              AND lpal2.ad_set_id IS NOT NULL
+                        )
+                      )
+                    GROUP BY lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
                 ) lpal_dedup
                 JOIN page_tags pt ON pt.id = lpal_dedup.landing_page_id
-                JOIN mc_dedup mc ON mc.campaign_id = lpal_dedup.campaign_id
-                  AND mc.date >= pt.metrics_from
+                LEFT JOIN mc_dedup mc_c ON mc_c.campaign_id = lpal_dedup.campaign_id
+                    AND lpal_dedup.ad_set_id IS NULL
+                    AND mc_c.date >= pt.metrics_from
+                LEFT JOIN mc_adset_dedup mc_a ON mc_a.campaign_id = lpal_dedup.campaign_id
+                    AND mc_a.ad_set_id = lpal_dedup.ad_set_id
+                    AND mc_a.date >= pt.metrics_from
                 GROUP BY lpal_dedup.landing_page_id
             ),
             version_ad_metrics AS (
-                -- Version-level metrics: DISTINCT campaigns per (domain, version) so shared
-                -- campaigns are not double-counted when multiple pages in the same version
-                -- link to them. Must group by domain too to avoid cross-branch contamination.
+                -- Version-level metrics: DISTINCT (domain, version, campaign_id, ad_set_id).
+                -- When lpal has a specific ad_set_id (e.g. Google Search non-brand), use
+                -- adset-level metrics. Campaign-level links (ad_set_id IS NULL) are only
+                -- included when no adset-level link exists for that campaign in this domain+version.
+                -- Grouping by domain prevents cross-branch contamination.
                 SELECT vc.domain, vc.version,
-                    SUM(mc.spend)        AS spend,
-                    SUM(mc.conversions)  AS conversions,
-                    SUM(mc.revenue)      AS revenue,
-                    SUM(mc.add_to_cart)  AS add_to_cart,
-                    SUM(mc.clicks)       AS clicks
+                    SUM(COALESCE(mc_a.spend, mc_c.spend, 0))        AS spend,
+                    SUM(COALESCE(mc_a.conversions, mc_c.conversions, 0)) AS conversions,
+                    SUM(COALESCE(mc_a.revenue, mc_c.revenue, 0))    AS revenue,
+                    SUM(COALESCE(mc_a.add_to_cart, mc_c.add_to_cart, 0)) AS add_to_cart,
+                    SUM(COALESCE(mc_a.clicks, mc_c.clicks, 0))      AS clicks
                 FROM (
-                    SELECT DISTINCT pt.domain, pt.version, lpal.campaign_id,
+                    SELECT pt.domain, pt.version, lpal.campaign_id, lpal.ad_set_id,
                         MIN(pt.metrics_from) AS metrics_from
                     FROM landing_page_ad_links lpal
                     JOIN page_tags pt ON pt.id = lpal.landing_page_id
-                    GROUP BY pt.domain, pt.version, lpal.campaign_id
+                    WHERE lpal.campaign_id IS NOT NULL
+                      AND (
+                        lpal.ad_set_id IS NOT NULL
+                        OR NOT EXISTS (
+                            SELECT 1 FROM landing_page_ad_links lpal2
+                            JOIN page_tags pt2 ON pt2.id = lpal2.landing_page_id
+                            WHERE lpal2.campaign_id = lpal.campaign_id
+                              AND lpal2.ad_set_id IS NOT NULL
+                              AND pt2.domain = pt.domain
+                              AND pt2.version = pt.version
+                        )
+                      )
+                    GROUP BY pt.domain, pt.version, lpal.campaign_id, lpal.ad_set_id
                 ) vc
-                JOIN mc_dedup mc ON mc.campaign_id = vc.campaign_id
-                  AND mc.date >= vc.metrics_from
+                LEFT JOIN mc_dedup mc_c ON mc_c.campaign_id = vc.campaign_id
+                    AND vc.ad_set_id IS NULL
+                    AND mc_c.date >= vc.metrics_from
+                LEFT JOIN mc_adset_dedup mc_a ON mc_a.campaign_id = vc.campaign_id
+                    AND mc_a.ad_set_id = vc.ad_set_id
+                    AND mc_a.date >= vc.metrics_from
                 GROUP BY vc.domain, vc.version
             ),
             clarity_metrics AS (
