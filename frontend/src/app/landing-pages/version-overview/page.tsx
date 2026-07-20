@@ -258,6 +258,8 @@ function PagesTable({ branch, selectedVersions, versionColors, allVersions, onVe
             <th className="text-left py-2 px-3 text-xs text-gray-400 font-normal">Ver.</th>
             <th className="text-left py-2 px-3 text-xs text-gray-400 font-normal">Slug</th>
             <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Sessions</th>
+            <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Purchases</th>
+            <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">CPP</th>
             <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Conv%</th>
             <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">ROAS</th>
             <th className="text-right py-2 px-3 text-xs text-gray-400 font-normal">Engage%</th>
@@ -283,6 +285,10 @@ function PagesTable({ branch, selectedVersions, versionColors, allVersions, onVe
                 {p.low_confidence && <AlertTriangle className="inline w-3 h-3 text-amber-400 ml-1" />}
               </td>
               <td className="py-2 px-3 text-right text-gray-700">{fmt(p.sessions)}</td>
+              <td className="py-2 px-3 text-right text-gray-700">{p.conversions > 0 ? p.conversions.toFixed(1) : '—'}</td>
+              <td className="py-2 px-3 text-right text-gray-700">
+                {p.conversions > 0 && p.spend > 0 ? fmt(Math.round(p.spend / p.conversions)) : '—'}
+              </td>
               <td className="py-2 px-3 text-right text-gray-700">{fmtRawPct(p.conv_rate_pct)}</td>
               <td className="py-2 px-3 text-right text-gray-700">{fmtROAS(p.roas)}</td>
               <td className="py-2 px-3 text-right text-gray-700">{fmtPct(p.engagement_rate)}</td>
