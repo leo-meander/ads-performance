@@ -6,7 +6,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer,
 } from 'recharts'
-import { ArrowLeft, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, Link2, X, Loader2 } from 'lucide-react'
 import { API_BASE } from '@/lib/api'
 
 type PageRow = {
@@ -239,6 +239,101 @@ function VerBadge({ pageId, ver, versionColors, allVersions, onChanged }: {
   )
 }
 
+type CampaignLink = {
+  link_id: string
+  platform: string
+  campaign_id: string | null
+  campaign_name: string | null
+  ad_set_id: string | null
+  ad_set_name: string | null
+  utm_campaign: string | null
+  last_seen_at: string | null
+}
+
+const PLATFORM_COLORS: Record<string, string> = {
+  meta: '#1877f2',
+  google: '#34a853',
+  tiktok: '#000000',
+}
+
+function CampaignLinksPopover({ pageId, slug }: { pageId: string; slug: string }) {
+  const [open, setOpen] = useState(false)
+  const [links, setLinks] = useState<CampaignLink[] | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  function toggle() {
+    setOpen(o => !o)
+    if (!links && !loading) {
+      setLoading(true)
+      fetch(`${API_BASE}/api/landing-pages/${pageId}/campaigns`, { credentials: 'include' })
+        .then(r => r.json())
+        .then(res => setLinks(res.success ? res.data.items : []))
+        .catch(() => setLinks([]))
+        .finally(() => setLoading(false))
+    }
+  }
+
+  return (
+    <div className="relative inline-block">
+      <button
+        onClick={toggle}
+        title="View linked campaigns"
+        className="text-gray-400 hover:text-blue-500 transition-colors align-middle"
+      >
+        <Link2 className="w-3.5 h-3.5" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-xl w-[340px]">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100">
+              <span className="text-xs font-medium text-gray-700">Linked campaigns · {slug || '(root)'}</span>
+              <button onClick={() => setOpen(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              {loading && (
+                <div className="flex items-center justify-center py-6 text-gray-400 gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span className="text-xs">Loading…</span>
+                </div>
+              )}
+              {!loading && links?.length === 0 && (
+                <p className="text-xs text-gray-400 px-3 py-4">No campaigns linked.</p>
+              )}
+              {!loading && links && links.length > 0 && (
+                <ul className="divide-y divide-gray-50">
+                  {links.map(lk => (
+                    <li key={lk.link_id} className="px-3 py-2.5">
+                      <div className="flex items-start gap-2">
+                        <span
+                          className="mt-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded text-white flex-shrink-0"
+                          style={{ backgroundColor: PLATFORM_COLORS[lk.platform] ?? '#888' }}
+                        >
+                          {lk.platform.toUpperCase()}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-xs text-gray-800 truncate leading-snug">
+                            {lk.campaign_name ?? lk.utm_campaign ?? '(unnamed campaign)'}
+                          </p>
+                          {lk.ad_set_name && (
+                            <p className="text-[11px] text-gray-400 truncate mt-0.5">↳ {lk.ad_set_name}</p>
+                          )}
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 function PagesTable({ branch, selectedVersions, versionColors, allVersions, onVerChanged }: {
   branch: BranchData
   selectedVersions: string[]
@@ -280,9 +375,12 @@ function PagesTable({ branch, selectedVersions, versionColors, allVersions, onVe
                   onChanged={onVerChanged}
                 />
               </td>
-              <td className="py-2 px-3 max-w-[180px] truncate text-gray-700" title={p.slug}>
-                {p.slug || '(root)'}
-                {p.low_confidence && <AlertTriangle className="inline w-3 h-3 text-amber-400 ml-1" />}
+              <td className="py-2 px-3 text-gray-700">
+                <div className="flex items-center gap-1.5 max-w-[200px]">
+                  <span className="truncate" title={p.slug}>{p.slug || '(root)'}</span>
+                  {p.low_confidence && <AlertTriangle className="w-3 h-3 text-amber-400 flex-shrink-0" />}
+                  <CampaignLinksPopover pageId={p.page_id} slug={p.slug} />
+                </div>
               </td>
               <td className="py-2 px-3 text-right text-gray-700">{fmt(p.sessions)}</td>
               <td className="py-2 px-3 text-right text-gray-700">{p.conversions > 0 ? p.conversions.toFixed(1) : '—'}</td>
