@@ -485,7 +485,7 @@ def get_page_campaigns(
                     lal.id            AS link_id,
                     lal.platform,
                     lal.campaign_id,
-                    c.campaign_name,
+                    c.name            AS campaign_name,
                     lal.ad_set_id,
                     ads.name          AS ad_set_name,
                     lal.destination_url,
