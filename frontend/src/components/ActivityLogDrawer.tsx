@@ -16,8 +16,13 @@ import {
   ChevronRight,
   X,
   Clock,
+  Plus,
 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
+import ManualEntryModal from '@/components/dashboard/activity/ManualEntryModal'
+
+type Branch = { name: string; currency: string }
+type CountryOption = { code: string; name: string; adset_count?: number }
 
 type ChangeLogItem = {
   id: string
@@ -203,6 +208,11 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
   const [loading, setLoading] = useState(false)
   const [total, setTotal] = useState(0)
   const backdropRef = useRef<HTMLDivElement>(null)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [branches, setBranches] = useState<Branch[]>([])
+  const [countries, setCountries] = useState<CountryOption[]>([])
+  const [categoryFilter, setCategoryFilter] = useState<string[]>([])
 
   const dateFrom = useCustom && customFrom ? customFrom : toDateStr(addDays(today, -(preset - 1)))
   const dateTo   = useCustom && customTo   ? customTo   : toDateStr(today)
@@ -210,7 +220,9 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
   useEffect(() => {
     if (!open) return
     setLoading(true)
-    apiFetch<{ items: ChangeLogItem[]; total: number }>(`/api/dashboard/country/changelog?date_from=${dateFrom}&date_to=${dateTo}&limit=200`)
+    const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo, limit: '200' })
+    categoryFilter.forEach((c) => params.append('category', c))
+    apiFetch<{ items: ChangeLogItem[]; total: number }>(`/api/dashboard/country/changelog?${params}`)
       .then((res) => {
         if (res.success && res.data) {
           setItems(res.data.items)
@@ -218,7 +230,17 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
         }
       })
       .finally(() => setLoading(false))
-  }, [open, dateFrom, dateTo])
+  }, [open, dateFrom, dateTo, refreshKey, categoryFilter])
+
+  useEffect(() => {
+    if (!open) return
+    if (branches.length === 0) {
+      apiFetch<Branch[]>('/api/branches').then((r) => { if (r.success && r.data) setBranches(r.data) }).catch(() => {})
+    }
+    if (countries.length === 0) {
+      apiFetch<CountryOption[]>('/api/dashboard/country/countries').then((r) => { if (r.success && r.data) setCountries(r.data) }).catch(() => {})
+    }
+  }, [open])
 
   const groups = groupByDay(items)
 
@@ -249,9 +271,44 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
               <span className="text-xs text-gray-400">{total} entries</span>
             )}
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setModalOpen(true)}
+              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add entry
+            </button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Category chips */}
+        <div className="px-4 pt-2.5 pb-2 border-b border-gray-100 shrink-0 flex flex-wrap gap-1.5">
+          {Object.entries(CATEGORY_META).map(([key, m]) => {
+            const active = categoryFilter.includes(key)
+            return (
+              <button
+                key={key}
+                onClick={() => setCategoryFilter((prev) =>
+                  prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]
+                )}
+                className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                  active ? `${m.color} border-current` : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                {m.icon}
+                {m.label}
+              </button>
+            )
+          })}
+          {categoryFilter.length > 0 && (
+            <button onClick={() => setCategoryFilter([])} className="text-[11px] text-gray-400 underline ml-0.5">
+              Clear
+            </button>
+          )}
         </div>
 
         {/* Date filter */}
@@ -311,6 +368,21 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
           )}
         </div>
       </div>
+
+      {modalOpen && (
+        <ManualEntryModal
+          open={modalOpen}
+          onClose={() => setModalOpen(false)}
+          onCreated={() => {
+            setRefreshKey((k) => k + 1)
+            setModalOpen(false)
+          }}
+          defaultCountry={null}
+          defaultBranch={null}
+          branches={branches}
+          countries={countries}
+        />
+      )}
     </div>
   )
 }
