@@ -468,6 +468,57 @@ def version_overview(
         return _api(error=str(e))
 
 
+# ────────────────────────── campaign links ──────────────────────────────────
+
+
+@router.get("/landing-pages/{page_id}/campaigns")
+def get_page_campaigns(
+    page_id: str,
+    current_user: User = Depends(require_section("landing_pages", "view")),
+    db: Session = Depends(get_db),
+):
+    """Return campaigns linked to a landing page via landing_page_ad_links."""
+    try:
+        rows = db.execute(
+            text("""
+                SELECT
+                    lal.id            AS link_id,
+                    lal.platform,
+                    lal.campaign_id,
+                    c.campaign_name,
+                    lal.ad_set_id,
+                    ads.name          AS ad_set_name,
+                    lal.destination_url,
+                    lal.utm_campaign,
+                    lal.last_seen_at
+                FROM landing_page_ad_links lal
+                LEFT JOIN campaigns c ON c.id = lal.campaign_id
+                LEFT JOIN ad_sets ads  ON ads.id = lal.ad_set_id
+                WHERE lal.landing_page_id = :page_id
+                ORDER BY lal.last_seen_at DESC
+            """),
+            {"page_id": page_id},
+        ).fetchall()
+
+        items = [
+            {
+                "link_id": str(r["link_id"]),
+                "platform": r["platform"],
+                "campaign_id": str(r["campaign_id"]) if r["campaign_id"] else None,
+                "campaign_name": r["campaign_name"],
+                "ad_set_id": str(r["ad_set_id"]) if r["ad_set_id"] else None,
+                "ad_set_name": r["ad_set_name"],
+                "destination_url": r["destination_url"],
+                "utm_campaign": r["utm_campaign"],
+                "last_seen_at": r["last_seen_at"].isoformat() if r["last_seen_at"] else None,
+            }
+            for r in rows
+        ]
+        return _api({"items": items, "total": len(items)})
+    except Exception as e:
+        return _api(error=str(e))
+
+
 # ────────────────────────── list + CRUD ─────────────────────────────────────
 
 
