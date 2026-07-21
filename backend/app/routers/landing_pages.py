@@ -498,7 +498,7 @@ def get_page_campaigns(
                 ORDER BY lal.last_seen_at DESC
             """),
             {"page_id": page_id},
-        ).fetchall()
+        ).mappings().all()
 
         items = [
             {
