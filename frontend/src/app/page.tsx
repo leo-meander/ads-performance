@@ -15,8 +15,6 @@ import BranchPie, { BranchBreakdownRow } from '@/components/dashboard/BranchPie'
 import CountryComparisonTable, { CountryKpi } from '@/components/dashboard/CountryComparisonTable'
 import TaBreakdownTable, { TaRow } from '@/components/dashboard/TaBreakdownTable'
 import CampaignBreakdownTable, { CampaignRow } from '@/components/dashboard/CampaignBreakdownTable'
-import ActivityLogPanel from '@/components/dashboard/activity/ActivityLogPanel'
-import ManualEntryModal from '@/components/dashboard/activity/ManualEntryModal'
 import { TrendRow } from '@/components/dashboard/MetricTrendChart'
 import BranchComparisonChart from '@/components/dashboard/BranchComparisonChart'
 
@@ -74,9 +72,6 @@ function DashboardInner() {
   const [taData, setTaData] = useState<TaRow[]>([])
   const [campaignRows, setCampaignRows] = useState<CampaignRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [canEditAnalytics, setCanEditAnalytics] = useState(false)
-  const [manualModalOpen, setManualModalOpen] = useState(false)
-  const [activityRefreshKey, setActivityRefreshKey] = useState(0)
 
   // -------------------- derived --------------------
   const activeCurrency = useMemo(() => {
@@ -120,17 +115,6 @@ function DashboardInner() {
       .catch(() => {})
   }, [])
 
-  // Check whether the current user can add manual activity-log entries.
-  useEffect(() => {
-    apiFetch<{ is_admin: boolean; permissions?: Array<{ section: string; level: string }> }>('/api/auth/me')
-      .then((res) => {
-        if (!res.success || !res.data) return
-        if (res.data.is_admin) { setCanEditAnalytics(true); return }
-        const hasEdit = (res.data.permissions || []).some(p => p.section === 'analytics' && p.level === 'edit')
-        setCanEditAnalytics(hasEdit)
-      })
-      .catch(() => {})
-  }, [])
 
   // Countries list — refetch when branch scope changes (admin sees all by default).
   useEffect(() => {
@@ -632,24 +616,6 @@ function DashboardInner() {
         </div>
       )}
 
-      {/* Metric trends + activity log (combined) — tick any metrics to overlay
-          their lines, with change-markers showing what changed each day so the
-          user can correlate spend/ROAS swings to specific actions. */}
-      <div className="mb-6">
-        <ActivityLogPanel
-          country={country}
-          branches={branchParam}
-          platform={platform}
-          dateFrom={resolvedRange.from}
-          dateTo={resolvedRange.to}
-          canEdit={canEditAnalytics}
-          onAddManual={() => setManualModalOpen(true)}
-          refreshKey={activityRefreshKey}
-          trend={daily}
-          prevTrend={prevDaily}
-          currency={responseCurrency}
-        />
-      </div>
 
       {/* AI funnel recommendations — deep-links back into this page with filters set */}
       <FunnelRecommendations
@@ -665,20 +631,7 @@ function DashboardInner() {
         </div>
       )}
 
-      {manualModalOpen && (
-        <ManualEntryModal
-          open={manualModalOpen}
-          onClose={() => setManualModalOpen(false)}
-          onCreated={() => {
-            setActivityRefreshKey(k => k + 1)
-            setManualModalOpen(false)
-          }}
-          defaultCountry={country || null}
-          defaultBranch={selectedBranches.length === 1 ? selectedBranches[0] : null}
-          branches={branches}
-          countries={countries}
-        />
-      )}
+
     </div>
   )
 }
