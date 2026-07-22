@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -260,8 +260,14 @@ function CampaignLinksPopover({ pageId, slug }: { pageId: string; slug: string }
   const [open, setOpen] = useState(false)
   const [links, setLinks] = useState<CampaignLink[] | null>(null)
   const [loading, setLoading] = useState(false)
+  const [openUp, setOpenUp] = useState(false)
+  const btnRef = useRef<HTMLButtonElement>(null)
 
   function toggle() {
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setOpenUp(rect.bottom + 280 > window.innerHeight)
+    }
     setOpen(o => !o)
     if (!links && !loading) {
       setLoading(true)
@@ -276,6 +282,7 @@ function CampaignLinksPopover({ pageId, slug }: { pageId: string; slug: string }
   return (
     <div className="relative inline-block">
       <button
+        ref={btnRef}
         onClick={toggle}
         title="View linked campaigns"
         className="text-gray-400 hover:text-blue-500 transition-colors align-middle"
@@ -285,7 +292,7 @@ function CampaignLinksPopover({ pageId, slug }: { pageId: string; slug: string }
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full mt-1 z-20 bg-white border border-gray-200 rounded-lg shadow-xl w-[340px]">
+          <div className={`absolute left-0 z-20 bg-white border border-gray-200 rounded-lg shadow-xl w-[340px] ${openUp ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
             <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100">
               <span className="text-xs font-medium text-gray-700">Linked campaigns · {slug || '(root)'}</span>
               <button onClick={() => setOpen(false)} className="text-gray-400 hover:text-gray-600">
