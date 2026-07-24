@@ -317,6 +317,60 @@ export default function ActionNeededPage() {
 
   const funnelMax = displayFunnel.length > 0 ? Math.max(...displayFunnel.map((s) => s.value), 1) : 1
 
+  // Funnel view mode: single aggregate | per-branch table | per-campaign table
+  const [funnelView, setFunnelView] = useState<'single' | 'by-branch' | 'by-campaign'>('single')
+  const [branchFunnels, setBranchFunnels] = useState<Record<string, FunnelStep[]>>({})
+  const [branchFunnelLoading, setBranchFunnelLoading] = useState(false)
+  const [campaignFunnelTable, setCampaignFunnelTable] = useState<Record<string, FunnelStep[]>>({})
+  const [campaignFunnelTableLoading, setCampaignFunnelTableLoading] = useState(false)
+
+  useEffect(() => {
+    if (funnelView !== 'by-branch') { setBranchFunnels({}); return }
+    const targetBranches = selectedBranches.length > 0 ? selectedBranches : branches.map((b) => b.name)
+    if (targetBranches.length === 0) return
+    let cancelled = false
+    setBranchFunnelLoading(true)
+    const baseQs = buildQs()
+    const campaignIdParam = campaignSearch.trim() && filteredRows.length > 0
+      ? filteredRows.map((r) => r.campaign_id).join(',')
+      : null
+    Promise.all(
+      targetBranches.map(async (branchName) => {
+        const params = new URLSearchParams(baseQs)
+        params.set('branches', branchName)
+        if (campaignIdParam) params.set('campaign_ids', campaignIdParam)
+        const res = await apiFetch<FunnelResponse>(`/api/dashboard/funnel?${params}`)
+        return [branchName, res.success && res.data ? res.data.steps || [] : []] as [string, FunnelStep[]]
+      }),
+    )
+      .then((results) => { if (!cancelled) setBranchFunnels(Object.fromEntries(results)) })
+      .catch(() => { if (!cancelled) setBranchFunnels({}) })
+      .finally(() => { if (!cancelled) setBranchFunnelLoading(false) })
+    return () => { cancelled = true }
+  }, [funnelView, buildQs, selectedBranches, branches, campaignSearch, filteredRows])
+
+  useEffect(() => {
+    if (funnelView !== 'by-campaign') { setCampaignFunnelTable({}); return }
+    // Limit to top 10 by spend to avoid too many columns
+    const targets = [...filteredRows].sort((a, b) => b.spend - a.spend).slice(0, 10)
+    if (targets.length === 0) return
+    let cancelled = false
+    setCampaignFunnelTableLoading(true)
+    const baseQs = buildQs()
+    Promise.all(
+      targets.map(async (row) => {
+        const params = new URLSearchParams(baseQs)
+        params.set('campaign_ids', row.campaign_id)
+        const res = await apiFetch<FunnelResponse>(`/api/dashboard/funnel?${params}`)
+        return [row.campaign_name, res.success && res.data ? res.data.steps || [] : []] as [string, FunnelStep[]]
+      }),
+    )
+      .then((results) => { if (!cancelled) setCampaignFunnelTable(Object.fromEntries(results)) })
+      .catch(() => { if (!cancelled) setCampaignFunnelTable({}) })
+      .finally(() => { if (!cancelled) setCampaignFunnelTableLoading(false) })
+    return () => { cancelled = true }
+  }, [funnelView, buildQs, filteredRows])
+
   // SURF modal state — open per (campaign, action). raise_budget / cut_budget
   // routes through the modal so the user can fine-tune per-branch caps before
   // Apply. pause_campaign keeps the direct window.confirm() path because there's
@@ -600,112 +654,257 @@ export default function ActionNeededPage() {
                     </span>
                   )}
                 </div>
-                {/* Comparison mode tabs */}
-                <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
-                  <button
-                    onClick={() => setComparisonMode('prev')}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                      comparisonMode === 'prev' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    vs Last Period
-                  </button>
-                  <button
-                    onClick={() => setComparisonMode('benchmark')}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                      comparisonMode === 'benchmark' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    {benchmarkLoading ? '…' : 'vs 90-day Avg'}
-                  </button>
+                <div className="flex items-center gap-2">
+                  {/* Comparison mode tabs — only in single view */}
+                  {funnelView === 'single' && (
+                    <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
+                      <button
+                        onClick={() => setComparisonMode('prev')}
+                        className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                          comparisonMode === 'prev' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                      >
+                        vs Last Period
+                      </button>
+                      <button
+                        onClick={() => setComparisonMode('benchmark')}
+                        className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                          comparisonMode === 'benchmark' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                      >
+                        {benchmarkLoading ? '…' : 'vs 90-day Avg'}
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
+                    {(['single', 'by-branch', 'by-campaign'] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() => setFunnelView(mode)}
+                        className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                          funnelView === mode ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                      >
+                        {mode === 'single'
+                          ? 'Aggregate'
+                          : mode === 'by-branch'
+                          ? branchFunnelLoading ? '…' : 'By Branch'
+                          : campaignFunnelTableLoading ? '…' : 'By Campaign'}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
               <p className="text-[11px] text-gray-400 mb-4">
-                Impression → Click → Search → Add to cart → Checkout → Booking · drop-off shown between steps
-                {comparisonMode === 'benchmark' && (
+                {funnelView === 'by-branch'
+                  ? `Per-branch funnel · ${selectedBranches.length > 0 ? selectedBranches.join(', ') : 'all branches'} · worst drop-off highlighted red`
+                  : funnelView === 'by-campaign'
+                  ? `Per-campaign funnel · top ${Math.min(filteredRows.length, 10)} campaigns by spend · worst drop-off highlighted red`
+                  : 'Impression → Click → Search → Add to cart → Checkout → Booking · drop-off shown between steps'}
+                {funnelView === 'single' && comparisonMode === 'benchmark' && (
                   <span className="ml-2 text-blue-500">
                     · comparing to 90-day average{selectedBranches.length === 1 ? ` for ${selectedBranches[0]}` : selectedBranches.length > 1 ? ' for selected branches' : ' across all branches'}
                   </span>
                 )}
               </p>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Funnel bars */}
-                <div className="space-y-2">
-                  {displayFunnel.map((s, i) => {
-                    const width = Math.max((s.value / funnelMax) * 100, 6)
-                    const isLeak = funnelDiag?.stepKey === s.key
-                    // Benchmark delta: current drop_off minus benchmark drop_off
-                    const bmStep = benchmarkFunnel.find((b) => b.key === s.key)
-                    const bmDelta = comparisonMode === 'benchmark' && s.drop_off != null && bmStep?.drop_off != null
-                      ? s.drop_off - bmStep.drop_off
-                      : null
-                    return (
-                      <div key={s.key}>
-                        {i > 0 && (
-                          <div className="flex items-center gap-2 ml-3 mb-1">
-                            <span className="text-[11px] text-gray-400">
-                              {s.drop_off != null ? `${(s.drop_off * 100).toFixed(1)}% drop-off` : '—'}
-                            </span>
-                            {comparisonMode === 'prev' ? (
-                              <ChangeTag change={s.drop_off_change} inverseColor />
-                            ) : bmDelta != null ? (
-                              <span className={`text-[11px] font-medium ${bmDelta > 0.005 ? 'text-red-500' : bmDelta < -0.005 ? 'text-emerald-600' : 'text-gray-400'}`}>
-                                {bmDelta > 0 ? '+' : ''}{(bmDelta * 100).toFixed(1)}pp vs avg
+              {funnelView === 'by-branch' ? (
+                /* Branch comparison table */
+                branchFunnelLoading ? (
+                  <p className="text-sm text-gray-400 py-6 text-center">Loading per-branch funnel…</p>
+                ) : Object.keys(branchFunnels).length === 0 ? (
+                  <p className="text-sm text-gray-400 py-6 text-center">No data.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm border-separate border-spacing-0">
+                      <thead>
+                        <tr>
+                          <th className="text-left text-[11px] text-gray-400 uppercase tracking-wide pb-3 pr-6 w-32 font-medium">Step</th>
+                          {Object.keys(branchFunnels).map((branch) => (
+                            <th key={branch} className="text-left text-xs font-semibold text-gray-700 pb-3 px-3 whitespace-nowrap">{branch}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {displayFunnel.map((step, i) => {
+                          const dropOffs = Object.values(branchFunnels)
+                            .map((steps) => steps.find((s) => s.key === step.key)?.drop_off)
+                            .filter((v): v is number => v != null)
+                          const maxDropOff = dropOffs.length > 0 ? Math.max(...dropOffs) : 0
+                          const minDropOff = dropOffs.length > 0 ? Math.min(...dropOffs) : 0
+                          return (
+                            <tr key={step.key} className={i % 2 === 0 ? 'bg-gray-50/50' : ''}>
+                              <td className="py-3 pr-6 align-top">
+                                {i > 0 && <div className="text-[10px] text-gray-400 mb-0.5">↓</div>}
+                                <span className="text-xs font-medium text-gray-700">{step.label}</span>
+                              </td>
+                              {Object.entries(branchFunnels).map(([branch, steps]) => {
+                                const s = steps.find((st) => st.key === step.key)
+                                const isWorst = i > 0 && s?.drop_off != null && dropOffs.length > 1 && s.drop_off === maxDropOff && maxDropOff > minDropOff
+                                const isBest = i > 0 && s?.drop_off != null && dropOffs.length > 1 && s.drop_off === minDropOff && maxDropOff > minDropOff
+                                return (
+                                  <td key={branch} className={`py-3 px-3 align-top rounded ${isWorst ? 'bg-red-50' : isBest ? 'bg-emerald-50' : ''}`}>
+                                    <div className="text-sm font-bold text-gray-900">{s ? fmtNum(s.value) : '—'}</div>
+                                    {i > 0 && s?.drop_off != null && (
+                                      <div className={`text-[11px] font-semibold mt-0.5 ${
+                                        isWorst ? 'text-red-600' : isBest ? 'text-emerald-600' : 'text-gray-500'
+                                      }`}>
+                                        {(s.drop_off * 100).toFixed(1)}% drop
+                                        {isWorst && <span className="ml-1">⚠</span>}
+                                        {isBest && <span className="ml-1">✓</span>}
+                                      </div>
+                                    )}
+                                    {s?.change != null && (
+                                      <div className="mt-0.5"><ChangeTag change={s.change} /></div>
+                                    )}
+                                  </td>
+                                )
+                              })}
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              ) : funnelView === 'by-campaign' ? (
+                /* Campaign comparison table */
+                campaignFunnelTableLoading ? (
+                  <p className="text-sm text-gray-400 py-6 text-center">Loading per-campaign funnel…</p>
+                ) : Object.keys(campaignFunnelTable).length === 0 ? (
+                  <p className="text-sm text-gray-400 py-6 text-center">No campaign data — run a sync or adjust filters.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm border-separate border-spacing-0">
+                      <thead>
+                        <tr>
+                          <th className="text-left text-[11px] text-gray-400 uppercase tracking-wide pb-3 pr-6 w-32 font-medium">Step</th>
+                          {Object.keys(campaignFunnelTable).map((name) => (
+                            <th key={name} className="text-left text-[11px] font-semibold text-gray-700 pb-3 px-3 whitespace-nowrap max-w-[160px]" title={name}>
+                              <span className="block truncate max-w-[160px]">{name}</span>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {displayFunnel.map((step, i) => {
+                          const dropOffs = Object.values(campaignFunnelTable)
+                            .map((steps) => steps.find((s) => s.key === step.key)?.drop_off)
+                            .filter((v): v is number => v != null)
+                          const maxDropOff = dropOffs.length > 0 ? Math.max(...dropOffs) : 0
+                          const minDropOff = dropOffs.length > 0 ? Math.min(...dropOffs) : 0
+                          return (
+                            <tr key={step.key} className={i % 2 === 0 ? 'bg-gray-50/50' : ''}>
+                              <td className="py-3 pr-6 align-top">
+                                {i > 0 && <div className="text-[10px] text-gray-400 mb-0.5">↓</div>}
+                                <span className="text-xs font-medium text-gray-700">{step.label}</span>
+                              </td>
+                              {Object.entries(campaignFunnelTable).map(([name, steps]) => {
+                                const s = steps.find((st) => st.key === step.key)
+                                const isWorst = i > 0 && s?.drop_off != null && dropOffs.length > 1 && s.drop_off === maxDropOff && maxDropOff > minDropOff
+                                const isBest = i > 0 && s?.drop_off != null && dropOffs.length > 1 && s.drop_off === minDropOff && maxDropOff > minDropOff
+                                return (
+                                  <td key={name} className={`py-3 px-3 align-top rounded ${isWorst ? 'bg-red-50' : isBest ? 'bg-emerald-50' : ''}`}>
+                                    <div className="text-sm font-bold text-gray-900">{s ? fmtNum(s.value) : '—'}</div>
+                                    {i > 0 && s?.drop_off != null && (
+                                      <div className={`text-[11px] font-semibold mt-0.5 ${
+                                        isWorst ? 'text-red-600' : isBest ? 'text-emerald-600' : 'text-gray-500'
+                                      }`}>
+                                        {(s.drop_off * 100).toFixed(1)}% drop
+                                        {isWorst && <span className="ml-1">⚠</span>}
+                                        {isBest && <span className="ml-1">✓</span>}
+                                      </div>
+                                    )}
+                                    {s?.change != null && (
+                                      <div className="mt-0.5"><ChangeTag change={s.change} /></div>
+                                    )}
+                                  </td>
+                                )
+                              })}
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Funnel bars */}
+                  <div className="space-y-2">
+                    {displayFunnel.map((s, i) => {
+                      const width = Math.max((s.value / funnelMax) * 100, 6)
+                      const isLeak = funnelDiag?.stepKey === s.key
+                      const bmStep = benchmarkFunnel.find((b) => b.key === s.key)
+                      const bmDelta = comparisonMode === 'benchmark' && s.drop_off != null && bmStep?.drop_off != null
+                        ? s.drop_off - bmStep.drop_off
+                        : null
+                      return (
+                        <div key={s.key}>
+                          {i > 0 && (
+                            <div className="flex items-center gap-2 ml-3 mb-1">
+                              <span className="text-[11px] text-gray-400">
+                                {s.drop_off != null ? `${(s.drop_off * 100).toFixed(1)}% drop-off` : '—'}
                               </span>
-                            ) : benchmarkLoading ? (
-                              <span className="text-[11px] text-gray-300">loading…</span>
-                            ) : null}
-                            {isLeak && (
-                              <span className="text-[10px] font-semibold text-red-600 bg-red-50 px-1.5 py-0.5 rounded">worst leak</span>
+                              {comparisonMode === 'prev' ? (
+                                <ChangeTag change={s.drop_off_change} inverseColor />
+                              ) : bmDelta != null ? (
+                                <span className={`text-[11px] font-medium ${bmDelta > 0.005 ? 'text-red-500' : bmDelta < -0.005 ? 'text-emerald-600' : 'text-gray-400'}`}>
+                                  {bmDelta > 0 ? '+' : ''}{(bmDelta * 100).toFixed(1)}pp vs avg
+                                </span>
+                              ) : benchmarkLoading ? (
+                                <span className="text-[11px] text-gray-300">loading…</span>
+                              ) : null}
+                              {isLeak && (
+                                <span className="text-[10px] font-semibold text-red-600 bg-red-50 px-1.5 py-0.5 rounded">worst leak</span>
+                              )}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-3">
+                            <div
+                              className={`rounded-lg py-2 px-3 flex items-center justify-between transition-all ${isLeak ? 'bg-red-100 ring-2 ring-inset ring-red-300' : 'bg-blue-50'}`}
+                              style={{ width: `${width}%`, minWidth: '150px' }}
+                            >
+                              <span className="text-xs text-gray-600">{s.label}</span>
+                              <span className="text-sm font-bold text-gray-900 ml-2">{fmtNum(s.value)}</span>
+                            </div>
+                            <ChangeTag change={s.change} />
+                            {comparisonMode === 'benchmark' && bmStep?.drop_off != null && i > 0 && (
+                              <span className="text-[10px] text-gray-400 whitespace-nowrap">
+                                avg drop: {(bmStep.drop_off * 100).toFixed(1)}%
+                              </span>
                             )}
                           </div>
-                        )}
-                        <div className="flex items-center gap-3">
-                          <div
-                            className={`rounded-lg py-2 px-3 flex items-center justify-between transition-all ${isLeak ? 'bg-red-100 ring-2 ring-inset ring-red-300' : 'bg-blue-50'}`}
-                            style={{ width: `${width}%`, minWidth: '150px' }}
-                          >
-                            <span className="text-xs text-gray-600">{s.label}</span>
-                            <span className="text-sm font-bold text-gray-900 ml-2">{fmtNum(s.value)}</span>
-                          </div>
-                          <ChangeTag change={s.change} />
-                          {/* Benchmark reference rate */}
-                          {comparisonMode === 'benchmark' && bmStep?.drop_off != null && i > 0 && (
-                            <span className="text-[10px] text-gray-400 whitespace-nowrap">
-                              avg drop: {(bmStep.drop_off * 100).toFixed(1)}%
-                            </span>
-                          )}
                         </div>
-                      </div>
-                    )
-                  })}
-                </div>
+                      )
+                    })}
+                  </div>
 
-                {/* Diagnosis + fixes */}
-                <div className="flex flex-col justify-center">
-                  {funnelDiag ? (
-                    <div className={`rounded-lg border p-4 ${SEVERITY_STYLES[funnelDiag.severity]}`}>
-                      <div className="flex items-center gap-2 mb-2">
-                        <AlertTriangle className="w-4 h-4" />
-                        <span className="text-sm font-semibold">{funnelDiag.transition}</span>
+                  {/* Diagnosis + fixes */}
+                  <div className="flex flex-col justify-center">
+                    {funnelDiag ? (
+                      <div className={`rounded-lg border p-4 ${SEVERITY_STYLES[funnelDiag.severity]}`}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <AlertTriangle className="w-4 h-4" />
+                          <span className="text-sm font-semibold">{funnelDiag.transition}</span>
+                        </div>
+                        <p className="text-xs text-gray-700 mb-3">{funnelDiag.reason}</p>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1">How to fix</p>
+                        <ul className="space-y-1">
+                          {funnelDiag.fixes.map((f, idx) => (
+                            <li key={idx} className="text-xs text-gray-700 flex gap-1.5">
+                              <span className="text-blue-500">→</span>
+                              <span>{f}</span>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
-                      <p className="text-xs text-gray-700 mb-3">{funnelDiag.reason}</p>
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1">How to fix</p>
-                      <ul className="space-y-1">
-                        {funnelDiag.fixes.map((f, idx) => (
-                          <li key={idx} className="text-xs text-gray-700 flex gap-1.5">
-                            <span className="text-blue-500">→</span>
-                            <span>{f}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-gray-400">Funnel looks healthy — no single step is leaking notably.</p>
-                  )}
+                    ) : (
+                      <p className="text-sm text-gray-400">Funnel looks healthy — no single step is leaking notably.</p>
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
