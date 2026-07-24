@@ -9,6 +9,8 @@ import {
   Activity,
   ArrowRight,
   Filter as FilterIcon,
+  Search,
+  X,
 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import {
@@ -138,6 +140,7 @@ export default function ActionNeededPage() {
   const [customTo, setCustomTo] = useState('')
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
   const [campaignType, setCampaignType] = useState<'all' | 'sale' | 'lead'>('all')
+  const [campaignSearch, setCampaignSearch] = useState('')
 
   // data
   const [rows, setRows] = useState<CampaignRow[]>([])
@@ -151,6 +154,8 @@ export default function ActionNeededPage() {
   const [comparisonMode, setComparisonMode] = useState<'prev' | 'benchmark'>('prev')
   const [benchmarkFunnel, setBenchmarkFunnel] = useState<FunnelStep[]>([])
   const [benchmarkLoading, setBenchmarkLoading] = useState(false)
+  const [campaignFunnel, setCampaignFunnel] = useState<FunnelStep[]>([])
+  const [campaignFunnelLoading, setCampaignFunnelLoading] = useState(false)
   // Per-campaign apply/mark-done status, keyed by campaign_id.
   const [actionState, setActionState] = useState<
     Record<string, { status: 'loading' | 'done' | 'error'; msg?: string; tail?: string }>
@@ -238,6 +243,27 @@ export default function ActionNeededPage() {
     return () => { cancelled = true }
   }, [comparisonMode, branchParam, platform, campaignType])
 
+  // Fetch funnel scoped to filtered campaigns when campaign search is active
+  useEffect(() => {
+    if (!campaignSearch.trim() || filteredRows.length === 0) {
+      setCampaignFunnel([])
+      return
+    }
+    let cancelled = false
+    setCampaignFunnelLoading(true)
+    const ids = filteredRows.map((r) => r.campaign_id).join(',')
+    const params = new URLSearchParams(buildQs())
+    params.set('campaign_ids', ids)
+    apiFetch<FunnelResponse>(`/api/dashboard/funnel?${params}`)
+      .then((res) => {
+        if (cancelled) return
+        setCampaignFunnel(res.success && res.data ? res.data.steps || [] : [])
+      })
+      .catch(() => { if (!cancelled) setCampaignFunnel([]) })
+      .finally(() => { if (!cancelled) setCampaignFunnelLoading(false) })
+    return () => { cancelled = true }
+  }, [campaignSearch, filteredRows, buildQs])
+
   // close branch dropdown on outside click
   const branchRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -254,25 +280,42 @@ export default function ActionNeededPage() {
   // --- analysis ---
   const money = useCallback((n: number) => fmtMoney(n, currency), [currency])
   const insights = useMemo(() => buildInsights(rows, changelog, money), [rows, changelog, money])
-  const funnelDiag = useMemo(() => diagnoseConversionFunnel(funnel), [funnel])
-  const nextActions = useMemo(() => buildNextActions(insights, funnelDiag), [insights, funnelDiag])
+  const displayFunnel = useMemo(
+    () => (campaignSearch.trim() && campaignFunnel.length > 0 ? campaignFunnel : funnel),
+    [campaignSearch, campaignFunnel, funnel],
+  )
+  const funnelDiag = useMemo(() => diagnoseConversionFunnel(displayFunnel), [displayFunnel])
+
+  const filteredInsights = useMemo(() => {
+    if (!campaignSearch.trim()) return insights
+    const q = campaignSearch.toLowerCase()
+    return insights.filter((i) => i.row.campaign_name.toLowerCase().includes(q))
+  }, [insights, campaignSearch])
+
+  const filteredRows = useMemo(() => {
+    if (!campaignSearch.trim()) return rows
+    const q = campaignSearch.toLowerCase()
+    return rows.filter((r) => r.campaign_name.toLowerCase().includes(q))
+  }, [rows, campaignSearch])
+
+  const nextActions = useMemo(() => buildNextActions(filteredInsights, funnelDiag), [filteredInsights, funnelDiag])
 
   const winners = useMemo(
     () =>
-      insights
+      filteredInsights
         .filter((i) => i.verdict === 'winner' && i.row.spend > 0)
         .sort((a, b) => b.row.roas - a.row.roas),
-    [insights],
+    [filteredInsights],
   )
   const losers = useMemo(
     () =>
-      insights
+      filteredInsights
         .filter((i) => i.verdict !== 'winner' && i.spendShare >= MIN_SPEND_SHARE)
         .sort((a, b) => b.bleed - a.bleed || b.row.spend - a.row.spend),
-    [insights],
+    [filteredInsights],
   )
 
-  const funnelMax = funnel.length > 0 ? Math.max(...funnel.map((s) => s.value), 1) : 1
+  const funnelMax = displayFunnel.length > 0 ? Math.max(...displayFunnel.map((s) => s.value), 1) : 1
 
   // SURF modal state — open per (campaign, action). raise_budget / cut_budget
   // routes through the modal so the user can fine-tune per-branch caps before
@@ -458,6 +501,24 @@ export default function ActionNeededPage() {
               </div>
             )}
           </div>
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Filter campaigns…"
+              value={campaignSearch}
+              onChange={(e) => setCampaignSearch(e.target.value)}
+              className="pl-8 pr-7 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-48"
+            />
+            {campaignSearch && (
+              <button
+                onClick={() => setCampaignSearch('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
           <select value={platform} onChange={(e) => setPlatform(e.target.value)}
             className="px-3 py-2 border border-gray-200 rounded-lg text-sm">
             <option value="">All Platforms</option>
@@ -527,12 +588,17 @@ export default function ActionNeededPage() {
           )}
 
           {/* Conversion funnel diagnosis */}
-          {funnel.length > 1 && (
+          {(displayFunnel.length > 1 || (campaignSearch.trim() && funnel.length > 1)) && (
             <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
               <div className="flex items-start justify-between mb-1">
                 <div className="flex items-center gap-2">
                   <FilterIcon className="w-4 h-4 text-blue-600" />
                   <h2 className="text-sm font-semibold text-gray-800">Conversion funnel — where we lose people</h2>
+                  {campaignSearch.trim() && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
+                      {campaignFunnelLoading ? 'loading…' : `filtered: "${campaignSearch}"`}
+                    </span>
+                  )}
                 </div>
                 {/* Comparison mode tabs */}
                 <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
@@ -566,7 +632,7 @@ export default function ActionNeededPage() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Funnel bars */}
                 <div className="space-y-2">
-                  {funnel.map((s, i) => {
+                  {displayFunnel.map((s, i) => {
                     const width = Math.max((s.value / funnelMax) * 100, 6)
                     const isLeak = funnelDiag?.stepKey === s.key
                     // Benchmark delta: current drop_off minus benchmark drop_off
@@ -768,7 +834,7 @@ export default function ActionNeededPage() {
 
           {/* Appendix: full campaign table */}
           <div className="print:hidden">
-            <CampaignBreakdownTable rows={rows} currency={currency} highlightId="" title="All campaigns" />
+            <CampaignBreakdownTable rows={filteredRows} currency={currency} highlightId="" title="All campaigns" />
           </div>
         </>
       )}

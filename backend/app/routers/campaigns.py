@@ -527,7 +527,7 @@ def get_dashboard_by_account(
 
 def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | None,
                       account_id: str | None = None, account_ids: list[str] | None = None,
-                      campaign_type: str | None = None):
+                      campaign_type: str | None = None, campaign_ids: list[str] | None = None):
     """Aggregate funnel metrics for a date range."""
     is_lead = campaign_type == "lead"
     q = db.query(
@@ -546,7 +546,9 @@ def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | Non
     q = q.filter(MetricsCache.date >= d_from, MetricsCache.date <= d_to)
     if platform:
         q = q.filter(MetricsCache.platform == platform)
-    if account_id:
+    if campaign_ids:
+        q = q.filter(MetricsCache.campaign_id.in_(campaign_ids))
+    elif account_id:
         q = q.filter(Campaign.account_id == account_id)
     elif account_ids:
         q = q.filter(Campaign.account_id.in_(account_ids))
@@ -582,11 +584,13 @@ def get_dashboard_funnel(
     account_id: str | None = None,
     branches: str | None = None,
     campaign_type: str | None = None,
+    campaign_ids: str | None = None,
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
     """Funnel metrics. Sale: Impression→Click→Search→Add to cart→Checkout→Booking.
-    Lead: Impression→Click→Landing Page→Form Fill→Purchase."""
+    Lead: Impression→Click→Landing Page→Form Fill→Purchase.
+    Pass campaign_ids (comma-separated UUIDs) to scope the funnel to specific campaigns."""
     try:
         branch_list = [b.strip() for b in branches.split(",") if b.strip()] if branches else None
         ok, scoped_ids, err = scoped_account_ids(
@@ -601,6 +605,8 @@ def get_dashboard_funnel(
             account_id = scoped_ids[0]
             branch_account_ids = None
 
+        parsed_campaign_ids = [c.strip() for c in campaign_ids.split(",") if c.strip()] if campaign_ids else None
+
         if date_to is None:
             date_to = date.today()
         if date_from is None:
@@ -610,8 +616,8 @@ def get_dashboard_funnel(
         prev_to = date_from - timedelta(days=1)
         prev_from = prev_to - timedelta(days=period_days - 1)
 
-        current = _aggregate_funnel(db, date_from, date_to, platform, account_id, branch_account_ids, campaign_type)
-        previous = _aggregate_funnel(db, prev_from, prev_to, platform, account_id, branch_account_ids, campaign_type)
+        current = _aggregate_funnel(db, date_from, date_to, platform, account_id, branch_account_ids, campaign_type, parsed_campaign_ids)
+        previous = _aggregate_funnel(db, prev_from, prev_to, platform, account_id, branch_account_ids, campaign_type, parsed_campaign_ids)
 
         # Build funnel steps with drop-off
         if campaign_type == "lead":
