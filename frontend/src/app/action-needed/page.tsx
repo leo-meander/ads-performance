@@ -243,27 +243,6 @@ export default function ActionNeededPage() {
     return () => { cancelled = true }
   }, [comparisonMode, branchParam, platform, campaignType])
 
-  // Fetch funnel scoped to filtered campaigns when campaign search is active
-  useEffect(() => {
-    if (!campaignSearch.trim() || filteredRows.length === 0) {
-      setCampaignFunnel([])
-      return
-    }
-    let cancelled = false
-    setCampaignFunnelLoading(true)
-    const ids = filteredRows.map((r) => r.campaign_id).join(',')
-    const params = new URLSearchParams(buildQs())
-    params.set('campaign_ids', ids)
-    apiFetch<FunnelResponse>(`/api/dashboard/funnel?${params}`)
-      .then((res) => {
-        if (cancelled) return
-        setCampaignFunnel(res.success && res.data ? res.data.steps || [] : [])
-      })
-      .catch(() => { if (!cancelled) setCampaignFunnel([]) })
-      .finally(() => { if (!cancelled) setCampaignFunnelLoading(false) })
-    return () => { cancelled = true }
-  }, [campaignSearch, filteredRows, buildQs])
-
   // close branch dropdown on outside click
   const branchRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -297,6 +276,27 @@ export default function ActionNeededPage() {
     const q = campaignSearch.toLowerCase()
     return rows.filter((r) => r.campaign_name.toLowerCase().includes(q))
   }, [rows, campaignSearch])
+
+  // Fetch funnel scoped to filtered campaigns when campaign search is active
+  useEffect(() => {
+    if (!campaignSearch.trim() || filteredRows.length === 0) {
+      setCampaignFunnel([])
+      return
+    }
+    let cancelled = false
+    setCampaignFunnelLoading(true)
+    const ids = filteredRows.map((r) => r.campaign_id).join(',')
+    const params = new URLSearchParams(buildQs())
+    params.set('campaign_ids', ids)
+    apiFetch<FunnelResponse>(`/api/dashboard/funnel?${params}`)
+      .then((res) => {
+        if (cancelled) return
+        setCampaignFunnel(res.success && res.data ? res.data.steps || [] : [])
+      })
+      .catch(() => { if (!cancelled) setCampaignFunnel([]) })
+      .finally(() => { if (!cancelled) setCampaignFunnelLoading(false) })
+    return () => { cancelled = true }
+  }, [campaignSearch, filteredRows, buildQs])
 
   const nextActions = useMemo(() => buildNextActions(filteredInsights, funnelDiag), [filteredInsights, funnelDiag])
 
