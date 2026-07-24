@@ -141,6 +141,8 @@ export default function ActionNeededPage() {
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
   const [campaignType, setCampaignType] = useState<'all' | 'sale' | 'lead'>('all')
   const [campaignSearch, setCampaignSearch] = useState('')
+  const [campaignDropdownOpen, setCampaignDropdownOpen] = useState(false)
+  const campaignSearchRef = useRef<HTMLDivElement>(null)
 
   // data
   const [rows, setRows] = useState<CampaignRow[]>([])
@@ -248,6 +250,7 @@ export default function ActionNeededPage() {
   useEffect(() => {
     function onClick(e: MouseEvent) {
       if (branchRef.current && !branchRef.current.contains(e.target as Node)) setBranchDropdownOpen(false)
+      if (campaignSearchRef.current && !campaignSearchRef.current.contains(e.target as Node)) setCampaignDropdownOpen(false)
     }
     document.addEventListener('mousedown', onClick)
     return () => document.removeEventListener('mousedown', onClick)
@@ -555,23 +558,51 @@ export default function ActionNeededPage() {
               </div>
             )}
           </div>
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
+          <div className="relative" ref={campaignSearchRef}>
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none z-10" />
             <input
               type="text"
               placeholder="Filter campaigns…"
               value={campaignSearch}
-              onChange={(e) => setCampaignSearch(e.target.value)}
-              className="pl-8 pr-7 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-48"
+              onChange={(e) => { setCampaignSearch(e.target.value); setCampaignDropdownOpen(true) }}
+              onFocus={() => setCampaignDropdownOpen(true)}
+              onKeyDown={(e) => { if (e.key === 'Escape') { setCampaignDropdownOpen(false) } }}
+              className="pl-8 pr-7 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-52"
             />
             {campaignSearch && (
               <button
-                onClick={() => setCampaignSearch('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                onClick={() => { setCampaignSearch(''); setCampaignDropdownOpen(false) }}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 z-10"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
+            {campaignDropdownOpen && (() => {
+              const q = campaignSearch.toLowerCase().trim()
+              const suggestions = rows
+                .filter((r) => !q || r.campaign_name.toLowerCase().includes(q))
+                .sort((a, b) => b.spend - a.spend)
+                .slice(0, 8)
+              if (suggestions.length === 0) return null
+              return (
+                <div className="absolute z-50 top-full mt-1 left-0 w-96 bg-white border border-gray-200 rounded-lg shadow-lg py-1 max-h-72 overflow-y-auto">
+                  {!q && (
+                    <p className="px-3 py-1.5 text-[10px] text-gray-400 uppercase tracking-wide font-medium">Top campaigns by spend</p>
+                  )}
+                  {suggestions.map((r) => (
+                    <button
+                      key={r.campaign_id}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => { setCampaignSearch(r.campaign_name); setCampaignDropdownOpen(false) }}
+                      className={`w-full text-left px-3 py-2 hover:bg-blue-50 transition-colors ${campaignSearch === r.campaign_name ? 'bg-blue-50' : ''}`}
+                    >
+                      <p className="text-xs font-medium text-gray-900 truncate">{r.campaign_name}</p>
+                      <p className="text-[10px] text-gray-400 mt-0.5">{[r.account_name, r.platform, r.funnel_stage].filter(Boolean).join(' · ')}</p>
+                    </button>
+                  ))}
+                </div>
+              )
+            })()}
           </div>
           <select value={platform} onChange={(e) => setPlatform(e.target.value)}
             className="px-3 py-2 border border-gray-200 rounded-lg text-sm">
