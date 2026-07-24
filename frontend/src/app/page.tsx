@@ -1041,16 +1041,18 @@ function DashboardInner() {
                             const isBest = i > 0 && s?.drop_off != null && dropOffs.length > 1 && s.drop_off === minDropOff && maxDropOff > minDropOff
                             return (
                               <td key={branch} className={`py-3 px-3 align-top rounded ${isWorst ? 'bg-red-50' : isBest ? 'bg-emerald-50' : ''}`}>
-                                <div className="text-sm font-bold text-gray-900">{s ? fmtNum(s.value) : '—'}</div>
-                                {i > 0 && s?.drop_off != null && (
-                                  <div className={`text-[11px] font-semibold mt-0.5 ${isWorst ? 'text-red-600' : isBest ? 'text-emerald-600' : 'text-gray-500'}`}>
-                                    {(s.drop_off * 100).toFixed(1)}% drop
-                                    {isWorst && <span className="ml-1">⚠</span>}
-                                    {isBest && <span className="ml-1">✓</span>}
-                                  </div>
-                                )}
-                                {s?.change != null && (
-                                  <div className="mt-0.5"><ChangeTag change={s.change} /></div>
+                                {i > 0 && s?.drop_off != null ? (
+                                  <>
+                                    <div className={`text-base font-bold ${isWorst ? 'text-red-600' : isBest ? 'text-emerald-600' : 'text-gray-800'}`}>
+                                      {(s.drop_off * 100).toFixed(1)}%
+                                      {isWorst && <span className="ml-1 text-sm">⚠</span>}
+                                      {isBest && <span className="ml-1 text-sm">✓</span>}
+                                    </div>
+                                    <div className="text-[11px] text-gray-400 mt-0.5">{s ? fmtNum(s.value) : '—'}</div>
+                                    {s?.change != null && <div className="mt-0.5"><ChangeTag change={s.change} /></div>}
+                                  </>
+                                ) : (
+                                  <div className="text-sm font-bold text-gray-900">{s ? fmtNum(s.value) : '—'}</div>
                                 )}
                               </td>
                             )
@@ -1099,16 +1101,18 @@ function DashboardInner() {
                             const isBest = i > 0 && s?.drop_off != null && dropOffs.length > 1 && s.drop_off === minDropOff && maxDropOff > minDropOff
                             return (
                               <td key={name} className={`py-3 px-3 align-top rounded ${isWorst ? 'bg-red-50' : isBest ? 'bg-emerald-50' : ''}`}>
-                                <div className="text-sm font-bold text-gray-900">{s ? fmtNum(s.value) : '—'}</div>
-                                {i > 0 && s?.drop_off != null && (
-                                  <div className={`text-[11px] font-semibold mt-0.5 ${isWorst ? 'text-red-600' : isBest ? 'text-emerald-600' : 'text-gray-500'}`}>
-                                    {(s.drop_off * 100).toFixed(1)}% drop
-                                    {isWorst && <span className="ml-1">⚠</span>}
-                                    {isBest && <span className="ml-1">✓</span>}
-                                  </div>
-                                )}
-                                {s?.change != null && (
-                                  <div className="mt-0.5"><ChangeTag change={s.change} /></div>
+                                {i > 0 && s?.drop_off != null ? (
+                                  <>
+                                    <div className={`text-base font-bold ${isWorst ? 'text-red-600' : isBest ? 'text-emerald-600' : 'text-gray-800'}`}>
+                                      {(s.drop_off * 100).toFixed(1)}%
+                                      {isWorst && <span className="ml-1 text-sm">⚠</span>}
+                                      {isBest && <span className="ml-1 text-sm">✓</span>}
+                                    </div>
+                                    <div className="text-[11px] text-gray-400 mt-0.5">{s ? fmtNum(s.value) : '—'}</div>
+                                    {s?.change != null && <div className="mt-0.5"><ChangeTag change={s.change} /></div>}
+                                  </>
+                                ) : (
+                                  <div className="text-sm font-bold text-gray-900">{s ? fmtNum(s.value) : '—'}</div>
                                 )}
                               </td>
                             )
