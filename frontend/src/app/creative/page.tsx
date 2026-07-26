@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Plus, ArrowUpDown, X, Sparkles, Film, Image as ImageIcon, LayoutGrid, ExternalLink } from 'lucide-react'
+import { Plus, ArrowUpDown, X, Search, Sparkles, Film, Image as ImageIcon, LayoutGrid, ExternalLink } from 'lucide-react'
 import KeypointDoubleCheckModal from '@/components/KeypointDoubleCheckModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -11,6 +11,7 @@ interface Combo {
   id: string; combo_id: string; branch_id: string; ad_name: string | null
   target_audience: string | null; country: string | null
   keypoint_ids: string[]; keypoint_titles: string[]
+  hypothesis_ids: string[]
   angle_id: string | null; angle_type: string; angle_explain: string; angle_status: string
   copy_id: string; material_id: string; material_type: string | null; material_url: string | null
   verdict: string
@@ -21,6 +22,11 @@ interface Combo {
 }
 interface Account { id: string; account_name: string }
 interface Angle { angle_id: string; branch_id: string | null; angle_type: string; status: string }
+interface HypOption {
+  hypothesis_id: string; branch_name: string; hypothesis: string; status: string
+  target_audience: string | null; market: string | null
+  linked_combos?: { combo_id: string }[]
+}
 
 const VERDICT_COLORS: Record<string, string> = {
   WIN: 'bg-green-100 text-green-700', TEST: 'bg-yellow-100 text-yellow-700', LOSE: 'bg-red-100 text-red-700',
@@ -58,6 +64,17 @@ function CreativePageInner() {
   const [fCountry, setFCountry] = useState(initialCountry)
   const [fVerdict, setFVerdict] = useState(initialVerdict)
   const [fFormat, setFFormat] = useState('')
+  // Free-text search (ad name / combo ID) — debounced into `fSearch`
+  const [searchInput, setSearchInput] = useState('')
+  const [fSearch, setFSearch] = useState('')
+  // Coverage gaps: creatives still missing a hypothesis / keypoints
+  const [fNoHypothesis, setFNoHypothesis] = useState(false)
+  const [fNoKeypoint, setFNoKeypoint] = useState(false)
+
+  useEffect(() => {
+    const t = setTimeout(() => setFSearch(searchInput.trim()), 300)
+    return () => clearTimeout(t)
+  }, [searchInput])
 
   // Sort
   const [sortBy, setSortBy] = useState('')
@@ -100,6 +117,9 @@ function CreativePageInner() {
     if (fTA) params.set('target_audience', fTA)
     if (fCountry) params.set('country', fCountry)
     if (fVerdict) params.set('verdict', fVerdict)
+    if (fSearch) params.set('search', fSearch)
+    if (fNoHypothesis) params.set('has_hypothesis', 'false')
+    if (fNoKeypoint) params.set('has_keypoint', 'false')
     if (sortBy) { params.set('sort_by', sortBy); params.set('sort_dir', sortDir) }
     fetch(`${API_BASE}/api/combos?${params}`, { credentials: 'include' }).then(r => r.json()).then(d => {
       if (d.success) { setCombos(d.data.items); setComboTotal(d.data.total) }
@@ -108,7 +128,50 @@ function CreativePageInner() {
   useEffect(() => {
     refetchCombos()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fBranch, fTA, fCountry, fVerdict, sortBy, sortDir])
+  }, [fBranch, fTA, fCountry, fVerdict, fSearch, fNoHypothesis, fNoKeypoint, sortBy, sortDir])
+
+  // ── Link an EXISTING hypothesis to a combo ────────────────
+  const [hypModalCombo, setHypModalCombo] = useState<Combo | null>(null)
+  const [hypOptions, setHypOptions] = useState<HypOption[]>([])
+  const [hypSearch, setHypSearch] = useState('')
+  const [hypAllBranches, setHypAllBranches] = useState(false)
+  const [hypLoading, setHypLoading] = useState(false)
+  const [hypSaving, setHypSaving] = useState('')
+
+  useEffect(() => {
+    if (!hypModalCombo) return
+    setHypLoading(true)
+    const p = new URLSearchParams({ limit: '30' })
+    if (!hypAllBranches) p.set('branch_name', accName(hypModalCombo.branch_id))
+    if (hypSearch.trim()) p.set('search', hypSearch.trim())
+    const t = setTimeout(() => {
+      fetch(`${API_BASE}/api/hypotheses?${p}`, { credentials: 'include' })
+        .then(r => r.json())
+        .then(d => { if (d.success) setHypOptions(d.data.items) })
+        .catch(() => {})
+        .finally(() => setHypLoading(false))
+    }, 250)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hypModalCombo, hypSearch, hypAllBranches])
+
+  const linkHypothesis = (hypothesisId: string, comboId: string) => {
+    setHypSaving(hypothesisId)
+    fetch(`${API_BASE}/api/hypotheses/${hypothesisId}/combos`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', body: JSON.stringify({ combo_ids: [comboId], action: 'add' }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) return
+        setCombos(prev => prev.map(c => c.combo_id === comboId
+          ? { ...c, hypothesis_ids: Array.from(new Set([...(c.hypothesis_ids || []), hypothesisId])).sort() }
+          : c))
+        setHypModalCombo(null)
+      })
+      .catch(() => {})
+      .finally(() => setHypSaving(''))
+  }
 
   const updateVerdict = (comboId: string, verdict: string) => {
     fetch(`${API_BASE}/api/combos/${comboId}/verdict`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ verdict }) })
@@ -269,6 +332,20 @@ function CreativePageInner() {
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 mb-4">
+        <div className="relative">
+          <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+          <input
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            placeholder="Search ad name or CMB-ID…"
+            className="pl-8 pr-7 py-1.5 border border-gray-200 rounded-lg text-sm w-64"
+          />
+          {searchInput && (
+            <button onClick={() => setSearchInput('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-600">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
         <select value={fBranch} onChange={e => setFBranch(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
           <option value="">All Branches</option>
           {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
@@ -289,6 +366,30 @@ function CreativePageInner() {
           <option value="">All Formats</option>
           <option value="video">Video</option><option value="image">Image</option><option value="carousel">Carousel</option>
         </select>
+
+        {/* Coverage gaps — creatives nobody has documented yet */}
+        <button
+          onClick={() => setFNoHypothesis(v => !v)}
+          title="Show only creatives with no hypothesis registered"
+          className={`px-3 py-1.5 rounded-lg text-sm border transition ${fNoHypothesis ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-gray-600 border-gray-200 hover:border-violet-300'}`}
+        >
+          No Hypothesis
+        </button>
+        <button
+          onClick={() => setFNoKeypoint(v => !v)}
+          title="Show only creatives with no keypoints tagged"
+          className={`px-3 py-1.5 rounded-lg text-sm border transition ${fNoKeypoint ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'}`}
+        >
+          No Keypoint
+        </button>
+        {(fSearch || fNoHypothesis || fNoKeypoint || fBranch || fTA || fCountry || fVerdict || fFormat) && (
+          <button
+            onClick={() => { setSearchInput(''); setFNoHypothesis(false); setFNoKeypoint(false); setFBranch(''); setFTA(''); setFCountry(''); setFVerdict(''); setFFormat('') }}
+            className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-700"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
 
       {/* Verdict Rules */}
@@ -328,10 +429,21 @@ function CreativePageInner() {
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="text-[10px] text-gray-400 font-mono">{c.combo_id}</span>
                       <FormatChip type={inferFormat(c.ad_name)} />
+                      {(c.hypothesis_ids || []).map(hid => (
+                        <a
+                          key={hid}
+                          href={`/angles?tab=hypotheses`}
+                          onClick={e => e.stopPropagation()}
+                          className="text-[9px] font-mono text-violet-700 bg-violet-100 hover:bg-violet-200 rounded px-1 py-0.5"
+                          title="Linked hypothesis — open Hypotheses tab"
+                        >
+                          {hid}
+                        </a>
+                      ))}
                       <button
-                        onClick={e => { e.stopPropagation(); router.push(`/angles?tab=hypotheses&combo_id=${c.combo_id}`) }}
+                        onClick={e => { e.stopPropagation(); setHypSearch(''); setHypAllBranches(false); setHypOptions([]); setHypModalCombo(c) }}
                         className="text-[9px] text-violet-500 hover:text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-100 rounded px-1 py-0.5 font-medium"
-                        title="Create hypothesis for this ad"
+                        title="Link this ad to an existing hypothesis"
                       >
                         + Hypothesis
                       </button>
@@ -403,6 +515,80 @@ function CreativePageInner() {
       </div>
 
       {detailId && <ComboDrawer comboId={detailId} onClose={() => setDetailId(null)} />}
+
+      {/* Link an existing hypothesis to this creative */}
+      {hypModalCombo && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setHypModalCombo(null)}>
+          <div className="bg-white rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-gray-100">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold text-gray-900">Link to a hypothesis</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    <span className="font-mono">{hypModalCombo.combo_id}</span> · {hypModalCombo.ad_name || '(no name)'}
+                  </p>
+                </div>
+                <button onClick={() => setHypModalCombo(null)} className="text-gray-400 hover:text-gray-700"><X className="w-5 h-5" /></button>
+              </div>
+              <div className="flex items-center gap-2 mt-3">
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    autoFocus value={hypSearch} onChange={e => setHypSearch(e.target.value)}
+                    placeholder="Search HYP-ID, statement or angle…"
+                    className="w-full pl-8 pr-3 py-2 border border-gray-200 rounded-lg text-sm"
+                  />
+                </div>
+                <label className="flex items-center gap-1.5 text-xs text-gray-500 whitespace-nowrap">
+                  <input type="checkbox" checked={hypAllBranches} onChange={e => setHypAllBranches(e.target.checked)} />
+                  All branches
+                </label>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-auto">
+              {hypLoading && hypOptions.length === 0 ? (
+                <p className="p-6 text-center text-sm text-gray-400 animate-pulse">Loading hypotheses…</p>
+              ) : hypOptions.length === 0 ? (
+                <p className="p-6 text-center text-sm text-gray-400">
+                  No hypothesis found{hypAllBranches ? '' : ` for ${accName(hypModalCombo.branch_id)}`}.
+                </p>
+              ) : hypOptions.map(h => {
+                const already = (hypModalCombo.hypothesis_ids || []).includes(h.hypothesis_id)
+                  || (h.linked_combos || []).some(lc => lc.combo_id === hypModalCombo.combo_id)
+                return (
+                  <button
+                    key={h.hypothesis_id} disabled={already || !!hypSaving}
+                    onClick={() => linkHypothesis(h.hypothesis_id, hypModalCombo.combo_id)}
+                    className={`w-full text-left px-5 py-3 border-b border-gray-50 last:border-0 ${already ? 'bg-gray-50 opacity-60 cursor-default' : 'hover:bg-violet-50'}`}
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-[10px] text-gray-400">{h.hypothesis_id}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600">{h.status}</span>
+                      <span className="text-[10px] text-gray-500">{h.branch_name}</span>
+                      {h.target_audience && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600">{h.target_audience}</span>}
+                      {h.market && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600">{h.market}</span>}
+                      {already && <span className="text-[10px] text-violet-600 font-semibold ml-auto">✓ already linked</span>}
+                      {hypSaving === h.hypothesis_id && <span className="text-[10px] text-violet-500 ml-auto animate-pulse">linking…</span>}
+                    </div>
+                    <p className="text-xs text-gray-800 mt-1 leading-snug">{h.hypothesis}</p>
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="px-5 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between">
+              <p className="text-[11px] text-gray-400">Linking adds this ad to the hypothesis&apos;s sample — it does not create a new one.</p>
+              <button
+                onClick={() => router.push(`/angles?tab=hypotheses&combo_id=${hypModalCombo.combo_id}`)}
+                className="text-xs text-violet-600 hover:text-violet-800 font-medium whitespace-nowrap"
+              >
+                + Create new instead
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {kpModalCombo && (
         <KeypointDoubleCheckModal

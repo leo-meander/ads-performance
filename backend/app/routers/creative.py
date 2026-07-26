@@ -4,6 +4,11 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy import Text as SAText
+from sqlalchemy import cast as sqla_cast
+from sqlalchemy import func as sqla_func
+from sqlalchemy import not_ as sqla_not
+from sqlalchemy import or_ as sqla_or
 from sqlalchemy.orm import Session
 
 from app.core.permissions import scoped_account_ids
@@ -655,6 +660,8 @@ class VerdictUpdate(BaseModel):
 def list_combos(
     branch_id: str | None = None, verdict: str | None = None,
     target_audience: str | None = None, country: str | None = None,
+    search: str | None = None,
+    has_hypothesis: bool | None = None, has_keypoint: bool | None = None,
     sort_by: str | None = None, sort_dir: str = "desc",
     limit: int = Query(50, le=200), offset: int = Query(0, ge=0),
     current_user: User = Depends(require_section("meta_ads")),
@@ -677,6 +684,37 @@ def list_combos(
             q = q.filter(AdCombo.target_audience == target_audience)
         if country:
             q = q.filter(AdCombo.country == country)
+
+        # Free-text search across the two identifiers the table shows.
+        if search and search.strip():
+            like = f"%{search.strip()}%"
+            q = q.filter(sqla_or(AdCombo.ad_name.ilike(like), AdCombo.combo_id.ilike(like)))
+
+        # Coverage filters — "which creatives are still undocumented".
+        # A combo counts as having a hypothesis via the junction table OR the
+        # legacy creative_hypotheses.combo_id column.
+        if has_hypothesis is not None:
+            from app.models.creative_hypothesis import CreativeHypothesis
+            from app.models.hypothesis_combo_link import HypothesisComboLink
+            linked_ids = {r[0] for r in db.query(HypothesisComboLink.combo_id).distinct().all() if r[0]}
+            linked_ids |= {
+                r[0] for r in db.query(CreativeHypothesis.combo_id)
+                .filter(CreativeHypothesis.combo_id.isnot(None)).distinct().all() if r[0]
+            }
+            if has_hypothesis:
+                q = q.filter(AdCombo.combo_id.in_(linked_ids or ["__no_match__"]))
+            elif linked_ids:
+                q = q.filter(~AdCombo.combo_id.in_(linked_ids))
+
+        # keypoint_ids is a generic JSON column — compare its text form so the
+        # check works on both PostgreSQL and the SQLite test DB.
+        if has_keypoint is not None:
+            kp_empty = sqla_or(
+                AdCombo.keypoint_ids.is_(None),
+                sqla_func.coalesce(sqla_cast(AdCombo.keypoint_ids, SAText), "").in_(["", "[]", "null"]),
+            )
+            q = q.filter(kp_empty if has_keypoint is False else sqla_not(kp_empty))
+
         total = q.count()
 
         # Sorting
@@ -732,6 +770,20 @@ def list_combos(
             ).filter(Mat.material_id.in_(mat_ids)).all()
             mat_map = {m.material_id: {"type": m.material_type, "url": m.file_url} for m in mats}
 
+        # Which hypotheses each visible combo is registered under — lets the
+        # table show HYP chips instead of blindly offering "create new".
+        from app.models.creative_hypothesis import CreativeHypothesis as _CH
+        from app.models.hypothesis_combo_link import HypothesisComboLink as _HCL
+        row_combo_ids = [r.combo_id for r in rows if r.combo_id]
+        hyp_map: dict[str, list[str]] = {}
+        if row_combo_ids:
+            for lk in db.query(_HCL.combo_id, _HCL.hypothesis_id).filter(_HCL.combo_id.in_(row_combo_ids)).all():
+                hyp_map.setdefault(lk.combo_id, []).append(lk.hypothesis_id)
+            for lg in db.query(_CH.combo_id, _CH.hypothesis_id).filter(_CH.combo_id.in_(row_combo_ids)).all():
+                bucket = hyp_map.setdefault(lg.combo_id, [])
+                if lg.hypothesis_id not in bucket:
+                    bucket.append(lg.hypothesis_id)
+
         # Compute benchmark ROAS per account
         from app.models.account import AdAccount as Acc
         from sqlalchemy import func as sqlfunc
@@ -752,6 +804,7 @@ def list_combos(
             "target_audience": r.target_audience, "country": r.country,
             "keypoint_ids": r.keypoint_ids or [],
             "keypoint_titles": [kp_map.get(kid, "") for kid in (r.keypoint_ids or []) if kp_map.get(kid)],
+            "hypothesis_ids": sorted(hyp_map.get(r.combo_id, [])),
             "angle_id": r.angle_id,
             "angle_type": ang_map.get(r.angle_id, {}).get("angle_type", ""),
             "angle_explain": ang_map.get(r.angle_id, {}).get("explain", ""),
