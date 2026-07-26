@@ -709,6 +709,7 @@ def country_funnel(
             # Drop-off: fraction lost from the previous stage (1 - conv_rate)
             if i == 0:
                 drop_off = None
+                drop_off_prev = None
                 drop_off_change = None
             else:
                 prev_step_cur = int(getattr(row, fields[i - 1]) or 0)
@@ -727,6 +728,7 @@ def country_funnel(
                 "value": cur_val,
                 "change": change,
                 "drop_off": drop_off,
+                "drop_off_prev": drop_off_prev,
                 "drop_off_change": drop_off_change,
             })
 
