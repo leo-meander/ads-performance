@@ -94,7 +94,7 @@ interface LearningDashboard {
   branch_name: string; total_hypotheses: number; total_pending: number; total_experiments: number; total_running: number; total_validated: number; total_refuted: number; min_sample: number
   pending_hypotheses: { hypothesis_id: string; hypothesis: string; hypothesis_category: string | null; human_desire: string | null; funnel_stage: string | null; format: string | null; target_audience: string | null; primary_metric: string | null }[]
   metric_win_rates: { metric: string; wins: number; total: number; win_rate: number; sufficient: boolean }[]
-  running_signals: { hypothesis_id: string; hypothesis: string; primary_metric: string | null; current_value: number | null; win_threshold: number | null; beat_pct: number | null; n_concluded: number; n_win: number; min_sample: number; target_audience: string | null; market: string | null; format: string | null; funnel_stage: string | null; signal: 'push' | 'watch' | 'monitor' | 'cut'; hypothesis_category: string | null }[]
+  running_signals: { hypothesis_id: string; hypothesis: string; primary_metric: string | null; metric_unit: 'pct' | 'x' | 'num'; current_value: number | null; win_threshold: number | null; beat_pct: number | null; n_concluded: number; n_win: number; min_sample: number; target_audience: string | null; market: string | null; format: string | null; funnel_stage: string | null; signal: 'push' | 'watch' | 'monitor' | 'cut'; hypothesis_category: string | null }[]
   category_counts: Record<string, number>
   tested_desires: string[]
   top_desires: { desire: string; win_rate: number; experiments: number; wins: number; sufficient: boolean }[]
@@ -148,6 +148,32 @@ const FUNNEL_METRICS: Record<string, Record<string, string>> = {
   Click:      { Video: 'CTR',             Image: 'CTR' },
   Downstream: { Video: 'roas',            Image: 'roas' },
 }
+
+// ── Metric units + formulas ─────────────────────────────────────────────────
+// The API sends every metric in display units: rates as percent (1.55 = 1.55%),
+// ROAS as a multiple (5.07 = 5.07x). Never re-scale here.
+type MetricUnit = 'pct' | 'x' | 'num'
+
+const metricKey = (m: string | null) => (m || '').toUpperCase().replace(/[ -]/g, '_')
+
+const fmtMetricValue = (val: number | null, unit: MetricUnit | undefined) => {
+  if (val === null || val === undefined) return '—'
+  if (unit === 'x') return `${val.toFixed(2)}x`
+  if (unit === 'pct') return `${val.toFixed(2)}%`
+  return val.toFixed(2)
+}
+
+const METRIC_FORMULA: Record<string, string> = {
+  CTR: 'CTR = link clicks ÷ impressions',
+  HOOK_RATE: 'Hook rate = 3-second video views ÷ impressions',
+  THUMB_STOP_RATE: 'Thumb-stop rate = 3-second views ÷ impressions',
+  HOLD_RATE: 'Hold rate = ThruPlays ÷ video plays',
+  CVR: 'CVR = conversions ÷ clicks',
+  ROAS: 'ROAS = revenue ÷ spend',
+  ENGAGEMENT_RATE: 'Engagement rate = engagements ÷ impressions',
+}
+const metricFormula = (m: string | null) =>
+  METRIC_FORMULA[metricKey(m)] || `${m || 'This metric'} — value pulled straight from the linked ads`
 
 type Tab = 'angles' | 'brand' | 'hypotheses' | 'dashboard'
 
@@ -447,11 +473,14 @@ function AnglesPageInner() {
   // Cohort rankings: group by (branch + TA + market + primary_metric), rank by actual metric desc
   const cohortRankMap = useMemo(() => {
     const metricVal = (h: Hypothesis): number | null => {
-      const m = h.primary_metric || h.primary_kpi || ''
-      if (m === 'roas' || m === 'ROAS') return h.actual_roas ?? null
-      if (m === 'CTR' || m === 'ctr') return h.actual_ctr ?? null
-      if (m === 'hook_rate') return h.actual_ctr ?? null  // best proxy available
-      return h.actual_roas ?? h.actual_ctr ?? null
+      const m = metricKey(h.primary_metric || h.primary_kpi)
+      if (m === 'ROAS') return h.actual_roas ?? null
+      if (m === 'CTR') return h.actual_ctr ?? null
+      // hook_rate / hold_rate / CVR live on the linked combos, not on the
+      // hypothesis row. Ranking those by ROAS would hand out medals for a
+      // metric the test never measured — the dashboard's Cohort Battles
+      // ranks them properly off running_signals instead.
+      return null
     }
     const groups: Record<string, Hypothesis[]> = {}
     hypotheses.forEach(h => {
@@ -1031,7 +1060,7 @@ function AnglesPageInner() {
                     <div>
                       <label className="flex items-center gap-1 text-xs text-gray-500 mb-1">
                         Win Threshold
-                        <Tip text="The threshold to call a hypothesis 'validated'. Auto-filled from the branch's 60-day average for this metric. You can edit it to set the bar higher or lower." wide />
+                        <Tip text="The threshold to call a hypothesis 'validated'. Auto-filled from the branch's 60-day average for this metric. Enter rates as percent (1.55 = 1.55% CTR) and ROAS as a multiple (3 = 3x). You can edit it to set the bar higher or lower." wide />
                         {benchmarkLoading && <span className="ml-1 text-blue-400 animate-pulse">fetching avg...</span>}
                         {!benchmarkLoading && hypoForm.win_threshold && <span className="ml-1 text-gray-300">(60d avg)</span>}
                       </label>
@@ -1253,7 +1282,10 @@ function AnglesPageInner() {
                     const clicks = h.combo_clicks ?? 0
                     const isExpanded = expandedHypoIds.has(h.hypothesis_id)
                     const metric = h.primary_metric || h.primary_kpi || 'primary metric'
-                    const threshold = h.win_threshold ? ` (threshold: ${h.win_threshold})` : ''
+                    const metricUnit: MetricUnit = metricKey(h.primary_metric || h.primary_kpi) === 'ROAS' ? 'x'
+                      : METRIC_FORMULA[metricKey(h.primary_metric || h.primary_kpi)] ? 'pct' : 'num'
+                    const thresholdLabel = fmtMetricValue(h.win_threshold, metricUnit)
+                    const threshold = h.win_threshold ? ` (threshold: ${thresholdLabel})` : ''
                     const nextStep = (() => {
                       if (h.status === 'validated') return { color: 'bg-green-50 border-green-200 text-green-800', icon: '✅', text: `Layer A validated — ${metric} cleared${threshold}. Check Layer B for downstream impact.` }
                       if (h.status === 'refuted') return { color: 'bg-red-50 border-red-200 text-red-800', icon: '🔄', text: `Layer A refuted — ${metric} did not clear${threshold}. Pivot the creative variable.` }
@@ -1336,7 +1368,7 @@ function AnglesPageInner() {
                               {h.market && <span className="text-xs text-gray-400">{h.market}</span>}
                               <span className="flex items-center gap-1">
                                 <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${HYPO_STATUS_BADGE[h.status] || 'bg-gray-100 text-gray-600'}`}>Layer A: {h.status}</span>
-                                <Tip text={`Layer A = creative verdict. Did ${metric} exceed the threshold (${h.win_threshold ?? '—'}) after ${h.min_sample} concluded ads?`} wide />
+                                <Tip text={`Layer A = creative verdict. Did ${metric} exceed the threshold (${thresholdLabel}) after ${h.min_sample} concluded ads? ${metricFormula(h.primary_metric || h.primary_kpi)}.`} wide />
                               </span>
                               {h.layer_b_status && (
                                 <span className="flex items-center gap-1">
@@ -1579,9 +1611,12 @@ function AnglesPageInner() {
                     <div className="px-5 pt-4 pb-3 flex items-center justify-between">
                       <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Hypothesis Pipeline</h3>
                       {winRate !== null && (
-                        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full tabular-nums ${
-                          winRate >= 60 ? 'bg-emerald-50 text-emerald-700' : winRate >= 40 ? 'bg-amber-50 text-amber-700' : 'bg-rose-50 text-rose-600'
-                        }`}>{winRate}% win rate</span>
+                        <span className="flex items-center gap-1.5">
+                          <span className={`text-xs font-semibold px-2.5 py-1 rounded-full tabular-nums ${
+                            winRate >= 60 ? 'bg-emerald-50 text-emerald-700' : winRate >= 40 ? 'bg-amber-50 text-amber-700' : 'bg-rose-50 text-rose-600'
+                          }`}>{winRate}% win rate</span>
+                          <Tip wide text={`Validated ÷ concluded — ${learningDashboard.total_validated} of ${learningDashboard.total_experiments} concluded hypotheses beat their target. Pending and running tests are excluded, so this is a hit rate on finished tests, not on all ideas.`} />
+                        </span>
                       )}
                     </div>
 
@@ -1795,15 +1830,6 @@ function AnglesPageInner() {
                 const cutList   = signals.filter(s => s.signal === 'cut')
                 const monitorList = signals.filter(s => s.signal === 'monitor')
 
-                const fmtMetric = (val: number | null, metric: string | null) => {
-                  if (val === null) return '—'
-                  const m = (metric || '').toUpperCase()
-                  if (m === 'ROAS') return `${val.toFixed(2)}x`
-                  if (m === 'CTR' || m === 'HOOK_RATE' || m === 'HOLD_RATE' || m === 'CVR')
-                    return `${(val * 100).toFixed(2)}%`
-                  return val.toFixed(2)
-                }
-
                 const metricColor: Record<string, string> = {
                   CTR: 'bg-blue-50 text-blue-700', hook_rate: 'bg-amber-50 text-amber-700',
                   hold_rate: 'bg-orange-50 text-orange-700', CVR: 'bg-violet-50 text-violet-700',
@@ -1816,6 +1842,15 @@ function AnglesPageInner() {
                   const pct = s.beat_pct
                   const isAbove = pct !== null && pct >= 0
                   const progress = Math.min(100, Math.round(s.n_concluded / s.min_sample * 100))
+                  const nLinked = s.n_concluded
+                  const valueTip = [
+                    `${metricFormula(s.primary_metric)}.`,
+                    `The number shown is the average across the ads linked to this hypothesis (Meta lifetime data), not a change or a delta.`,
+                    s.win_threshold !== null
+                      ? `Target ${fmtMetricValue(s.win_threshold, s.metric_unit)} = this branch's 60-day average for the same metric. The green/red number is (current − target) ÷ target.`
+                      : `No target set on this hypothesis, so there is no beat %. The Push/Watch/Cut call falls back to the WIN rate of its concluded ads.`,
+                  ].join(' ')
+                  const sampleTip = `${nLinked} of ${s.min_sample} linked ads have reached a verdict. An ad counts once it is marked WIN or LOSE — ads still on TEST don't count. The bar is ${nLinked}/${s.min_sample}; at 100% the hypothesis can be called validated or refuted.`
                   return (
                     <div className="bg-white rounded-lg border border-gray-100 p-3.5 space-y-2.5">
                       {/* Header: metric + tags */}
@@ -1835,11 +1870,12 @@ function AnglesPageInner() {
                       {(s.current_value !== null || s.win_threshold !== null) && (
                         <div className="flex items-center gap-2">
                           <span className="text-xs tabular-nums font-semibold text-gray-800">
-                            {fmtMetric(s.current_value, s.primary_metric)}
+                            {fmtMetricValue(s.current_value, s.metric_unit)}
                           </span>
+                          <Tip wide text={valueTip} />
                           {s.win_threshold !== null && (
                             <span className="text-[10px] text-gray-400">
-                              vs {fmtMetric(s.win_threshold, s.primary_metric)} target
+                              vs {fmtMetricValue(s.win_threshold, s.metric_unit)} target
                             </span>
                           )}
                           {pct !== null && (
@@ -1857,8 +1893,9 @@ function AnglesPageInner() {
                             style={{ width: `${progress}%` }}
                           />
                         </div>
-                        <p className="text-[9px] text-gray-400 mt-1 tabular-nums">
+                        <p className="text-[9px] text-gray-400 mt-1 tabular-nums flex items-center gap-1">
                           {s.n_concluded}/{s.min_sample} samples{s.n_concluded >= s.min_sample ? ' · verdict ready' : ''}
+                          <Tip wide text={sampleTip} />
                         </p>
                       </div>
                     </div>
@@ -2105,26 +2142,23 @@ function AnglesPageInner() {
 
               {/* ── COHORT BATTLES ── */}
               {(() => {
-                const metricVal = (h: Hypothesis): number | null => {
-                  const m = h.primary_metric || h.primary_kpi || ''
-                  if (m === 'roas' || m === 'ROAS') return h.actual_roas ?? null
-                  if (m === 'CTR' || m === 'ctr') return h.actual_ctr ?? null
-                  return h.actual_roas ?? h.actual_ctr ?? null
-                }
-                const branchHypos = hypotheses.filter(h => h.branch_name === ldBranch && metricVal(h) !== null)
-                if (branchHypos.length === 0) return null
+                // Source: running_signals — the same values the Signal Board shows,
+                // already in display units per metric. Never mix metrics in one bar.
+                const scored = (learningDashboard.running_signals || []).filter(s => s.current_value !== null)
+                if (scored.length === 0) return null
 
-                const groups: Record<string, Hypothesis[]> = {}
-                branchHypos.forEach(h => {
-                  const key = [h.target_audience || 'All TA', h.market || 'All', h.primary_metric || h.primary_kpi || 'metric'].join(' · ')
-                  ;(groups[key] = groups[key] || []).push(h)
+                type Sig = typeof scored[0]
+                const groups: Record<string, Sig[]> = {}
+                scored.forEach(s => {
+                  const key = [s.target_audience || 'All TA', s.market || 'All', s.primary_metric || 'metric'].join(' · ')
+                  ;(groups[key] = groups[key] || []).push(s)
                 })
                 // Only show cohorts with ≥2 hypotheses
                 const battles = Object.entries(groups)
                   .filter(([, members]) => members.length >= 2)
                   .map(([key, members]) => ({
                     key,
-                    members: [...members].sort((a, b) => (metricVal(b) ?? 0) - (metricVal(a) ?? 0)),
+                    members: [...members].sort((a, b) => (b.current_value ?? 0) - (a.current_value ?? 0)),
                   }))
                 if (battles.length === 0) return null
 
@@ -2132,20 +2166,23 @@ function AnglesPageInner() {
                   <div className="bg-white rounded-xl border border-gray-200 p-5">
                     <div className="flex items-center gap-2 mb-4">
                       <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">Cohort Battles</h3>
-                      <Tip wide text="Hypotheses ranked head-to-head within the same TA · Market · Metric cohort. Same playing field = fair comparison. 🥇 = highest metric value in that cohort." />
+                      <Tip wide text="Hypotheses ranked head-to-head within the same TA · Market · Metric cohort. Same playing field = fair comparison. 🥇 = highest metric value in that cohort. Cohorts with only one hypothesis are hidden — there is nothing to compare against." />
                     </div>
                     <div className="space-y-6">
                       {battles.map(({ key, members }) => {
-                        const metric = members[0].primary_metric || members[0].primary_kpi || ''
-                        const isRoas = metric === 'roas' || metric === 'ROAS'
+                        const metric = members[0].primary_metric
+                        const cohortTip = `${metricFormula(metric)}. Each row shows that hypothesis's own value; the bar is its share of the leader's value (🥇 is always a full bar), so a half-length bar means half the leader's ${metric || 'metric'}.`
                         return (
                           <div key={key}>
-                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">{key}</p>
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                              {key}
+                              <Tip wide text={cohortTip} />
+                            </p>
                             <div className="space-y-1.5">
                               {members.map((h, i) => {
-                                const val = metricVal(h) ?? 0
-                                const best = metricVal(members[0]) ?? 1
-                                const pct = best > 0 ? (val / best) * 100 : 0
+                                const val = h.current_value ?? 0
+                                const best = members[0].current_value ?? 1
+                                const pct = best > 0 ? Math.min(100, (val / best) * 100) : 0
                                 const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`
                                 const catLabel = HYPOTHESIS_CATEGORIES.find(c => c.value === h.hypothesis_category)?.label || ''
                                 return (
@@ -2156,7 +2193,7 @@ function AnglesPageInner() {
                                         <span className="font-mono text-[10px] text-gray-400">{h.hypothesis_id}</span>
                                         {catLabel && <span className={`text-[9px] px-1.5 py-0.5 rounded-full border font-medium ${CAT_COLOR[h.hypothesis_category!] || 'bg-gray-50 text-gray-500 border-gray-200'}`}>{catLabel}</span>}
                                         <span className={`text-xs font-bold ml-auto shrink-0 ${i === 0 ? 'text-amber-600' : 'text-gray-500'}`}>
-                                          {isRoas ? `${val.toFixed(2)}x` : `${(val * 100).toFixed(2)}%`}
+                                          {fmtMetricValue(val, h.metric_unit)}
                                         </span>
                                       </div>
                                       <p className="text-xs text-gray-700 truncate mb-1">{h.hypothesis}</p>

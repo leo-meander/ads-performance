@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.models.ad_combo import AdCombo
 from app.models.creative_hypothesis import CreativeHypothesis
 from app.models.hypothesis_combo_link import HypothesisComboLink
+from app.services.metric_units import norm_metric, to_display_units
 
 logger = logging.getLogger(__name__)
 
@@ -26,23 +27,29 @@ WIN_RATE_THRESHOLD = 0.60  # fallback when no win_threshold set
 
 
 def _extract_metric(combo: AdCombo, metric: str) -> float | None:
-    """Pull the relevant metric value from a combo row."""
-    m = metric.upper().replace(" ", "_").replace("-", "_")
+    """Pull the relevant metric value from a combo row, in DISPLAY units.
+
+    Combo rate columns are fractions; win_threshold is a percent. Scaling here
+    keeps `avg_metric >= win_threshold` comparing like with like.
+    Returns None when the metric isn't available — the caller then falls back
+    to the combo WIN rate rather than silently judging against ROAS.
+    """
+    m = norm_metric(metric)
     if m == "CTR":
-        return float(combo.ctr) if combo.ctr else None
+        return to_display_units(float(combo.ctr), metric) if combo.ctr else None
     if m == "ROAS":
         return float(combo.roas) if combo.roas else None
-    if m == "HOOK_RATE":
-        return float(combo.hook_rate) if combo.hook_rate else None
+    if m in ("HOOK_RATE", "THUMB_STOP_RATE"):
+        return to_display_units(float(combo.hook_rate), metric) if combo.hook_rate else None
     if m == "HOLD_RATE":
-        return float(combo.thruplay_rate) if combo.thruplay_rate else None
+        return to_display_units(float(combo.thruplay_rate), metric) if combo.thruplay_rate else None
     if m == "CVR":
         if combo.conversions and combo.clicks and combo.clicks > 0:
-            return combo.conversions / combo.clicks
+            return to_display_units(combo.conversions / combo.clicks, metric)
+        return None
     if m == "ENGAGEMENT_RATE":
-        return float(combo.engagement_rate) if combo.engagement_rate else None
-    # Fallback: ROAS
-    return float(combo.roas) if combo.roas else None
+        return to_display_units(float(combo.engagement_rate), metric) if combo.engagement_rate else None
+    return None
 
 
 def sync_hypothesis_results(db: Session) -> dict:

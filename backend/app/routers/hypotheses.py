@@ -14,6 +14,7 @@ from app.models.ad_combo import AdCombo
 from app.models.brand_identity import BrandIdentity
 from app.models.creative_hypothesis import CreativeHypothesis
 from app.models.hypothesis_combo_link import HypothesisComboLink
+from app.services.metric_units import metric_unit, norm_metric, to_display_units
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,10 @@ def _lookup_benchmark(
     country: Optional[str] = None,
 ) -> Optional[float]:
     """Return 60-day average of *metric* for branch (optionally narrowed by TA + country).
+
+    Result is in DISPLAY units (see app.services.metric_units): rates as
+    percent, ROAS as a multiple — same units as win_threshold and as the
+    current_value the Learning Dashboard reports.
     Returns None if no data or metric unsupported."""
     try:
         from datetime import date, timedelta
@@ -226,11 +231,19 @@ def _lookup_benchmark(
                 if r.video_3s_views:
                     values.append(r.video_3s_views / imp * 100)
             elif m == "hold_rate":
+                # KNOWN MISMATCH: this denominator is impressions, while
+                # ad_combos.thruplay_rate is thruplay / video_plays. The
+                # benchmark therefore sits well below the value it is compared
+                # against, so hold_rate hypotheses clear their target too
+                # easily. Needs a video_plays equivalent on metrics_cache to
+                # fix properly — do not "correct" the units here alone.
                 if r.video_thru_plays:
                     values.append(r.video_thru_plays / imp * 100)
             elif m in ("ctr",):
+                # metrics_cache.ctr is Meta's raw `ctr` field, already a percent
+                # (sync_engine caps it at 99.999999) — do NOT scale it again.
                 if r.ctr:
-                    values.append(float(r.ctr) * 100)
+                    values.append(float(r.ctr))
             elif m == "booking_rate":
                 if r.clicks and r.conversions:
                     values.append(float(r.conversions) / r.clicks * 100)
@@ -1146,37 +1159,54 @@ def learning_dashboard(
                 if lk.combo_id in combo_by_id:
                     hyp_to_combos[lk.hypothesis_id].append(combo_by_id[lk.combo_id])
 
-        def _current_metric(h: CreativeHypothesis, combos: list[AdCombo]) -> float | None:
-            """Extract current metric value: prefer hypothesis actuals, fall back to combo average."""
-            m = (h.primary_metric or h.primary_kpi or "").upper().replace(" ", "_").replace("-", "_")
+        def _current_metric(
+            h: CreativeHypothesis, combos: list[AdCombo]
+        ) -> tuple[float | None, str]:
+            """Current primary-metric value in DISPLAY units, plus its unit.
+
+            Rates come back as percent (1.55 = 1.55%), ROAS as a multiple —
+            same units as win_threshold, so beat_pct compares like with like.
+            Returns (None, unit) when the metric has no data on this hypothesis.
+            """
+            raw_metric = h.primary_metric or h.primary_kpi
+            m = norm_metric(raw_metric)
+            unit = metric_unit(raw_metric)
+
+            def _avg(vals: list) -> float | None:
+                nums = [float(v) for v in vals if v]
+                if not nums:
+                    return None
+                return to_display_units(sum(nums) / len(nums), raw_metric)
+
             if m == "CTR":
                 if h.actual_ctr:
-                    return float(h.actual_ctr)
-                vals = [float(c.ctr) for c in combos if c.ctr]
-                return sum(vals) / len(vals) if vals else None
+                    return to_display_units(float(h.actual_ctr), raw_metric), unit
+                return _avg([c.ctr for c in combos]), unit
             if m == "ROAS":
                 if h.actual_roas:
-                    return float(h.actual_roas)
-                vals = [float(c.roas) for c in combos if c.roas]
-                return sum(vals) / len(vals) if vals else None
-            if m == "HOOK_RATE":
-                vals = [float(c.hook_rate) for c in combos if c.hook_rate]
-                return sum(vals) / len(vals) if vals else None
+                    return float(h.actual_roas), unit
+                return _avg([c.roas for c in combos]), unit
+            if m in ("HOOK_RATE", "THUMB_STOP_RATE"):
+                return _avg([c.hook_rate for c in combos]), unit
             if m == "HOLD_RATE":
-                vals = [float(c.thruplay_rate) for c in combos if c.thruplay_rate]
-                return sum(vals) / len(vals) if vals else None
+                return _avg([c.thruplay_rate for c in combos]), unit
             if m == "CVR":
                 if h.actual_cvr:
-                    return float(h.actual_cvr)
-            # fallback: whatever actuals exist
-            return float(h.actual_roas) if h.actual_roas else (float(h.actual_ctr) if h.actual_ctr else None)
+                    return to_display_units(float(h.actual_cvr), raw_metric), unit
+                return _avg([
+                    (c.conversions / c.clicks) for c in combos if c.clicks and c.conversions
+                ]), unit
+            # No primary metric set — show ROAS as a plain multiple, never as a rate.
+            if not m and h.actual_roas:
+                return float(h.actual_roas), "x"
+            return None, unit
 
         def _build_signal_entry(h: CreativeHypothesis, force_signal: str | None = None) -> dict:
             combos = hyp_to_combos.get(h.hypothesis_id, [])
             min_s = int(h.min_sample or 5)
             n_concluded = len([c for c in combos if c.verdict in ("WIN", "LOSE")])
             n_win = len([c for c in combos if c.verdict == "WIN"])
-            current = _current_metric(h, combos)
+            current, unit = _current_metric(h, combos)
             threshold = float(h.win_threshold) if h.win_threshold else None
             beat_pct: float | None = None
             if threshold and threshold > 0 and current is not None:
@@ -1215,6 +1245,7 @@ def learning_dashboard(
                 "hypothesis_id": h.hypothesis_id,
                 "hypothesis": h.hypothesis,
                 "primary_metric": h.primary_metric or h.primary_kpi,
+                "metric_unit": unit,
                 "current_value": round(current, 4) if current is not None else None,
                 "win_threshold": round(threshold, 4) if threshold is not None else None,
                 "beat_pct": beat_pct,
