@@ -33,6 +33,25 @@ export function ChangeTag({ change, inverseColor = false }: { change: number | n
   )
 }
 
+// Period-over-period move of a drop-off RATE, in percentage points — not the
+// change of the underlying count. Higher drop-off is always worse, so an
+// increase renders red regardless of what happened to the raw volume.
+export function DropOffDeltaTag({ current, prev }: { current: number | null | undefined; prev: number | null | undefined }) {
+  if (current === null || current === undefined || prev === null || prev === undefined) {
+    return <span className="text-xs text-gray-400" title="No previous-period drop-off to compare">--</span>
+  }
+  const pp = (current - prev) * 100
+  const tip = `Drop-off ${(prev * 100).toFixed(1)}% → ${(current * 100).toFixed(1)}% vs previous period (${pp >= 0 ? '+' : ''}${pp.toFixed(1)} percentage points). Up = worse.`
+  if (Math.abs(pp) < 0.05) return <span className="text-xs text-gray-400" title={tip}>0pp</span>
+  const worse = pp > 0
+  return (
+    <span title={tip} className={`inline-flex items-center gap-0.5 text-xs font-medium ${worse ? 'text-red-500' : 'text-green-600'}`}>
+      {worse ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+      {worse ? '+' : ''}{pp.toFixed(1)}pp
+    </span>
+  )
+}
+
 export function getDateRange(preset: string): { from: string; to: string } {
   const today = new Date()
   const to = formatLocalDate(today)

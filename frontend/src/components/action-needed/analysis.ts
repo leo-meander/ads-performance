@@ -26,6 +26,7 @@ export type FunnelStep = {
   value: number
   change: number | null
   drop_off: number | null
+  drop_off_prev: number | null
   drop_off_change: number | null
 }
 

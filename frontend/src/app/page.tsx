@@ -10,7 +10,7 @@ import {
 import { apiFetch } from '@/lib/api'
 import FunnelRecommendations from '@/components/FunnelRecommendations'
 import {
-  fmtMoney, fmtNum, ChangeTag, getDateRange, DATE_PRESETS,
+  fmtMoney, fmtNum, ChangeTag, DropOffDeltaTag, getDateRange, DATE_PRESETS,
   FUNNEL_STAGE_PILL, PLATFORM_PILL,
 } from '@/components/dashboard/dashboardUtils'
 import HorizontalBarBreakdown, { BreakdownItem } from '@/components/dashboard/HorizontalBarBreakdown'
@@ -40,6 +40,7 @@ type FunnelStage = {
   value: number
   change: number | null
   drop_off: number | null
+  drop_off_prev: number | null
   drop_off_change: number | null
 }
 
@@ -287,9 +288,9 @@ function DashboardInner() {
         setPrevDaily(mapSeries(daily.data.prev_series || []))
       }
       if (funnelRes.success && funnelRes.data) {
-        const raw = funnelRes.data.stages || (funnelRes.data.steps || []).map((s: { label: string; value: number; change: number | null; drop_off: number | null; drop_off_change: number | null }) => ({
+        const raw = funnelRes.data.stages || (funnelRes.data.steps || []).map((s: { label: string; value: number; change: number | null; drop_off: number | null; drop_off_prev: number | null; drop_off_change: number | null }) => ({
           name: s.label, value: s.value, change: s.change,
-          drop_off: s.drop_off, drop_off_change: s.drop_off_change,
+          drop_off: s.drop_off, drop_off_prev: s.drop_off_prev, drop_off_change: s.drop_off_change,
         }))
         setFunnelData(raw)
         // Capture raw FunnelStep[] for analysis (only available from /dashboard/funnel, not /country/funnel)
@@ -995,9 +996,9 @@ function DashboardInner() {
           </div>
           <p className="text-[11px] text-gray-400 mb-4">
             {funnelView === 'by-branch'
-              ? `Per-branch funnel · ${selectedBranches.length > 0 ? selectedBranches.join(', ') : 'all branches'} · worst drop-off highlighted red`
+              ? `Per-branch funnel · ${selectedBranches.length > 0 ? selectedBranches.join(', ') : 'all branches'} · worst drop-off highlighted red · trend = drop-off vs previous period in pp (up = worse)`
               : funnelView === 'by-campaign'
-              ? `Per-campaign funnel · top ${Math.min(filteredRows.length, 10)} campaigns by spend · worst drop-off highlighted red`
+              ? `Per-campaign funnel · top ${Math.min(filteredRows.length, 10)} campaigns by spend · worst drop-off highlighted red · trend = drop-off vs previous period in pp (up = worse)`
               : 'Impression → Click → Search → Add to cart → Checkout → Booking · drop-off shown between steps'}
             {funnelView === 'single' && comparisonMode === 'benchmark' && (
               <span className="ml-2 text-blue-500">
@@ -1049,7 +1050,7 @@ function DashboardInner() {
                                       {isBest && <span className="ml-1 text-sm">✓</span>}
                                     </div>
                                     <div className="text-[11px] text-gray-400 mt-0.5">{s ? fmtNum(s.value) : '—'}</div>
-                                    {s?.change != null && <div className="mt-0.5"><ChangeTag change={s.change} /></div>}
+                                    <div className="mt-0.5"><DropOffDeltaTag current={s.drop_off} prev={s.drop_off_prev} /></div>
                                   </>
                                 ) : (
                                   <div className="text-sm font-bold text-gray-900">{s ? fmtNum(s.value) : '—'}</div>
@@ -1109,7 +1110,7 @@ function DashboardInner() {
                                       {isBest && <span className="ml-1 text-sm">✓</span>}
                                     </div>
                                     <div className="text-[11px] text-gray-400 mt-0.5">{s ? fmtNum(s.value) : '—'}</div>
-                                    {s?.change != null && <div className="mt-0.5"><ChangeTag change={s.change} /></div>}
+                                    <div className="mt-0.5"><DropOffDeltaTag current={s.drop_off} prev={s.drop_off_prev} /></div>
                                   </>
                                 ) : (
                                   <div className="text-sm font-bold text-gray-900">{s ? fmtNum(s.value) : '—'}</div>
@@ -1148,7 +1149,7 @@ function DashboardInner() {
                             </span>
                           )}
                           {comparisonMode === 'prev' ? (
-                            stage.drop_off_change !== null && <ChangeTag change={stage.drop_off_change} inverseColor />
+                            <DropOffDeltaTag current={stage.drop_off} prev={stage.drop_off_prev} />
                           ) : bmDelta != null ? (
                             <span className={`text-[11px] font-medium ${bmDelta > 0.005 ? 'text-red-500' : bmDelta < -0.005 ? 'text-emerald-600' : 'text-gray-400'}`}>
                               {bmDelta > 0 ? '+' : ''}{(bmDelta * 100).toFixed(1)}pp vs avg

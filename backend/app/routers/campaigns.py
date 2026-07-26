@@ -658,6 +658,7 @@ def get_dashboard_funnel(
                 "value": cur_val,
                 "change": change,
                 "drop_off": drop_off,
+                "drop_off_prev": drop_off_prev,
                 "drop_off_change": drop_off_change,
             })
 
