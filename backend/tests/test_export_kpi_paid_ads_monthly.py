@@ -12,50 +12,15 @@ from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-import app.models  # noqa: F401 — register every table before create_all
-from app.database import get_db
 from app.main import app
 from app.models.account import AdAccount
 from app.models.api_key import ApiKey
-from app.models.base import Base
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
 from app.services.export_auth import generate_api_key
-
-engine = create_engine(
-    "sqlite:///test_export_kpi_paid_ads_monthly.db",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-def override_get_db():
-    db = TestSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
+from tests.db import TestSession
 
 client = TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    prev = app.dependency_overrides.get(get_db)
-    app.dependency_overrides[get_db] = override_get_db
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
-    if prev is not None:
-        app.dependency_overrides[get_db] = prev
-    else:
-        app.dependency_overrides.pop(get_db, None)
 
 
 def _api_key(db) -> str:

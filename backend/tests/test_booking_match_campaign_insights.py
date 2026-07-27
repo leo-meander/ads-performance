@@ -11,15 +11,8 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-import app.models  # noqa: F401 — register every table before create_all
-from app.database import get_db
 from app.main import app
 from app.models.account import AdAccount
-from app.models.base import Base
 from app.models.booking_match import BookingMatch
 from app.models.campaign import Campaign
 from app.models.ad_country_metric import AdCountryMetric
@@ -27,43 +20,12 @@ from app.models.reservation import Reservation
 from app.models.user import User
 from app.services.auth_service import create_access_token, hash_password
 from app.services.booking_match_service import run_matching
-
-engine = create_engine(
-    "sqlite:///test_campaign_insights.db",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-def override_get_db():
-    db = TestSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
+from tests.db import TestSession
 
 client = TestClient(app)
 
 D = date(2026, 6, 10)
 WEBSITE = "Website/Booking Engine"
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    # Install our engine override per-test and restore afterwards, so this
-    # module's TestClient engine isn't clobbered by another test file that also
-    # overrides get_db at import time (and vice-versa).
-    prev = app.dependency_overrides.get(get_db)
-    app.dependency_overrides[get_db] = override_get_db
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
-    if prev is not None:
-        app.dependency_overrides[get_db] = prev
-    else:
-        app.dependency_overrides.pop(get_db, None)
 
 
 def _admin_headers() -> dict:

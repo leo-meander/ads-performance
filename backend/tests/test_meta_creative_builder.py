@@ -16,14 +16,11 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
-from app.models.base import Base
 from app.models.figma import FigmaJob, FigmaTemplate
 from app.services.figma_client import FigmaExport
 from app.services.meta_creative_builder import (
@@ -31,6 +28,7 @@ from app.services.meta_creative_builder import (
     build_or_get_meta_creative,
     meta_cta_for,
 )
+from tests.db import TestSession
 
 
 # ── Fixtures ─────────────────────────────────────────────────
@@ -38,12 +36,7 @@ from app.services.meta_creative_builder import (
 
 @pytest.fixture
 def db():
-    engine = create_engine(
-        "sqlite:///:memory:", connect_args={"check_same_thread": False}
-    )
-    Base.metadata.create_all(bind=engine)
-    Session = sessionmaker(bind=engine)
-    session = Session()
+    session = TestSession()
     try:
         yield session
     finally:

@@ -13,27 +13,12 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table before create_all
 from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
-from app.models.base import Base
 from app.services import combo_metrics_sync as mod
-
-engine = create_engine(
-    "sqlite:///test_combo_metrics.db",
-    connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+from tests.db import TestSession
 
 
 def _fake_fb(rows):

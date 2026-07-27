@@ -12,12 +12,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.models.account import AdAccount
 from app.models.ad_material import AdMaterial
-from app.models.base import Base
 from app.models.creative_visual_tag import CreativeVisualTag
 from app.services.creative_vision_tagger import (
     VISION_MODEL,
@@ -25,6 +22,7 @@ from app.services.creative_vision_tagger import (
     tag_material,
     tag_pending_materials,
 )
+from tests.db import TestSession
 
 
 def test_image_source_http_url():
@@ -37,20 +35,6 @@ def test_image_source_http_url():
 def test_image_source_base64_data_url():
     src = _image_source("data:image/jpeg;base64,QUJD")
     assert src == {"type": "base64", "media_type": "image/jpeg", "data": "QUJD"}
-
-
-engine = create_engine(
-    "sqlite:///test_vision_tagger.db",
-    connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
 
 
 def _seed_material(*, material_type: str = "image", file_url: str = "https://example/img.jpg") -> AdMaterial:

@@ -7,8 +7,6 @@ import uuid
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table before create_all
 from app.models.account import AdAccount
@@ -17,16 +15,10 @@ from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
 from app.models.ad_set import AdSet
-from app.models.base import Base
 from app.models.metrics import MetricsCache
 from app.routers.internal_tasks import _do_backfill_combo_country
+from tests.db import TestSession
 
-
-engine = create_engine(
-    "sqlite:///test_backfill_combo_country.db",
-    connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 _n = 0  # monotonic counter for unique copy/material/combo ids across a test
 
@@ -35,9 +27,7 @@ _n = 0  # monotonic counter for unique copy/material/combo ids across a test
 def setup_db():
     global _n
     _n = 0
-    Base.metadata.create_all(bind=engine)
     yield
-    Base.metadata.drop_all(bind=engine)
 
 
 def _branch(db) -> str:

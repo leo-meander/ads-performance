@@ -5,13 +5,10 @@ from datetime import date, datetime, timezone
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.models.account import AdAccount
 from app.models.ad import Ad
 from app.models.ad_set import AdSet
-from app.models.base import Base
 from app.models.campaign import Campaign
 from app.models.change_log_entry import (
     ALL_CATEGORIES,
@@ -25,19 +22,7 @@ from app.services.changelog import (
     log_change,
     resolve_entity_context,
 )
-
-
-engine = create_engine(
-    "sqlite:///test_changelog.db", connect_args={"check_same_thread": False}
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+from tests.db import TestSession
 
 
 def _seed_entities(country: str = "VN", account_name: str = "Meander Saigon"):
