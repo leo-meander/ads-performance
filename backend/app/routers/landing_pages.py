@@ -160,20 +160,15 @@ _BRANCH_LABELS: dict[str, str] = {
     "sgn.staymeander.com": "Meander Saigon",
 }
 _EXCLUDE_SLUGS = ("day-by-day-plan%", "thank-you%", "%travel-guide%")
-# Metrics window start, applied to EVERY version. None = all-time, no cutoff.
+# Date from which V2 metrics are counted (campaigns switched landing page URLs
+# on this date). V1 stays all-time on purpose: it is the lifetime record of the
+# old page set, while V2 only exists from the switchover onward.
 #
-# One knob on purpose: V1 used to be counted from 2000-01-01 while V2 started
-# at 2026-06-19 (the date campaigns switched their landing page URLs to V2), so
-# the two cards were never measuring the same window and every V2 delta read as
-# a collapse. The cutoff also hid whatever traffic a V2 page had before the
-# switchover, which is the reason it was dropped rather than applied to both.
-#
-# Caveat that comes with all-time: spend from before the switchover, when those
-# campaigns still pointed at V1 URLs, now lands on the V2 card. Sessions are
-# unaffected; ROAS and CPP for V2 can read high.
-_METRICS_FROM: str | None = None
-# Stand-in lower bound when there is no cutoff — older than any row we hold.
-_SQL_EPOCH = "2000-01-01"
+# The two versions therefore sit on DIFFERENT windows by design. That makes the
+# cross-version deltas a volume comparison of 12 months against a few weeks —
+# read the rates (conv. rate, ROAS, bounce), not the absolute counts. Each card
+# reports its own window so the asymmetry is visible on screen.
+_V2_METRICS_FROM = "2026-06-19"
 
 
 @router.get("/landing-pages/version-overview")
@@ -183,12 +178,12 @@ def version_overview(
 ):
     """Return per-version aggregate metrics for the 5 active landing page domains.
 
-    Every version is measured over the same window (_METRICS_FROM → today, or
-    all-time when _METRICS_FROM is None).
+    Versions sit on different windows by design — see _V2_METRICS_FROM. Each
+    one is reported in `version_windows` so the UI can label its card.
 
     Response: { branches: [{ domain, branch, versions: { "Version 1": VersionAgg, ... } }],
                 version_labels: ["Version 1", "Version 2", ...],
-                metrics_from: "YYYY-MM-DD" | null,   // null = all-time
+                version_windows: { "Version 2": "YYYY-MM-DD", ... },  // null = all-time
                 freshness: { ads|clarity|ga4: "YYYY-MM-DD" | null } }
     VersionAgg includes ads + Clarity + GA4 metrics.
     """
@@ -197,6 +192,14 @@ def version_overview(
             f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN 'Version 2'"
             for d, s in _V2_PATTERNS
         )
+        # metrics_from: V2 pages (by explicit lp.ver OR slug pattern) use _V2_METRICS_FROM.
+        # Must check lp.ver first so pages like oani-and-1948 (ver set in DB but no matching
+        # slug pattern) still get the correct cutoff instead of falling back to 2000-01-01.
+        pattern_cases = "\n".join(
+            f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN '{_V2_METRICS_FROM}'"
+            for d, s in _V2_PATTERNS
+        )
+        metrics_from_cases = f"WHEN lp.ver = 'Version 2' THEN '{_V2_METRICS_FROM}'\n{pattern_cases}"
         exclude_where = " AND ".join(
             f"lp.slug NOT LIKE '{pat}'" for pat in _EXCLUDE_SLUGS
         )
@@ -211,7 +214,10 @@ def version_overview(
                             ELSE 'Version 1'
                         END
                     ) AS version,
-                    '{_METRICS_FROM or _SQL_EPOCH}'::date AS metrics_from
+                    CASE
+                        {metrics_from_cases}
+                        ELSE '2000-01-01'
+                    END::date AS metrics_from
                 FROM landing_pages lp
                 WHERE lp.is_active = TRUE
                   AND lp.domain IN ({domain_list})
@@ -507,10 +513,16 @@ def version_overview(
             for r in db.execute(freshness_sql).mappings().all()
         }
 
+        # Mirrors the metrics_from CASE above: V2 starts at the switchover date,
+        # every other version is all-time (null).
+        version_windows = {
+            v: (_V2_METRICS_FROM if v == "Version 2" else None) for v in all_versions
+        }
+
         return _api({
             "branches": result,
             "version_labels": all_versions,
-            "metrics_from": _METRICS_FROM,
+            "version_windows": version_windows,
             "freshness": freshness,
         })
     except Exception as e:

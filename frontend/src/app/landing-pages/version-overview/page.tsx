@@ -56,8 +56,9 @@ type BranchData = {
 type ApiResponse = {
   branches: BranchData[]
   version_labels: string[]
-  /** null = all-time, no cutoff. Same window for every version either way. */
-  metrics_from: string | null
+  /** Per version: start date of its window, or null for all-time. Versions
+   *  deliberately sit on different windows, so each card states its own. */
+  version_windows: Record<string, string | null>
   freshness: Record<string, string | null>
 }
 
@@ -73,9 +74,9 @@ function fmtDate(iso: string | null | undefined) {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
 }
 
-/** Human label for the measurement window shared by every version. */
-function windowLabel(metricsFrom: string | null) {
-  return metricsFrom ? `${fmtDate(metricsFrom)} → today` : 'all-time'
+/** Human label for a version's measurement window. */
+function windowLabel(metricsFrom: string | null | undefined) {
+  return metricsFrom ? `since ${fmtDate(metricsFrom)}` : 'all-time'
 }
 
 function daysAgo(iso: string | null | undefined) {
@@ -180,13 +181,30 @@ function RelDelta({ base, compare, higherIsBetter = true }: {
   )
 }
 
-function VersionCard({ label, agg, color, baseAgg }: {
-  label: string; agg: VersionAgg; color: string; baseAgg: VersionAgg | null
+function VersionCard({ label, agg, color, baseAgg, window, baseWindow }: {
+  label: string
+  agg: VersionAgg
+  color: string
+  baseAgg: VersionAgg | null
+  window: string | null | undefined
+  baseWindow: string | null | undefined
 }) {
   const b = baseAgg
+  // V1 is all-time while V2 starts at the switchover, so a delta between them
+  // compares a year against a few weeks. Say so next to the numbers rather than
+  // letting the -93% badges read as a performance collapse.
+  const mismatched = b != null && window !== baseWindow
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-6" style={{ borderTopWidth: 3, borderTopColor: color }}>
-      <p className="text-xs font-semibold uppercase tracking-wider mb-4" style={{ color }}>{label}</p>
+      <div className="flex items-baseline gap-2 mb-4 flex-wrap">
+        <p className="text-xs font-semibold uppercase tracking-wider" style={{ color }}>{label}</p>
+        <span className="text-xs text-gray-400">{windowLabel(window)}</span>
+      </div>
+      {mismatched && (
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5 mb-3">
+          Measured over a different window than the baseline ({windowLabel(baseWindow)}) — compare rates, not totals.
+        </p>
+      )}
 
       {/* Row 1: traffic */}
       <div className="grid grid-cols-3 gap-3 mb-3">
@@ -478,11 +496,10 @@ function PagesTable({ branch, selectedVersions, versionColors, allVersions, onVe
   )
 }
 
-function OverviewChart({ branches, selectedVersions, versionColors, metricsFrom }: {
+function OverviewChart({ branches, selectedVersions, versionColors }: {
   branches: BranchData[]
   selectedVersions: string[]
   versionColors: Record<string, string>
-  metricsFrom: string | null
 }) {
   const data = branches.map(b => {
     const row: Record<string, string | number> = { name: b.branch.replace('Meander ', '') }
@@ -494,9 +511,7 @@ function OverviewChart({ branches, selectedVersions, versionColors, metricsFrom 
   })
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-5">
-      <p className="text-sm font-medium text-gray-700 mb-4">
-        Conv. rate by branch ({windowLabel(metricsFrom)})
-      </p>
+      <p className="text-sm font-medium text-gray-700 mb-4">Conv. rate by branch</p>
       <ResponsiveContainer width="100%" height={260}>
         <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
@@ -593,7 +608,7 @@ export default function VersionOverviewPage() {
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Landing Page Version Overview</h1>
           <p className="text-sm text-gray-500">
-            Compare versions{data ? ` — ${windowLabel(data.metrics_from)}` : ''}, by branch
+            Compare versions — by branch. Each version states its own window.
           </p>
         </div>
       </div>
@@ -636,7 +651,6 @@ export default function VersionOverviewPage() {
               branches={data.branches}
               selectedVersions={selectedVersions}
               versionColors={versionColors}
-              metricsFrom={data.metrics_from}
             />
           </div>
 
@@ -671,6 +685,8 @@ export default function VersionOverviewPage() {
                       agg={b.versions[v]}
                       color={versionColors[v]}
                       baseAgg={idx === 0 ? null : base}
+                      window={data.version_windows?.[v]}
+                      baseWindow={baseVersion ? data.version_windows?.[baseVersion] : null}
                     />
                   ))}
                 </div>
@@ -678,7 +694,7 @@ export default function VersionOverviewPage() {
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-100">
                     <p className="text-xs text-gray-400">
-                      All pages, {windowLabel(data.metrics_from)} — native ad currency. ⚠ = low session
+                      All pages, each over its own version window — native ad currency. ⚠ = low session
                       count (&lt;10). 🔗̸ = no campaign linked, so spend/conversions read as 0.
                       Engagement/Bounce from GA4.
                     </p>
