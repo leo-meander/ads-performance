@@ -6,7 +6,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer,
 } from 'recharts'
-import { ArrowLeft, AlertTriangle, Link2, X, Loader2 } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, Link2, Unlink, X, Loader2 } from 'lucide-react'
 import { API_BASE } from '@/lib/api'
 
 type PageRow = {
@@ -29,6 +29,7 @@ type PageRow = {
   begin_checkout: number
   avg_session_duration_sec: number
   low_confidence: boolean
+  ad_link_count: number
 }
 
 type VersionAgg = {
@@ -55,6 +56,57 @@ type BranchData = {
 type ApiResponse = {
   branches: BranchData[]
   version_labels: string[]
+  metrics_from: string
+  freshness: Record<string, string | null>
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  ads: 'Ads',
+  clarity: 'Clarity',
+  ga4: 'GA4',
+}
+
+function fmtDate(iso: string | null | undefined) {
+  if (!iso) return '—'
+  const d = new Date(`${iso}T00:00:00Z`)
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+}
+
+function daysAgo(iso: string | null | undefined) {
+  if (!iso) return null
+  const then = Date.parse(`${iso}T00:00:00Z`)
+  const today = new Date()
+  const now = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
+  return Math.round((now - then) / 86_400_000)
+}
+
+/** Per-source "data through <date>" chips. A stalled cron reads as a flat trend
+ *  on the cards, so the lag is spelled out rather than left to be inferred. */
+function FreshnessBar({ freshness }: { freshness: Record<string, string | null> }) {
+  const entries = ['ads', 'clarity', 'ga4'].filter(k => k in freshness)
+  if (!entries.length) return null
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      {entries.map(k => {
+        const lag = daysAgo(freshness[k])
+        const stale = lag === null || lag > 2
+        return (
+          <span
+            key={k}
+            title={`${SOURCE_LABELS[k]} data through ${fmtDate(freshness[k])}`}
+            className={`text-xs px-2 py-0.5 rounded-full border ${
+              stale
+                ? 'bg-amber-50 border-amber-200 text-amber-700'
+                : 'bg-gray-50 border-gray-200 text-gray-500'
+            }`}
+          >
+            {SOURCE_LABELS[k]} → {fmtDate(freshness[k])}
+            {lag !== null && lag > 2 && ` (${lag}d)`}
+          </span>
+        )
+      })}
+    </div>
+  )
 }
 
 const VERSION_COLORS = ['#2a78d6', '#1baf7a', '#e67e22', '#9b59b6', '#e74c3c', '#1abc9c']
@@ -386,6 +438,16 @@ function PagesTable({ branch, selectedVersions, versionColors, allVersions, onVe
                 <div className="flex items-center gap-1.5 max-w-[200px]">
                   <span className="truncate" title={p.slug}>{p.slug || '(root)'}</span>
                   {p.low_confidence && <AlertTriangle className="w-3 h-3 text-amber-400 flex-shrink-0" />}
+                  {/* Sessions still count toward the version denominator, so an
+                      unlinked page silently drags its version's conv. rate down. */}
+                  {p.ad_link_count === 0 && p.sessions > 0 && (
+                    <span
+                      title="No campaign linked — spend, conversions and ROAS read as 0"
+                      className="flex-shrink-0 leading-none"
+                    >
+                      <Unlink className="w-3 h-3 text-red-400" />
+                    </span>
+                  )}
                   <CampaignLinksPopover pageId={p.page_id} slug={p.slug} />
                 </div>
               </td>
@@ -410,8 +472,11 @@ function PagesTable({ branch, selectedVersions, versionColors, allVersions, onVe
   )
 }
 
-function OverviewChart({ branches, selectedVersions, versionColors }: {
-  branches: BranchData[]; selectedVersions: string[]; versionColors: Record<string, string>
+function OverviewChart({ branches, selectedVersions, versionColors, metricsFrom }: {
+  branches: BranchData[]
+  selectedVersions: string[]
+  versionColors: Record<string, string>
+  metricsFrom: string
 }) {
   const data = branches.map(b => {
     const row: Record<string, string | number> = { name: b.branch.replace('Meander ', '') }
@@ -423,7 +488,9 @@ function OverviewChart({ branches, selectedVersions, versionColors }: {
   })
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-5">
-      <p className="text-sm font-medium text-gray-700 mb-4">Conv. rate by branch (all-time)</p>
+      <p className="text-sm font-medium text-gray-700 mb-4">
+        Conv. rate by branch (since {fmtDate(metricsFrom)})
+      </p>
       <ResponsiveContainer width="100%" height={260}>
         <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
@@ -519,9 +586,17 @@ export default function VersionOverviewPage() {
         </Link>
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Landing Page Version Overview</h1>
-          <p className="text-sm text-gray-500">Compare versions — all-time, by branch</p>
+          <p className="text-sm text-gray-500">
+            Compare versions{data ? ` — ${fmtDate(data.metrics_from)} → today` : ''}, by branch
+          </p>
         </div>
       </div>
+
+      {data?.freshness && (
+        <div className="mb-6">
+          <FreshnessBar freshness={data.freshness} />
+        </div>
+      )}
 
       {loading && <div className="text-sm text-gray-400 py-12 text-center">Loading…</div>}
       {error && <div className="text-sm text-red-500 py-4">{error}</div>}
@@ -551,7 +626,12 @@ export default function VersionOverviewPage() {
           )}
 
           <div className="mb-8">
-            <OverviewChart branches={data.branches} selectedVersions={selectedVersions} versionColors={versionColors} />
+            <OverviewChart
+              branches={data.branches}
+              selectedVersions={selectedVersions}
+              versionColors={versionColors}
+              metricsFrom={data.metrics_from}
+            />
           </div>
 
           {/* Branch tabs */}
@@ -592,7 +672,9 @@ export default function VersionOverviewPage() {
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-100">
                     <p className="text-xs text-gray-400">
-                      All pages — native ad currency. ⚠ = low session count (&lt;10). Engagement/Bounce from GA4.
+                      All pages since {fmtDate(data.metrics_from)} — native ad currency. ⚠ = low session
+                      count (&lt;10). 🔗̸ = no campaign linked, so spend/conversions read as 0.
+                      Engagement/Bounce from GA4.
                     </p>
                   </div>
                   <PagesTable

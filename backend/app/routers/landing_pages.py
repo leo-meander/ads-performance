@@ -160,8 +160,13 @@ _BRANCH_LABELS: dict[str, str] = {
     "sgn.staymeander.com": "Meander Saigon",
 }
 _EXCLUDE_SLUGS = ("day-by-day-plan%", "thank-you%", "%travel-guide%")
-# Date from which V2 metrics are counted (campaigns switched landing page URLs on this date)
-_V2_METRICS_FROM = "2026-06-19"
+# Metrics window start — applies to EVERY version, not just V2. 2026-06-19 is
+# the date campaigns switched their landing page URLs to V2.
+#
+# V1 used to be counted from 2000-01-01 (lifetime) while V2 started here, so
+# the cards compared ~12 months of V1 against ~5 weeks of V2 and every V2 delta
+# read as a catastrophic drop. Same window for both = apples to apples.
+_METRICS_FROM = "2026-06-19"
 
 
 @router.get("/landing-pages/version-overview")
@@ -171,8 +176,12 @@ def version_overview(
 ):
     """Return per-version aggregate metrics for the 5 active landing page domains.
 
+    Every version is measured over the same window (_METRICS_FROM → today).
+
     Response: { branches: [{ domain, branch, versions: { "Version 1": VersionAgg, ... } }],
-                version_labels: ["Version 1", "Version 2", ...] }
+                version_labels: ["Version 1", "Version 2", ...],
+                metrics_from: "YYYY-MM-DD",
+                freshness: { ads|clarity|ga4: "YYYY-MM-DD" | null } }
     VersionAgg includes ads + Clarity + GA4 metrics.
     """
     try:
@@ -180,14 +189,6 @@ def version_overview(
             f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN 'Version 2'"
             for d, s in _V2_PATTERNS
         )
-        # metrics_from: V2 pages (by explicit lp.ver OR slug pattern) use _V2_METRICS_FROM.
-        # Must check lp.ver first so pages like oani-and-1948 (ver set in DB but no matching
-        # slug pattern) still get the correct cutoff instead of falling back to 2000-01-01.
-        pattern_cases = "\n".join(
-            f"WHEN lp.domain = '{d}' AND lp.slug LIKE '{s}' THEN '{_V2_METRICS_FROM}'"
-            for d, s in _V2_PATTERNS
-        )
-        metrics_from_cases = f"WHEN lp.ver = 'Version 2' THEN '{_V2_METRICS_FROM}'\n{pattern_cases}"
         exclude_where = " AND ".join(
             f"lp.slug NOT LIKE '{pat}'" for pat in _EXCLUDE_SLUGS
         )
@@ -202,10 +203,7 @@ def version_overview(
                             ELSE 'Version 1'
                         END
                     ) AS version,
-                    CASE
-                        {metrics_from_cases}
-                        ELSE '2000-01-01'
-                    END::date AS metrics_from
+                    '{_METRICS_FROM}'::date AS metrics_from
                 FROM landing_pages lp
                 WHERE lp.is_active = TRUE
                   AND lp.domain IN ({domain_list})
@@ -330,6 +328,14 @@ def version_overview(
                 WHERE g.source IS NULL AND g.medium IS NULL AND g.campaign IS NULL
                   AND g.date >= pt.metrics_from
                 GROUP BY g.landing_page_id
+            ),
+            ad_link_counts AS (
+                -- A page with zero links has no campaign attached, so its spend
+                -- and conversions read as 0 while its sessions still land in the
+                -- version denominator. Surface the count so the UI can flag it.
+                SELECT landing_page_id, COUNT(*) AS link_count
+                FROM landing_page_ad_links
+                GROUP BY landing_page_id
             )
             SELECT
                 pt.id AS page_id,
@@ -361,12 +367,14 @@ def version_overview(
                 ROUND(COALESCE(vam.spend, 0)::numeric, 0)       AS ver_spend,
                 ROUND(COALESCE(vam.revenue, 0)::numeric, 0)     AS ver_revenue,
                 COALESCE(vam.conversions, 0)                     AS ver_conversions,
-                COALESCE(vam.add_to_cart, 0)                     AS ver_add_to_cart
+                COALESCE(vam.add_to_cart, 0)                     AS ver_add_to_cart,
+                COALESCE(alc.link_count, 0)                      AS ad_link_count
             FROM page_tags pt
             LEFT JOIN ad_metrics am ON am.landing_page_id = pt.id
             LEFT JOIN version_ad_metrics vam ON vam.domain = pt.domain AND vam.version = pt.version
             LEFT JOIN clarity_metrics cm ON cm.landing_page_id = pt.id
             LEFT JOIN ga4_metrics gm ON gm.landing_page_id = pt.id
+            LEFT JOIN ad_link_counts alc ON alc.landing_page_id = pt.id
             WHERE COALESCE(am.spend, 0) > 0 OR COALESCE(cm.sessions, 0) > 0
             ORDER BY pt.domain, pt.version DESC, COALESCE(am.spend, 0) DESC
         """)
@@ -402,6 +410,7 @@ def version_overview(
                 "begin_checkout": int(r["begin_checkout"] or 0),
                 "avg_session_duration_sec": float(r["avg_session_duration_sec"] or 0),
                 "low_confidence": int(r["sessions"] or 0) < 10,
+                "ad_link_count": int(r["ad_link_count"] or 0),
                 "ver_spend": float(r["ver_spend"] or 0),
                 "ver_revenue": float(r["ver_revenue"] or 0),
                 "ver_conversions": float(r["ver_conversions"] or 0),
@@ -463,7 +472,39 @@ def version_overview(
                 "versions": {v: _agg(d["versions"].get(v, [])) for v in all_versions},
             })
 
-        return _api({"branches": result, "version_labels": all_versions})
+        # Latest date each upstream source has landed for these domains. Surfaced
+        # so a stalled cron shows up on the page instead of looking like a flat
+        # trend — the three sources have different lags (ads ~same day, Clarity
+        # and GA4 ~1-2 days).
+        freshness_sql = text(f"""
+            SELECT 'clarity' AS source, MAX(cs.date) AS last_date
+            FROM landing_page_clarity_snapshots cs
+            JOIN landing_pages lp ON lp.id = cs.landing_page_id
+            WHERE lp.domain IN ({domain_list})
+            UNION ALL
+            SELECT 'ga4', MAX(g.date)
+            FROM landing_page_ga4_snapshots g
+            JOIN landing_pages lp ON lp.id = g.landing_page_id
+            WHERE lp.domain IN ({domain_list})
+            UNION ALL
+            SELECT 'ads', MAX(mc.date)
+            FROM metrics_cache mc
+            JOIN landing_page_ad_links l ON l.campaign_id = mc.campaign_id
+            JOIN landing_pages lp ON lp.id = l.landing_page_id
+            WHERE mc.ad_id IS NULL AND mc.ad_set_id IS NULL
+              AND lp.domain IN ({domain_list})
+        """)
+        freshness = {
+            r["source"]: r["last_date"].isoformat() if r["last_date"] else None
+            for r in db.execute(freshness_sql).mappings().all()
+        }
+
+        return _api({
+            "branches": result,
+            "version_labels": all_versions,
+            "metrics_from": _METRICS_FROM,
+            "freshness": freshness,
+        })
     except Exception as e:
         return _api(error=str(e))
 
