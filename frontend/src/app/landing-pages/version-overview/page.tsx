@@ -56,7 +56,8 @@ type BranchData = {
 type ApiResponse = {
   branches: BranchData[]
   version_labels: string[]
-  metrics_from: string
+  /** null = all-time, no cutoff. Same window for every version either way. */
+  metrics_from: string | null
   freshness: Record<string, string | null>
 }
 
@@ -70,6 +71,11 @@ function fmtDate(iso: string | null | undefined) {
   if (!iso) return '—'
   const d = new Date(`${iso}T00:00:00Z`)
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+}
+
+/** Human label for the measurement window shared by every version. */
+function windowLabel(metricsFrom: string | null) {
+  return metricsFrom ? `${fmtDate(metricsFrom)} → today` : 'all-time'
 }
 
 function daysAgo(iso: string | null | undefined) {
@@ -476,7 +482,7 @@ function OverviewChart({ branches, selectedVersions, versionColors, metricsFrom 
   branches: BranchData[]
   selectedVersions: string[]
   versionColors: Record<string, string>
-  metricsFrom: string
+  metricsFrom: string | null
 }) {
   const data = branches.map(b => {
     const row: Record<string, string | number> = { name: b.branch.replace('Meander ', '') }
@@ -489,7 +495,7 @@ function OverviewChart({ branches, selectedVersions, versionColors, metricsFrom 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-5">
       <p className="text-sm font-medium text-gray-700 mb-4">
-        Conv. rate by branch (since {fmtDate(metricsFrom)})
+        Conv. rate by branch ({windowLabel(metricsFrom)})
       </p>
       <ResponsiveContainer width="100%" height={260}>
         <BarChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
@@ -587,7 +593,7 @@ export default function VersionOverviewPage() {
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Landing Page Version Overview</h1>
           <p className="text-sm text-gray-500">
-            Compare versions{data ? ` — ${fmtDate(data.metrics_from)} → today` : ''}, by branch
+            Compare versions{data ? ` — ${windowLabel(data.metrics_from)}` : ''}, by branch
           </p>
         </div>
       </div>
@@ -672,7 +678,7 @@ export default function VersionOverviewPage() {
                 <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
                   <div className="px-4 py-3 border-b border-gray-100">
                     <p className="text-xs text-gray-400">
-                      All pages since {fmtDate(data.metrics_from)} — native ad currency. ⚠ = low session
+                      All pages, {windowLabel(data.metrics_from)} — native ad currency. ⚠ = low session
                       count (&lt;10). 🔗̸ = no campaign linked, so spend/conversions read as 0.
                       Engagement/Bounce from GA4.
                     </p>

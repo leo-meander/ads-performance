@@ -160,13 +160,20 @@ _BRANCH_LABELS: dict[str, str] = {
     "sgn.staymeander.com": "Meander Saigon",
 }
 _EXCLUDE_SLUGS = ("day-by-day-plan%", "thank-you%", "%travel-guide%")
-# Metrics window start — applies to EVERY version, not just V2. 2026-06-19 is
-# the date campaigns switched their landing page URLs to V2.
+# Metrics window start, applied to EVERY version. None = all-time, no cutoff.
 #
-# V1 used to be counted from 2000-01-01 (lifetime) while V2 started here, so
-# the cards compared ~12 months of V1 against ~5 weeks of V2 and every V2 delta
-# read as a catastrophic drop. Same window for both = apples to apples.
-_METRICS_FROM = "2026-06-19"
+# One knob on purpose: V1 used to be counted from 2000-01-01 while V2 started
+# at 2026-06-19 (the date campaigns switched their landing page URLs to V2), so
+# the two cards were never measuring the same window and every V2 delta read as
+# a collapse. The cutoff also hid whatever traffic a V2 page had before the
+# switchover, which is the reason it was dropped rather than applied to both.
+#
+# Caveat that comes with all-time: spend from before the switchover, when those
+# campaigns still pointed at V1 URLs, now lands on the V2 card. Sessions are
+# unaffected; ROAS and CPP for V2 can read high.
+_METRICS_FROM: str | None = None
+# Stand-in lower bound when there is no cutoff — older than any row we hold.
+_SQL_EPOCH = "2000-01-01"
 
 
 @router.get("/landing-pages/version-overview")
@@ -176,11 +183,12 @@ def version_overview(
 ):
     """Return per-version aggregate metrics for the 5 active landing page domains.
 
-    Every version is measured over the same window (_METRICS_FROM → today).
+    Every version is measured over the same window (_METRICS_FROM → today, or
+    all-time when _METRICS_FROM is None).
 
     Response: { branches: [{ domain, branch, versions: { "Version 1": VersionAgg, ... } }],
                 version_labels: ["Version 1", "Version 2", ...],
-                metrics_from: "YYYY-MM-DD",
+                metrics_from: "YYYY-MM-DD" | null,   // null = all-time
                 freshness: { ads|clarity|ga4: "YYYY-MM-DD" | null } }
     VersionAgg includes ads + Clarity + GA4 metrics.
     """
@@ -203,7 +211,7 @@ def version_overview(
                             ELSE 'Version 1'
                         END
                     ) AS version,
-                    '{_METRICS_FROM}'::date AS metrics_from
+                    '{_METRICS_FROM or _SQL_EPOCH}'::date AS metrics_from
                 FROM landing_pages lp
                 WHERE lp.is_active = TRUE
                   AND lp.domain IN ({domain_list})
