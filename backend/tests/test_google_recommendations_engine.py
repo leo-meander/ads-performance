@@ -9,34 +9,23 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.models.account import AdAccount
-from app.models.base import Base
 from app.models.campaign import Campaign
 from app.models.google_recommendation import GoogleRecommendation
 from app.models.metrics import MetricsCache
 from app.services.google_recommendations import engine, ai_enricher
 from app.services.google_recommendations.ai_enricher import EnrichedFinding
-
-TEST_DB_URL = "sqlite:///./test_recs_engine.db"
-_eng = create_engine(
-    TEST_DB_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool,
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=_eng)
+from tests.db import TestSession
 
 
 @pytest.fixture
 def db():
-    Base.metadata.create_all(bind=_eng)
     s = TestSession()
     try:
         yield s
     finally:
         s.close()
-        Base.metadata.drop_all(bind=_eng)
 
 
 @pytest.fixture(autouse=True)

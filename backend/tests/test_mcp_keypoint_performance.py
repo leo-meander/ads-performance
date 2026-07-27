@@ -15,8 +15,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table before create_all
 from app.mcp.tools import _get_keypoint_performance
@@ -24,25 +22,17 @@ from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
-from app.models.base import Base
 from app.models.keypoint import BranchKeypoint
-
-engine = create_engine(
-    "sqlite:///test_mcp_keypoint.db",
-    connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from tests.db import TestSession
 
 
 @pytest.fixture()
 def db():
-    Base.metadata.create_all(bind=engine)
     session = TestSession()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine)
 
 
 @pytest.fixture()

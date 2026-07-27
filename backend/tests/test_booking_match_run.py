@@ -12,23 +12,16 @@ import uuid
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table before create_all
 from app.models.account import AdAccount
 from app.models.ad_country_metric import AdCountryMetric
-from app.models.base import Base
 from app.models.booking_match import BookingMatch
 from app.models.campaign import Campaign
 from app.models.reservation import Reservation
 from app.services.booking_match_service import run_matching
+from tests.db import TestSession
 
-engine = create_engine(
-    "sqlite:///test_booking_match_run.db",
-    connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 D = date(2026, 6, 10)
 WEBSITE = "Website/Booking Engine"
@@ -36,13 +29,11 @@ WEBSITE = "Website/Booking Engine"
 
 @pytest.fixture()
 def db():
-    Base.metadata.create_all(bind=engine)
     s = TestSession()
     try:
         yield s
     finally:
         s.close()
-        Base.metadata.drop_all(bind=engine)
 
 
 def _account(db) -> AdAccount:

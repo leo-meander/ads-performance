@@ -14,45 +14,19 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table before create_all
-from app.database import get_db
 from app.main import app
 from app.models.account import AdAccount
 from app.models.api_key import ApiKey
-from app.models.base import Base
 from app.models.figma import FigmaJob, FigmaTemplate
+from tests.db import TestSession
 
 
-engine = create_engine(
-    "sqlite:///test_figma_plugin.db",
-    connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-def override_get_db():
-    db = TestSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
 
 PLUGIN_KEY = "test-plugin-key-abcdef0123456789"
 PLUGIN_KEY_HEADER = {"X-API-Key": PLUGIN_KEY}
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
 
 
 def _seed():

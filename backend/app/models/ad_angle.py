@@ -19,6 +19,24 @@ VISUAL_PATTERN_OPTIONS = [
     "Found Footage", "Vlog", "Static Camera", "Drone", "Timelapse",
 ]
 
+# Legacy — the 13 fixed claim angles. Still the vocabulary the AI transcript
+# classifier prompts with (app/services/ai_classifier.py).
+ANGLE_TYPES = [
+    "Measure the size of the claim",
+    "Measure the speed of the claim",
+    "Use an authority",
+    "Before and After",
+    "Compare the claim to its rival",
+    "Remove limitations from the claim",
+    "State the claim as a question",
+    "Offer Information Directly in the claim",
+    "Stress the newness of the claim",
+    "Stress the exclusiveness of the claim",
+    "Challenge your prospect's beliefs",
+    "Call out a solution or product they're currently using",
+    "Call out the person directly",
+]
+
 
 class AdAngle(TimestampMixin, Base):
     __tablename__ = "ad_angles"

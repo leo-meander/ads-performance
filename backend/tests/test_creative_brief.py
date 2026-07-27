@@ -4,15 +4,12 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table before create_all
 from app.models.account import AdAccount
 from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
 from app.models.ad_material import AdMaterial
-from app.models.base import Base
 from app.models.keypoint import BranchKeypoint
 from app.services.creative_brief_service import (
     _angle_performance,
@@ -20,18 +17,7 @@ from app.services.creative_brief_service import (
     _gather_patterns,
     _keypoint_performance,
 )
-
-engine = create_engine(
-    "sqlite:///test_creative_brief.db", connect_args={"check_same_thread": False}
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+from tests.db import TestSession
 
 
 def _account():

@@ -4,8 +4,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.models.account import AdAccount
 from app.models.action_log import ActionLog
@@ -30,18 +28,7 @@ from app.services.tactic_presets import (
     REVERT_NONE,
     REVERT_ON_RECOVERY,
 )
-
-engine = create_engine(
-    "sqlite:///test_tactics.db", connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+from tests.db import TestSession, engine
 
 
 def _seed_tree():

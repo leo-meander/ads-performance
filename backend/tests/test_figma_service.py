@@ -12,13 +12,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table on Base.metadata before create_all
 from app.config import settings
 from app.models.account import AdAccount
-from app.models.base import Base
 from app.models.figma import FigmaJob, FigmaTemplate
 from app.services.figma_client import FigmaClient, _collect_placeholders, _stub_node
 from app.services.figma_service import (
@@ -32,20 +29,7 @@ from app.services.figma_service import (
     refresh_template_schema,
     update_template,
 )
-
-
-engine = create_engine(
-    "sqlite:///test_figma.db",
-    connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+from tests.db import TestSession
 
 
 @pytest.fixture(autouse=True)

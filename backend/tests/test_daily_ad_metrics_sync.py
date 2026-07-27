@@ -16,31 +16,17 @@ from datetime import date, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table before create_all
 from app.models.account import AdAccount
 from app.models.ad_daily_metric import AdDailyMetric
-from app.models.base import Base
 from app.services import daily_ad_metrics_sync as mod
+from tests.db import TestSession
 
-engine = create_engine(
-    "sqlite:///test_ad_daily.db",
-    connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 D0 = date.today()
 D1 = D0 - timedelta(days=1)
 SINCE = D0 - timedelta(days=10)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
 
 
 def _fake_fb(rows):

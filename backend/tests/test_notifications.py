@@ -3,39 +3,17 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app.database import get_db
 from app.main import app
-from app.models.base import Base
 from app.models.notification import Notification
 from app.models.user import User
 from app.services.auth_service import create_access_token, hash_password
+from tests.db import TestSession
 
 # ── Test database setup ──────────────────────────────────────
 
-engine = create_engine("sqlite:///test_platform.db", connect_args={"check_same_thread": False})
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-
-def override_get_db():
-    db = TestSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
 
 
 def _create_user(roles=None, email=None):

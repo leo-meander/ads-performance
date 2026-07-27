@@ -15,31 +15,21 @@ import uuid
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table before create_all
 from app.mcp.tools import _get_ad_count
 from app.models.account import AdAccount
 from app.models.ad_daily_metric import AdDailyMetric
-from app.models.base import Base
-
-engine = create_engine(
-    "sqlite:///test_mcp_ad_count.db",
-    connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from tests.db import TestSession
 
 
 @pytest.fixture()
 def db():
-    Base.metadata.create_all(bind=engine)
     session = TestSession()
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=engine)
 
 
 @pytest.fixture()
