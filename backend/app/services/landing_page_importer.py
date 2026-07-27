@@ -32,9 +32,10 @@ from sqlalchemy.orm import Session
 from app.models.ad import Ad
 from app.models.campaign import Campaign
 from app.models.google_asset_group import GoogleAssetGroup
+from app.models.landing_page import LandingPage
 from app.models.landing_page_ad_link import LandingPageAdLink
 from app.services.landing_page_service import get_or_create_external_page
-from app.services.landing_page_url_normalizer import normalize_url
+from app.services.landing_page_url_normalizer import build_url_with_utms, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,10 @@ def _upsert_ad_link(
         q = q.filter(LandingPageAdLink.ad_id == ad_id)
     else:
         q = q.filter(LandingPageAdLink.ad_id.is_(None))
-    row = q.one_or_none()
+    # .first(), not .one_or_none(): nothing enforces uniqueness on this key, and a
+    # MultipleResultsFound here used to abort whichever import pass was running.
+    # Any duplicate is an equivalent row, so touching the first one is correct.
+    row = q.first()
 
     created = False
     if row is None:
@@ -186,12 +190,15 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
     from app.models.landing_page_clarity import LandingPageClaritySnapshot
 
     now = datetime.now(timezone.utc)
-    summary = {
+    summary: dict[str, Any] = {
         "utm_combos_scanned": 0,
         "campaigns_matched": 0,
         "ad_links_created": 0,
         "ad_links_updated": 0,
         "no_match": 0,
+        "page_missing": 0,
+        "errors": 0,
+        "error_samples": [],
     }
 
     # distinct (landing_page_id, utm_source, utm_campaign, utm_content)
@@ -223,6 +230,16 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
                     return campaign_cache[base]
         return None
 
+    # Preload every landing page. This used to be a .one() per row, which both
+    # N+1'd the query count and raised NoResultFound the moment a snapshot
+    # outlived its page — and since the loop had no exception handling, that
+    # single row aborted the whole pass and every page after it silently kept
+    # its missing ad-link.
+    pages_by_id: dict[str, LandingPage] = {p.id: p for p in db.query(LandingPage).all()}
+
+    _COMMIT_EVERY = 25
+    pending = 0
+
     for lp_id, utm_s, utm_c, utm_ct in rows:
         summary["utm_combos_scanned"] += 1
         if not utm_c or utm_c.startswith("{{"):  # Meta template placeholder
@@ -235,13 +252,13 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
         campaign_id, platform = match
         summary["campaigns_matched"] += 1
 
-        # Destination URL reconstructed from the landing page + UTMs
-        page = db.query(LandingPage).filter(LandingPage.id == lp_id).one_or_none() if False else None
+        lp = pages_by_id.get(lp_id)
+        if lp is None:
+            summary["page_missing"] += 1
+            continue
+
         # We only need destination_url as an identifier for the ad-link — use
         # canonical + UTM reconstruction.
-        from app.models.landing_page import LandingPage as LP
-        lp = db.query(LP).filter(LP.id == lp_id).one()
-        from app.services.landing_page_url_normalizer import build_url_with_utms
         base = f"https://{lp.domain}/{lp.slug}" if lp.slug else f"https://{lp.domain}"
         destination_url = build_url_with_utms(
             base,
@@ -252,18 +269,33 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
             },
         )
 
-        _, created = _upsert_ad_link(
-            db,
-            landing_page_id=lp_id,
-            platform=platform,
-            campaign_id=campaign_id,
-            ad_id=None,
-            ad_set_id=None,
-            asset_group_id=None,
-            destination_url=destination_url,
-            utm={"utm_source": utm_s, "utm_campaign": utm_c, "utm_content": utm_ct},
-            now=now,
-        )
+        # Per-row isolation: one bad combo must not cost every combo behind it.
+        try:
+            _, created = _upsert_ad_link(
+                db,
+                landing_page_id=lp_id,
+                platform=platform,
+                campaign_id=campaign_id,
+                ad_id=None,
+                ad_set_id=None,
+                asset_group_id=None,
+                destination_url=destination_url,
+                utm={"utm_source": utm_s, "utm_campaign": utm_c, "utm_content": utm_ct},
+                now=now,
+            )
+            pending += 1
+            if pending >= _COMMIT_EVERY:
+                db.commit()
+                pending = 0
+        except Exception as e:
+            logger.exception("[lp-importer:clarity-utm] failed page=%s campaign=%s", lp_id, utm_c)
+            db.rollback()
+            pending = 0
+            summary["errors"] += 1
+            if len(summary["error_samples"]) < 5:
+                summary["error_samples"].append(f"{type(e).__name__}: {e}")
+            continue
+
         if created:
             summary["ad_links_created"] += 1
         else:
