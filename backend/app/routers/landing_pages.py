@@ -252,27 +252,26 @@ def version_overview(
             eligible_links AS (
                 -- Which ad-links may contribute metrics to a landing page.
                 --
-                -- Google is restricted to Performance Max. Search campaigns do
-                -- carry final_urls, but those point at pages we do not treat as
-                -- campaign landing pages, so counting their spend here inflates
-                -- every page they touch. campaigns.objective holds the Google
-                -- channel type verbatim (PERFORMANCE_MAX / SEARCH / DISPLAY);
-                -- the asset-group check is the structural fallback for rows
-                -- whose objective never got populated.
+                -- Google is restricted to Performance Max. Search, Demand Gen
+                -- and Display campaigns carry final_urls too, but they point at
+                -- pages we do not treat as campaign landing pages, so counting
+                -- their spend inflates every page they touch.
+                --
+                -- campaigns.objective holds the Google channel type verbatim
+                -- (google_client stores it as PERFORMANCE_MAX / SEARCH /
+                -- DEMAND_GEN / DISPLAY) and is populated on every Google row in
+                -- prod, so it is the whole test. Deliberately NOT falling back
+                -- to "has an asset group": fetch_asset_groups queries
+                -- `FROM asset_group` with no campaign-type filter, and Google
+                -- returns asset groups for Demand Gen as well as PMax, so that
+                -- check would quietly readmit the campaigns being excluded.
                 --
                 -- Meta and TikTok are unaffected.
                 SELECT lpal.*
                 FROM landing_page_ad_links lpal
                 JOIN campaigns c ON c.id = lpal.campaign_id
                 WHERE lpal.campaign_id IS NOT NULL
-                  AND (
-                      c.platform <> 'google'
-                      OR c.objective = 'PERFORMANCE_MAX'
-                      OR EXISTS (
-                          SELECT 1 FROM google_asset_groups ag
-                          WHERE ag.campaign_id = c.id
-                      )
-                  )
+                  AND (c.platform <> 'google' OR c.objective = 'PERFORMANCE_MAX')
             ),
             mc_adset_dedup AS (
                 -- Ad-group level metrics (for Google Search non-brand ad groups).
