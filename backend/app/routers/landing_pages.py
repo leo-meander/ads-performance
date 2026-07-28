@@ -159,7 +159,22 @@ _BRANCH_LABELS: dict[str, str] = {
     "oani-taipei.staymeander.com": "Oani Taipei",
     "sgn.staymeander.com": "Meander Saigon",
 }
-_EXCLUDE_SLUGS = ("day-by-day-plan%", "thank-you%", "%travel-guide%")
+_EXCLUDE_SLUGS = (
+    # Not landing pages: lead magnets, confirmation pages, content pages.
+    "day-by-day-plan%",
+    "thank-you%",
+    "%travel-guide%",
+    # Cross-sell pages. These share their campaigns with the branch's main
+    # pages, and ad-links are recorded per campaign while the landing page is
+    # actually chosen per ad — so a shared campaign hands its FULL spend and
+    # conversions to every page linked to it. On these pages that reads as an
+    # impossible conversion rate (oani-and-1948: 129 purchases on 1,029
+    # sessions, 12.54%) and it double-reports numbers already shown on
+    # retreat-hotel / taipei-heritage-hotel-cn. Excluded until attribution
+    # moves to ad level, which is the real fix.
+    "oani-and-1948",
+    "1948-and-oani",
+)
 # Date from which V2 metrics are counted (campaigns switched landing page URLs
 # on this date). V1 stays all-time on purpose: it is the lifetime record of the
 # old page set, while V2 only exists from the switchover onward.
@@ -234,8 +249,35 @@ def version_overview(
                 WHERE ad_id IS NULL AND ad_set_id IS NULL
                 GROUP BY campaign_id, date
             ),
+            eligible_links AS (
+                -- Which ad-links may contribute metrics to a landing page.
+                --
+                -- Google is restricted to Performance Max. Search, Demand Gen
+                -- and Display campaigns carry final_urls too, but they point at
+                -- pages we do not treat as campaign landing pages, so counting
+                -- their spend inflates every page they touch.
+                --
+                -- campaigns.objective holds the Google channel type verbatim
+                -- (google_client stores it as PERFORMANCE_MAX / SEARCH /
+                -- DEMAND_GEN / DISPLAY) and is populated on every Google row in
+                -- prod, so it is the whole test. Deliberately NOT falling back
+                -- to "has an asset group": fetch_asset_groups queries
+                -- `FROM asset_group` with no campaign-type filter, and Google
+                -- returns asset groups for Demand Gen as well as PMax, so that
+                -- check would quietly readmit the campaigns being excluded.
+                --
+                -- Meta and TikTok are unaffected.
+                SELECT lpal.*
+                FROM landing_page_ad_links lpal
+                JOIN campaigns c ON c.id = lpal.campaign_id
+                WHERE lpal.campaign_id IS NOT NULL
+                  AND (c.platform <> 'google' OR c.objective = 'PERFORMANCE_MAX')
+            ),
             mc_adset_dedup AS (
-                -- Ad-group level metrics (for Google Search non-brand ad groups)
+                -- Ad-group level metrics (for Google Search non-brand ad groups).
+                -- Currently unreachable: Google Search links are filtered out by
+                -- eligible_links above. Kept so restoring Search is a one-line
+                -- change to that filter rather than a rewrite here.
                 SELECT campaign_id, ad_set_id, date,
                     MAX(spend)       AS spend,
                     MAX(conversions) AS conversions,
@@ -257,17 +299,14 @@ def version_overview(
                     SUM(COALESCE(mc_a.clicks, mc_c.clicks, 0))      AS clicks
                 FROM (
                     SELECT lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
-                    FROM landing_page_ad_links lpal
-                    WHERE lpal.campaign_id IS NOT NULL
-                      AND (
-                        lpal.ad_set_id IS NOT NULL
-                        OR NOT EXISTS (
-                            SELECT 1 FROM landing_page_ad_links lpal2
+                    FROM eligible_links lpal
+                    WHERE lpal.ad_set_id IS NOT NULL
+                       OR NOT EXISTS (
+                            SELECT 1 FROM eligible_links lpal2
                             WHERE lpal2.landing_page_id = lpal.landing_page_id
                               AND lpal2.campaign_id = lpal.campaign_id
                               AND lpal2.ad_set_id IS NOT NULL
                         )
-                      )
                     GROUP BY lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
                 ) lpal_dedup
                 JOIN page_tags pt ON pt.id = lpal_dedup.landing_page_id
@@ -294,20 +333,17 @@ def version_overview(
                 FROM (
                     SELECT pt.domain, pt.version, lpal.campaign_id, lpal.ad_set_id,
                         MIN(pt.metrics_from) AS metrics_from
-                    FROM landing_page_ad_links lpal
+                    FROM eligible_links lpal
                     JOIN page_tags pt ON pt.id = lpal.landing_page_id
-                    WHERE lpal.campaign_id IS NOT NULL
-                      AND (
-                        lpal.ad_set_id IS NOT NULL
-                        OR NOT EXISTS (
-                            SELECT 1 FROM landing_page_ad_links lpal2
+                    WHERE lpal.ad_set_id IS NOT NULL
+                       OR NOT EXISTS (
+                            SELECT 1 FROM eligible_links lpal2
                             JOIN page_tags pt2 ON pt2.id = lpal2.landing_page_id
                             WHERE lpal2.campaign_id = lpal.campaign_id
                               AND lpal2.ad_set_id IS NOT NULL
                               AND pt2.domain = pt.domain
                               AND pt2.version = pt.version
                         )
-                      )
                     GROUP BY pt.domain, pt.version, lpal.campaign_id, lpal.ad_set_id
                 ) vc
                 LEFT JOIN mc_dedup mc_c ON mc_c.campaign_id = vc.campaign_id
@@ -347,8 +383,11 @@ def version_overview(
                 -- A page with zero links has no campaign attached, so its spend
                 -- and conversions read as 0 while its sessions still land in the
                 -- version denominator. Surface the count so the UI can flag it.
+                -- Counts eligible_links, not every link: a page whose only links
+                -- are Google Search contributes nothing, and showing it as
+                -- "linked" would hide exactly the case this flag exists for.
                 SELECT landing_page_id, COUNT(*) AS link_count
-                FROM landing_page_ad_links
+                FROM eligible_links
                 GROUP BY landing_page_id
             )
             SELECT
