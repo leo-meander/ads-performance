@@ -434,6 +434,64 @@ def _prune_asset_group_links(db: Session, ag: GoogleAssetGroup, current_urls: li
     return len(stale_ids)
 
 
+def _link_urls(
+    db: Session,
+    summary: dict[str, Any],
+    urls: Iterable[str],
+    *,
+    platform: str,
+    campaign_id: str | None,
+    ad_id: str | None,
+    ad_set_id: str | None,
+    asset_group_id: str | None,
+    now: datetime,
+    url_counter: str,
+) -> None:
+    """Upsert a landing page + ad-link for each destination URL.
+
+    Shared by the three scan phases, which differ only in which ids they hang
+    off the link.
+    """
+    for url in urls:
+        summary[url_counter] += 1
+        n = normalize_url(url)
+        if n is None:
+            continue
+        page = get_or_create_external_page(
+            db,
+            raw_url=url,
+            title_fallback=f"{n.host}/{n.slug}".rstrip("/"),
+            branch_id=None,
+        )
+        if page is None:
+            continue
+        if page.created_at == page.updated_at:
+            summary["pages_created"] += 1
+        _, created = _upsert_ad_link(
+            db,
+            landing_page_id=page.id,
+            platform=platform,
+            campaign_id=campaign_id,
+            ad_id=ad_id,
+            ad_set_id=ad_set_id,
+            asset_group_id=asset_group_id,
+            destination_url=url,
+            utm=n.utm,
+            now=now,
+        )
+        if created:
+            summary["ad_links_created"] += 1
+        else:
+            summary["ad_links_updated"] += 1
+
+
+def _record_item_error(summary: dict[str, Any], label: str, exc: Exception) -> None:
+    summary["errors"] += 1
+    samples = summary.setdefault("error_samples", [])
+    if len(samples) < 10:
+        samples.append(f"{label}: {type(exc).__name__}: {exc}")
+
+
 def _commit_phase(db: Session, summary: dict[str, Any], label: str) -> None:
     """Commit one scan phase. A failed commit must not discard the phases that
     already succeeded, nor stop the phases still to come."""
@@ -478,6 +536,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         "ad_links_updated": 0,
         "stale_google_links_removed": 0,
         "errors": 0,
+        "error_samples": [],
     }
 
     # Clarity-observed UTM → campaign mapping. First, and on its own commit, so
@@ -494,41 +553,29 @@ def import_from_ads(db: Session) -> dict[str, Any]:
     summary["meta_ads_scanned"] = len(meta_ads)
     for ad in meta_ads:
         try:
-            urls = _meta_extract_urls(ad.raw_data if isinstance(ad.raw_data, dict) else None)
-            for url in urls:
-                summary["meta_urls_found"] += 1
-                n = normalize_url(url)
-                if n is None:
-                    continue
-                page = get_or_create_external_page(
+            # SAVEPOINT + flush per item. Without it the INSERTs stay pending
+            # until the phase commit, so a single constraint violation surfaces
+            # there — far from the row that caused it, with the whole phase's
+            # work already rolled back and the offending row unidentified. That
+            # is how every asset-group link in prod froze at one timestamp and
+            # stayed frozen for nine days.
+            with db.begin_nested():
+                _link_urls(
                     db,
-                    raw_url=url,
-                    title_fallback=f"{n.host}/{n.slug}".rstrip("/"),
-                    branch_id=None,
-                )
-                if page is None:
-                    continue
-                if page.created_at == page.updated_at:
-                    summary["pages_created"] += 1
-                _, created = _upsert_ad_link(
-                    db,
-                    landing_page_id=page.id,
+                    summary,
+                    _meta_extract_urls(ad.raw_data if isinstance(ad.raw_data, dict) else None),
                     platform="meta",
                     campaign_id=ad.campaign_id,
                     ad_id=ad.id,
                     ad_set_id=None,
                     asset_group_id=None,
-                    destination_url=url,
-                    utm=n.utm,
                     now=now,
+                    url_counter="meta_urls_found",
                 )
-                if created:
-                    summary["ad_links_created"] += 1
-                else:
-                    summary["ad_links_updated"] += 1
-        except Exception:
+                db.flush()
+        except Exception as e:
             logger.exception("[lp-importer] failed on meta ad id=%s", ad.id)
-            summary["errors"] += 1
+            _record_item_error(summary, f"meta-ad:{ad.id}", e)
     _commit_phase(db, summary, "meta-ads")
 
     # Google asset groups (PMax)
@@ -536,42 +583,25 @@ def import_from_ads(db: Session) -> dict[str, Any]:
     summary["google_asset_groups_scanned"] = len(asset_groups)
     for ag in asset_groups:
         try:
-            urls = _google_extract_urls(ag.final_urls)
-            summary["stale_google_links_removed"] += _prune_asset_group_links(db, ag, urls)
-            for url in urls:
-                summary["google_urls_found"] += 1
-                n = normalize_url(url)
-                if n is None:
-                    continue
-                page = get_or_create_external_page(
+            with db.begin_nested():
+                urls = _google_extract_urls(ag.final_urls)
+                summary["stale_google_links_removed"] += _prune_asset_group_links(db, ag, urls)
+                _link_urls(
                     db,
-                    raw_url=url,
-                    title_fallback=f"{n.host}/{n.slug}".rstrip("/"),
-                    branch_id=None,
-                )
-                if page is None:
-                    continue
-                if page.created_at == page.updated_at:
-                    summary["pages_created"] += 1
-                _, created = _upsert_ad_link(
-                    db,
-                    landing_page_id=page.id,
+                    summary,
+                    urls,
                     platform="google",
                     campaign_id=ag.campaign_id,
                     ad_id=None,
                     ad_set_id=None,
                     asset_group_id=ag.id,
-                    destination_url=url,
-                    utm=n.utm,
                     now=now,
+                    url_counter="google_urls_found",
                 )
-                if created:
-                    summary["ad_links_created"] += 1
-                else:
-                    summary["ad_links_updated"] += 1
-        except Exception:
+                db.flush()
+        except Exception as e:
             logger.exception("[lp-importer] failed on google asset group id=%s", ag.id)
-            summary["errors"] += 1
+            _record_item_error(summary, f"asset-group:{ag.id}", e)
     _commit_phase(db, summary, "google-asset-groups")
 
     # Google Search ads (RSA) — final URLs live on the ad itself (not on an
@@ -580,42 +610,24 @@ def import_from_ads(db: Session) -> dict[str, Any]:
     summary["google_ads_scanned"] = len(google_ads)
     for ad in google_ads:
         try:
-            raw = ad.raw_data if isinstance(ad.raw_data, dict) else {}
-            urls = _google_extract_urls(raw.get("final_urls"))
-            for url in urls:
-                summary["google_urls_found"] += 1
-                n = normalize_url(url)
-                if n is None:
-                    continue
-                page = get_or_create_external_page(
+            with db.begin_nested():
+                raw = ad.raw_data if isinstance(ad.raw_data, dict) else {}
+                _link_urls(
                     db,
-                    raw_url=url,
-                    title_fallback=f"{n.host}/{n.slug}".rstrip("/"),
-                    branch_id=None,
-                )
-                if page is None:
-                    continue
-                if page.created_at == page.updated_at:
-                    summary["pages_created"] += 1
-                _, created = _upsert_ad_link(
-                    db,
-                    landing_page_id=page.id,
+                    summary,
+                    _google_extract_urls(raw.get("final_urls")),
                     platform="google",
                     campaign_id=ad.campaign_id,
-                    ad_id=None,           # Google has no ad-level metrics_cache rows
+                    ad_id=None,              # Google has no ad-level metrics_cache rows
                     ad_set_id=ad.ad_set_id,  # use ad_set level for precise attribution
                     asset_group_id=None,
-                    destination_url=url,
-                    utm=n.utm,
                     now=now,
+                    url_counter="google_urls_found",
                 )
-                if created:
-                    summary["ad_links_created"] += 1
-                else:
-                    summary["ad_links_updated"] += 1
-        except Exception:
+                db.flush()
+        except Exception as e:
             logger.exception("[lp-importer] failed on google ad id=%s", ad.id)
-            summary["errors"] += 1
+            _record_item_error(summary, f"google-ad:{ad.id}", e)
     _commit_phase(db, summary, "google-ads")
 
     logger.info("[lp-importer] done: %s", summary)
