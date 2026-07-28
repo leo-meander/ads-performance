@@ -27,6 +27,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.ad import Ad
@@ -309,12 +310,39 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
 # --- Top-level importer ----------------------------------------------------
 
 
+def _commit_phase(db: Session, summary: dict[str, Any], label: str) -> None:
+    """Commit one scan phase. A failed commit must not discard the phases that
+    already succeeded, nor stop the phases still to come."""
+    try:
+        db.commit()
+    except Exception as e:
+        logger.exception("[lp-importer] commit failed after %s", label)
+        db.rollback()
+        summary["errors"] += 1
+        summary.setdefault("commit_failures", []).append(f"{label}: {type(e).__name__}: {e}")
+
+
 def import_from_ads(db: Session) -> dict[str, Any]:
     """Scan all stored ads + google asset groups → upsert landing pages + ad-links.
 
     Idempotent: re-running updates last_seen_at and picks up new URLs.
+
+    Runs the Clarity-UTM pass FIRST. That pass is where the real coverage comes
+    from (most Meta ads store raw_data.creative = {id}, so the scans below find
+    no destination URL), and it used to run last — behind three full-table scans
+    sharing one uncommitted transaction with no statement_timeout raise. Any
+    stall in the scans starved the one pass that matters, and pages kept their
+    missing ad-links, which reads on the dashboard as spend and conversions
+    frozen at 0. Each phase now commits on its own so none can starve another.
     """
     now = datetime.now(timezone.utc)
+
+    # Same reasoning as ga4_sync: Supabase's default statement_timeout kills a
+    # long flush mid-transaction and rolls the whole thing back silently.
+    try:
+        db.execute(text("SET statement_timeout = '180000'"))  # ms
+    except Exception:
+        logger.warning("[lp-importer] could not raise statement_timeout", exc_info=True)
     summary = {
         "meta_ads_scanned": 0,
         "meta_urls_found": 0,
@@ -326,6 +354,15 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         "ad_links_updated": 0,
         "errors": 0,
     }
+
+    # Clarity-observed UTM → campaign mapping. First, and on its own commit, so
+    # the scans below cannot starve it.
+    try:
+        summary["clarity_utm"] = import_from_clarity_utms(db)
+    except Exception as e:
+        logger.exception("[lp-importer] clarity-utm pass failed")
+        db.rollback()
+        summary["clarity_utm"] = {"error": f"{type(e).__name__}: {e}"}
 
     # Meta ads
     meta_ads = db.query(Ad).filter(Ad.platform == "meta").all()
@@ -367,6 +404,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         except Exception:
             logger.exception("[lp-importer] failed on meta ad id=%s", ad.id)
             summary["errors"] += 1
+    _commit_phase(db, summary, "meta-ads")
 
     # Google asset groups (PMax)
     asset_groups = db.query(GoogleAssetGroup).all()
@@ -408,6 +446,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         except Exception:
             logger.exception("[lp-importer] failed on google asset group id=%s", ag.id)
             summary["errors"] += 1
+    _commit_phase(db, summary, "google-asset-groups")
 
     # Google Search ads (RSA) — final URLs live on the ad itself (not on an
     # asset group), stored by google_client.fetch_ads into raw_data.final_urls.
@@ -451,17 +490,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         except Exception:
             logger.exception("[lp-importer] failed on google ad id=%s", ad.id)
             summary["errors"] += 1
+    _commit_phase(db, summary, "google-ads")
 
-    # After ads-table scan, also pull in the Clarity-observed UTM→campaign mapping.
-    # This is where the real coverage comes from for accounts whose stored
-    # raw_data lacks creative expansion (the default for our Meta sync).
-    try:
-        utm_summary = import_from_clarity_utms(db)
-        summary["clarity_utm"] = utm_summary
-    except Exception:
-        logger.exception("[lp-importer] clarity-utm sub-pass failed")
-        summary["clarity_utm"] = {"error": "see logs"}
-
-    db.commit()
     logger.info("[lp-importer] done: %s", summary)
     return summary
