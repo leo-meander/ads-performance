@@ -24,6 +24,7 @@ automatically).
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -171,6 +172,58 @@ def _upsert_ad_link(
     return row, created
 
 
+# --- utm_content → ad resolution -------------------------------------------
+
+
+def resolve_ad_from_utm_content(
+    utm_content: str | None,
+    campaign_id: str,
+    ads_by_campaign: dict[str, list[Ad]],
+    ads_by_platform_id: dict[str, Ad],
+) -> Ad | None:
+    """Resolve a Clarity utm_content value to exactly one ad, or None.
+
+    Two shapes appear in prod (30-day sample, 172 distinct values):
+      - bare Meta ad id, e.g. "120246611392740192" — 67/67 resolved
+      - adset name + ad name concatenated, e.g.
+        "HK_M&F_25-44_Friend_ZH_[Video] KOL_Denver Choi" — 86/105 resolved by
+        matching the ad name as a suffix
+
+    Candidates are scoped to the campaign already matched from utm_campaign, so
+    a suffix cannot collide with a same-named ad in an unrelated campaign.
+
+    Returns None rather than guessing. An unresolved ad just gets no ad-level
+    link, which under-reports; a wrongly resolved one misattributes spend to
+    the wrong landing page, which is worse and much harder to notice.
+    """
+    if not utm_content or utm_content.startswith("{{"):
+        return None
+    val = utm_content.strip()
+    if not val:
+        return None
+
+    if val.isdigit():
+        ad = ads_by_platform_id.get(val)
+        # Only trust the id if it belongs to the campaign we matched.
+        return ad if ad is not None and ad.campaign_id == campaign_id else None
+
+    # Longest suffix wins: a short ad name can be a suffix of a longer one, and
+    # the longer match is the more specific ad. A tie between two different ads
+    # is genuinely ambiguous, so resolve to nothing.
+    best: Ad | None = None
+    best_len = 0
+    ambiguous = False
+    for ad in ads_by_campaign.get(campaign_id, ()):
+        name = (ad.name or "").strip()
+        if not name or not val.endswith(name):
+            continue
+        if len(name) > best_len:
+            best, best_len, ambiguous = ad, len(name), False
+        elif len(name) == best_len and best is not None and ad.id != best.id:
+            ambiguous = True
+    return None if ambiguous else best
+
+
 # --- Clarity-driven importer (UTM campaign match) --------------------------
 
 
@@ -198,6 +251,8 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
         "ad_links_updated": 0,
         "no_match": 0,
         "page_missing": 0,
+        "ads_matched": 0,
+        "ads_unmatched": 0,
         "errors": 0,
         "error_samples": [],
     }
@@ -238,6 +293,22 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
     # its missing ad-link.
     pages_by_id: dict[str, LandingPage] = {p.id: p for p in db.query(LandingPage).all()}
 
+    # Ads indexed per campaign, for resolving utm_content → the exact ad.
+    # Scoping candidates to the campaign we already matched keeps the suffix
+    # match below from colliding with a same-named ad in an unrelated campaign.
+    ads_by_campaign: dict[str, list[Ad]] = defaultdict(list)
+    ads_by_platform_id: dict[str, Ad] = {}
+    for a in db.query(Ad).all():
+        if a.campaign_id:
+            ads_by_campaign[a.campaign_id].append(a)
+        if a.platform_ad_id:
+            ads_by_platform_id[a.platform_ad_id] = a
+
+    def _lookup_ad(utm_content: str | None, campaign_id: str) -> Ad | None:
+        return resolve_ad_from_utm_content(
+            utm_content, campaign_id, ads_by_campaign, ads_by_platform_id
+        )
+
     _COMMIT_EVERY = 25
     pending = 0
 
@@ -270,6 +341,15 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
             },
         )
 
+        # Resolve the exact ad when utm_content allows it. ad_set_id stays NULL:
+        # the metrics SQL treats a non-null ad_set_id as "use ad-group level",
+        # which is the Google Search path and must not be triggered for Meta.
+        ad = _lookup_ad(utm_ct, campaign_id)
+        if ad is not None:
+            summary["ads_matched"] += 1
+        else:
+            summary["ads_unmatched"] += 1
+
         # Per-row isolation: one bad combo must not cost every combo behind it.
         try:
             _, created = _upsert_ad_link(
@@ -277,7 +357,7 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
                 landing_page_id=lp_id,
                 platform=platform,
                 campaign_id=campaign_id,
-                ad_id=None,
+                ad_id=ad.id if ad is not None else None,
                 ad_set_id=None,
                 asset_group_id=None,
                 destination_url=destination_url,
