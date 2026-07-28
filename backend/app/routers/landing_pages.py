@@ -249,8 +249,36 @@ def version_overview(
                 WHERE ad_id IS NULL AND ad_set_id IS NULL
                 GROUP BY campaign_id, date
             ),
+            eligible_links AS (
+                -- Which ad-links may contribute metrics to a landing page.
+                --
+                -- Google is restricted to Performance Max. Search campaigns do
+                -- carry final_urls, but those point at pages we do not treat as
+                -- campaign landing pages, so counting their spend here inflates
+                -- every page they touch. campaigns.objective holds the Google
+                -- channel type verbatim (PERFORMANCE_MAX / SEARCH / DISPLAY);
+                -- the asset-group check is the structural fallback for rows
+                -- whose objective never got populated.
+                --
+                -- Meta and TikTok are unaffected.
+                SELECT lpal.*
+                FROM landing_page_ad_links lpal
+                JOIN campaigns c ON c.id = lpal.campaign_id
+                WHERE lpal.campaign_id IS NOT NULL
+                  AND (
+                      c.platform <> 'google'
+                      OR c.objective = 'PERFORMANCE_MAX'
+                      OR EXISTS (
+                          SELECT 1 FROM google_asset_groups ag
+                          WHERE ag.campaign_id = c.id
+                      )
+                  )
+            ),
             mc_adset_dedup AS (
-                -- Ad-group level metrics (for Google Search non-brand ad groups)
+                -- Ad-group level metrics (for Google Search non-brand ad groups).
+                -- Currently unreachable: Google Search links are filtered out by
+                -- eligible_links above. Kept so restoring Search is a one-line
+                -- change to that filter rather than a rewrite here.
                 SELECT campaign_id, ad_set_id, date,
                     MAX(spend)       AS spend,
                     MAX(conversions) AS conversions,
@@ -272,17 +300,14 @@ def version_overview(
                     SUM(COALESCE(mc_a.clicks, mc_c.clicks, 0))      AS clicks
                 FROM (
                     SELECT lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
-                    FROM landing_page_ad_links lpal
-                    WHERE lpal.campaign_id IS NOT NULL
-                      AND (
-                        lpal.ad_set_id IS NOT NULL
-                        OR NOT EXISTS (
-                            SELECT 1 FROM landing_page_ad_links lpal2
+                    FROM eligible_links lpal
+                    WHERE lpal.ad_set_id IS NOT NULL
+                       OR NOT EXISTS (
+                            SELECT 1 FROM eligible_links lpal2
                             WHERE lpal2.landing_page_id = lpal.landing_page_id
                               AND lpal2.campaign_id = lpal.campaign_id
                               AND lpal2.ad_set_id IS NOT NULL
                         )
-                      )
                     GROUP BY lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
                 ) lpal_dedup
                 JOIN page_tags pt ON pt.id = lpal_dedup.landing_page_id
@@ -309,20 +334,17 @@ def version_overview(
                 FROM (
                     SELECT pt.domain, pt.version, lpal.campaign_id, lpal.ad_set_id,
                         MIN(pt.metrics_from) AS metrics_from
-                    FROM landing_page_ad_links lpal
+                    FROM eligible_links lpal
                     JOIN page_tags pt ON pt.id = lpal.landing_page_id
-                    WHERE lpal.campaign_id IS NOT NULL
-                      AND (
-                        lpal.ad_set_id IS NOT NULL
-                        OR NOT EXISTS (
-                            SELECT 1 FROM landing_page_ad_links lpal2
+                    WHERE lpal.ad_set_id IS NOT NULL
+                       OR NOT EXISTS (
+                            SELECT 1 FROM eligible_links lpal2
                             JOIN page_tags pt2 ON pt2.id = lpal2.landing_page_id
                             WHERE lpal2.campaign_id = lpal.campaign_id
                               AND lpal2.ad_set_id IS NOT NULL
                               AND pt2.domain = pt.domain
                               AND pt2.version = pt.version
                         )
-                      )
                     GROUP BY pt.domain, pt.version, lpal.campaign_id, lpal.ad_set_id
                 ) vc
                 LEFT JOIN mc_dedup mc_c ON mc_c.campaign_id = vc.campaign_id
@@ -362,8 +384,11 @@ def version_overview(
                 -- A page with zero links has no campaign attached, so its spend
                 -- and conversions read as 0 while its sessions still land in the
                 -- version denominator. Surface the count so the UI can flag it.
+                -- Counts eligible_links, not every link: a page whose only links
+                -- are Google Search contributes nothing, and showing it as
+                -- "linked" would hide exactly the case this flag exists for.
                 SELECT landing_page_id, COUNT(*) AS link_count
-                FROM landing_page_ad_links
+                FROM eligible_links
                 GROUP BY landing_page_id
             )
             SELECT
