@@ -159,7 +159,22 @@ _BRANCH_LABELS: dict[str, str] = {
     "oani-taipei.staymeander.com": "Oani Taipei",
     "sgn.staymeander.com": "Meander Saigon",
 }
-_EXCLUDE_SLUGS = ("day-by-day-plan%", "thank-you%", "%travel-guide%")
+_EXCLUDE_SLUGS = (
+    # Not landing pages: lead magnets, confirmation pages, content pages.
+    "day-by-day-plan%",
+    "thank-you%",
+    "%travel-guide%",
+    # Cross-sell pages. These share their campaigns with the branch's main
+    # pages, and ad-links are recorded per campaign while the landing page is
+    # actually chosen per ad — so a shared campaign hands its FULL spend and
+    # conversions to every page linked to it. On these pages that reads as an
+    # impossible conversion rate (oani-and-1948: 129 purchases on 1,029
+    # sessions, 12.54%) and it double-reports numbers already shown on
+    # retreat-hotel / taipei-heritage-hotel-cn. Excluded until attribution
+    # moves to ad level, which is the real fix.
+    "oani-and-1948",
+    "1948-and-oani",
+)
 # Date from which V2 metrics are counted (campaigns switched landing page URLs
 # on this date). V1 stays all-time on purpose: it is the lifetime record of the
 # old page set, while V2 only exists from the switchover onward.
