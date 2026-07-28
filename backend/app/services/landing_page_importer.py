@@ -390,6 +390,50 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
 # --- Top-level importer ----------------------------------------------------
 
 
+def _prune_asset_group_links(db: Session, ag: GoogleAssetGroup, current_urls: list[str]) -> int:
+    """Delete ad-links for this asset group whose URL is no longer a final_url.
+
+    The importer only ever upserted, so a PMax asset group that was repointed at
+    a new landing page kept its old link forever — and the old page kept
+    collecting that campaign's entire spend and conversions. Observed in prod:
+    "Mason_1948_[TOF] Hotel PMax Solo ZH TW" was repointed from
+    solo-traveler-direct-zh to taipei-heritage-hotel-cn on 2026-06-19, and
+    months later the V1 page was still credited with it (ROAS 15.56x) while the
+    V2 page showed none of it.
+
+    Scoped to rows carrying this asset_group_id, so Meta links and the
+    Clarity-derived campaign-level links are never touched. The row is fully
+    reconstructible from final_urls on the next run, so deleting is safe;
+    keeping a link that asserts a destination the ad no longer points at is not.
+
+    Returns the number of rows removed.
+    """
+    canonical_current = set()
+    for url in current_urls:
+        n = normalize_url(url)
+        if n is not None:
+            canonical_current.add(n.canonical)
+
+    stale_ids = []
+    for link in db.query(LandingPageAdLink).filter(LandingPageAdLink.asset_group_id == ag.id).all():
+        n = normalize_url(link.destination_url or "")
+        # An unparseable destination cannot be shown to still be current, and it
+        # can never be re-derived either — drop it with the rest.
+        if n is None or n.canonical not in canonical_current:
+            stale_ids.append(link.id)
+
+    if not stale_ids:
+        return 0
+
+    db.query(LandingPageAdLink).filter(LandingPageAdLink.id.in_(stale_ids)).delete(
+        synchronize_session=False
+    )
+    logger.info(
+        "[lp-importer] pruned %d stale link(s) for asset group %s", len(stale_ids), ag.id
+    )
+    return len(stale_ids)
+
+
 def _commit_phase(db: Session, summary: dict[str, Any], label: str) -> None:
     """Commit one scan phase. A failed commit must not discard the phases that
     already succeeded, nor stop the phases still to come."""
@@ -432,6 +476,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         "pages_created": 0,
         "ad_links_created": 0,
         "ad_links_updated": 0,
+        "stale_google_links_removed": 0,
         "errors": 0,
     }
 
@@ -492,6 +537,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
     for ag in asset_groups:
         try:
             urls = _google_extract_urls(ag.final_urls)
+            summary["stale_google_links_removed"] += _prune_asset_group_links(db, ag, urls)
             for url in urls:
                 summary["google_urls_found"] += 1
                 n = normalize_url(url)
