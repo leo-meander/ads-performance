@@ -8,24 +8,19 @@ converted to VND via currency_rates.
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app.models.base import Base
 from app.models.account import AdAccount
 from app.models.campaign import Campaign
 from app.models.currency_rate import CurrencyRate
 from app.models.budget import BudgetPlan
 from app.models.metrics import MetricsCache
 from app.services.budget_service import get_channel_monthly_vnd
+from tests.db import TestSession
 
 
 @pytest.fixture
 def db():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine)
-    s = Session()
+    s = TestSession()
     yield s
     s.close()
 

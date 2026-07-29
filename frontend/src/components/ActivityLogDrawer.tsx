@@ -213,6 +213,7 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
   const [branches, setBranches] = useState<Branch[]>([])
   const [countries, setCountries] = useState<CountryOption[]>([])
   const [categoryFilter, setCategoryFilter] = useState<string[]>([])
+  const [branchFilter, setBranchFilter] = useState<string[]>([])
 
   const dateFrom = useCustom && customFrom ? customFrom : toDateStr(addDays(today, -(preset - 1)))
   const dateTo   = useCustom && customTo   ? customTo   : toDateStr(today)
@@ -222,6 +223,7 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
     setLoading(true)
     const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo, limit: '200' })
     categoryFilter.forEach((c) => params.append('category', c))
+    if (branchFilter.length > 0) params.set('branches', branchFilter.join(','))
     apiFetch<{ items: ChangeLogItem[]; total: number }>(`/api/dashboard/country/changelog?${params}`)
       .then((res) => {
         if (res.success && res.data) {
@@ -230,7 +232,7 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
         }
       })
       .finally(() => setLoading(false))
-  }, [open, dateFrom, dateTo, refreshKey, categoryFilter])
+  }, [open, dateFrom, dateTo, refreshKey, categoryFilter, branchFilter])
 
   useEffect(() => {
     if (!open) return
@@ -284,6 +286,40 @@ export default function ActivityLogDrawer({ open, onClose }: Props) {
             </button>
           </div>
         </div>
+
+        {/* Branch chips */}
+        {branches.length > 0 && (
+          <div className="px-4 pt-2.5 pb-2 border-b border-gray-100 shrink-0 flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={() => setBranchFilter([])}
+              className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                branchFilter.length === 0
+                  ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                  : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+              }`}
+            >
+              All branches
+            </button>
+            {branches.map((b) => {
+              const active = branchFilter.includes(b.name)
+              return (
+                <button
+                  key={b.name}
+                  onClick={() => setBranchFilter((prev) =>
+                    prev.includes(b.name) ? prev.filter((x) => x !== b.name) : [...prev, b.name]
+                  )}
+                  className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                    active
+                      ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                      : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                  }`}
+                >
+                  {b.name}
+                </button>
+              )
+            })}
+          </div>
+        )}
 
         {/* Category chips */}
         <div className="px-4 pt-2.5 pb-2 border-b border-gray-100 shrink-0 flex flex-wrap gap-1.5">

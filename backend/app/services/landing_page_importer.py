@@ -24,17 +24,20 @@ automatically).
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.ad import Ad
 from app.models.campaign import Campaign
 from app.models.google_asset_group import GoogleAssetGroup
+from app.models.landing_page import LandingPage
 from app.models.landing_page_ad_link import LandingPageAdLink
 from app.services.landing_page_service import get_or_create_external_page
-from app.services.landing_page_url_normalizer import normalize_url
+from app.services.landing_page_url_normalizer import build_url_with_utms, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +135,10 @@ def _upsert_ad_link(
         q = q.filter(LandingPageAdLink.ad_id == ad_id)
     else:
         q = q.filter(LandingPageAdLink.ad_id.is_(None))
-    row = q.one_or_none()
+    # .first(), not .one_or_none(): nothing enforces uniqueness on this key, and a
+    # MultipleResultsFound here used to abort whichever import pass was running.
+    # Any duplicate is an equivalent row, so touching the first one is correct.
+    row = q.first()
 
     created = False
     if row is None:
@@ -166,6 +172,58 @@ def _upsert_ad_link(
     return row, created
 
 
+# --- utm_content → ad resolution -------------------------------------------
+
+
+def resolve_ad_from_utm_content(
+    utm_content: str | None,
+    campaign_id: str,
+    ads_by_campaign: dict[str, list[Ad]],
+    ads_by_platform_id: dict[str, Ad],
+) -> Ad | None:
+    """Resolve a Clarity utm_content value to exactly one ad, or None.
+
+    Two shapes appear in prod (30-day sample, 172 distinct values):
+      - bare Meta ad id, e.g. "120246611392740192" — 67/67 resolved
+      - adset name + ad name concatenated, e.g.
+        "HK_M&F_25-44_Friend_ZH_[Video] KOL_Denver Choi" — 86/105 resolved by
+        matching the ad name as a suffix
+
+    Candidates are scoped to the campaign already matched from utm_campaign, so
+    a suffix cannot collide with a same-named ad in an unrelated campaign.
+
+    Returns None rather than guessing. An unresolved ad just gets no ad-level
+    link, which under-reports; a wrongly resolved one misattributes spend to
+    the wrong landing page, which is worse and much harder to notice.
+    """
+    if not utm_content or utm_content.startswith("{{"):
+        return None
+    val = utm_content.strip()
+    if not val:
+        return None
+
+    if val.isdigit():
+        ad = ads_by_platform_id.get(val)
+        # Only trust the id if it belongs to the campaign we matched.
+        return ad if ad is not None and ad.campaign_id == campaign_id else None
+
+    # Longest suffix wins: a short ad name can be a suffix of a longer one, and
+    # the longer match is the more specific ad. A tie between two different ads
+    # is genuinely ambiguous, so resolve to nothing.
+    best: Ad | None = None
+    best_len = 0
+    ambiguous = False
+    for ad in ads_by_campaign.get(campaign_id, ()):
+        name = (ad.name or "").strip()
+        if not name or not val.endswith(name):
+            continue
+        if len(name) > best_len:
+            best, best_len, ambiguous = ad, len(name), False
+        elif len(name) == best_len and best is not None and ad.id != best.id:
+            ambiguous = True
+    return None if ambiguous else best
+
+
 # --- Clarity-driven importer (UTM campaign match) --------------------------
 
 
@@ -186,12 +244,17 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
     from app.models.landing_page_clarity import LandingPageClaritySnapshot
 
     now = datetime.now(timezone.utc)
-    summary = {
+    summary: dict[str, Any] = {
         "utm_combos_scanned": 0,
         "campaigns_matched": 0,
         "ad_links_created": 0,
         "ad_links_updated": 0,
         "no_match": 0,
+        "page_missing": 0,
+        "ads_matched": 0,
+        "ads_unmatched": 0,
+        "errors": 0,
+        "error_samples": [],
     }
 
     # distinct (landing_page_id, utm_source, utm_campaign, utm_content)
@@ -223,6 +286,32 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
                     return campaign_cache[base]
         return None
 
+    # Preload every landing page. This used to be a .one() per row, which both
+    # N+1'd the query count and raised NoResultFound the moment a snapshot
+    # outlived its page — and since the loop had no exception handling, that
+    # single row aborted the whole pass and every page after it silently kept
+    # its missing ad-link.
+    pages_by_id: dict[str, LandingPage] = {p.id: p for p in db.query(LandingPage).all()}
+
+    # Ads indexed per campaign, for resolving utm_content → the exact ad.
+    # Scoping candidates to the campaign we already matched keeps the suffix
+    # match below from colliding with a same-named ad in an unrelated campaign.
+    ads_by_campaign: dict[str, list[Ad]] = defaultdict(list)
+    ads_by_platform_id: dict[str, Ad] = {}
+    for a in db.query(Ad).all():
+        if a.campaign_id:
+            ads_by_campaign[a.campaign_id].append(a)
+        if a.platform_ad_id:
+            ads_by_platform_id[a.platform_ad_id] = a
+
+    def _lookup_ad(utm_content: str | None, campaign_id: str) -> Ad | None:
+        return resolve_ad_from_utm_content(
+            utm_content, campaign_id, ads_by_campaign, ads_by_platform_id
+        )
+
+    _COMMIT_EVERY = 25
+    pending = 0
+
     for lp_id, utm_s, utm_c, utm_ct in rows:
         summary["utm_combos_scanned"] += 1
         if not utm_c or utm_c.startswith("{{"):  # Meta template placeholder
@@ -235,13 +324,13 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
         campaign_id, platform = match
         summary["campaigns_matched"] += 1
 
-        # Destination URL reconstructed from the landing page + UTMs
-        page = db.query(LandingPage).filter(LandingPage.id == lp_id).one_or_none() if False else None
+        lp = pages_by_id.get(lp_id)
+        if lp is None:
+            summary["page_missing"] += 1
+            continue
+
         # We only need destination_url as an identifier for the ad-link — use
         # canonical + UTM reconstruction.
-        from app.models.landing_page import LandingPage as LP
-        lp = db.query(LP).filter(LP.id == lp_id).one()
-        from app.services.landing_page_url_normalizer import build_url_with_utms
         base = f"https://{lp.domain}/{lp.slug}" if lp.slug else f"https://{lp.domain}"
         destination_url = build_url_with_utms(
             base,
@@ -252,18 +341,42 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
             },
         )
 
-        _, created = _upsert_ad_link(
-            db,
-            landing_page_id=lp_id,
-            platform=platform,
-            campaign_id=campaign_id,
-            ad_id=None,
-            ad_set_id=None,
-            asset_group_id=None,
-            destination_url=destination_url,
-            utm={"utm_source": utm_s, "utm_campaign": utm_c, "utm_content": utm_ct},
-            now=now,
-        )
+        # Resolve the exact ad when utm_content allows it. ad_set_id stays NULL:
+        # the metrics SQL treats a non-null ad_set_id as "use ad-group level",
+        # which is the Google Search path and must not be triggered for Meta.
+        ad = _lookup_ad(utm_ct, campaign_id)
+        if ad is not None:
+            summary["ads_matched"] += 1
+        else:
+            summary["ads_unmatched"] += 1
+
+        # Per-row isolation: one bad combo must not cost every combo behind it.
+        try:
+            _, created = _upsert_ad_link(
+                db,
+                landing_page_id=lp_id,
+                platform=platform,
+                campaign_id=campaign_id,
+                ad_id=ad.id if ad is not None else None,
+                ad_set_id=None,
+                asset_group_id=None,
+                destination_url=destination_url,
+                utm={"utm_source": utm_s, "utm_campaign": utm_c, "utm_content": utm_ct},
+                now=now,
+            )
+            pending += 1
+            if pending >= _COMMIT_EVERY:
+                db.commit()
+                pending = 0
+        except Exception as e:
+            logger.exception("[lp-importer:clarity-utm] failed page=%s campaign=%s", lp_id, utm_c)
+            db.rollback()
+            pending = 0
+            summary["errors"] += 1
+            if len(summary["error_samples"]) < 5:
+                summary["error_samples"].append(f"{type(e).__name__}: {e}")
+            continue
+
         if created:
             summary["ad_links_created"] += 1
         else:
@@ -277,12 +390,83 @@ def import_from_clarity_utms(db: Session) -> dict[str, Any]:
 # --- Top-level importer ----------------------------------------------------
 
 
+def _prune_asset_group_links(db: Session, ag: GoogleAssetGroup, current_urls: list[str]) -> int:
+    """Delete ad-links for this asset group whose URL is no longer a final_url.
+
+    The importer only ever upserted, so a PMax asset group that was repointed at
+    a new landing page kept its old link forever — and the old page kept
+    collecting that campaign's entire spend and conversions. Observed in prod:
+    "Mason_1948_[TOF] Hotel PMax Solo ZH TW" was repointed from
+    solo-traveler-direct-zh to taipei-heritage-hotel-cn on 2026-06-19, and
+    months later the V1 page was still credited with it (ROAS 15.56x) while the
+    V2 page showed none of it.
+
+    Scoped to rows carrying this asset_group_id, so Meta links and the
+    Clarity-derived campaign-level links are never touched. The row is fully
+    reconstructible from final_urls on the next run, so deleting is safe;
+    keeping a link that asserts a destination the ad no longer points at is not.
+
+    Returns the number of rows removed.
+    """
+    canonical_current = set()
+    for url in current_urls:
+        n = normalize_url(url)
+        if n is not None:
+            canonical_current.add(n.canonical)
+
+    stale_ids = []
+    for link in db.query(LandingPageAdLink).filter(LandingPageAdLink.asset_group_id == ag.id).all():
+        n = normalize_url(link.destination_url or "")
+        # An unparseable destination cannot be shown to still be current, and it
+        # can never be re-derived either — drop it with the rest.
+        if n is None or n.canonical not in canonical_current:
+            stale_ids.append(link.id)
+
+    if not stale_ids:
+        return 0
+
+    db.query(LandingPageAdLink).filter(LandingPageAdLink.id.in_(stale_ids)).delete(
+        synchronize_session=False
+    )
+    logger.info(
+        "[lp-importer] pruned %d stale link(s) for asset group %s", len(stale_ids), ag.id
+    )
+    return len(stale_ids)
+
+
+def _commit_phase(db: Session, summary: dict[str, Any], label: str) -> None:
+    """Commit one scan phase. A failed commit must not discard the phases that
+    already succeeded, nor stop the phases still to come."""
+    try:
+        db.commit()
+    except Exception as e:
+        logger.exception("[lp-importer] commit failed after %s", label)
+        db.rollback()
+        summary["errors"] += 1
+        summary.setdefault("commit_failures", []).append(f"{label}: {type(e).__name__}: {e}")
+
+
 def import_from_ads(db: Session) -> dict[str, Any]:
     """Scan all stored ads + google asset groups → upsert landing pages + ad-links.
 
     Idempotent: re-running updates last_seen_at and picks up new URLs.
+
+    Runs the Clarity-UTM pass FIRST. That pass is where the real coverage comes
+    from (most Meta ads store raw_data.creative = {id}, so the scans below find
+    no destination URL), and it used to run last — behind three full-table scans
+    sharing one uncommitted transaction with no statement_timeout raise. Any
+    stall in the scans starved the one pass that matters, and pages kept their
+    missing ad-links, which reads on the dashboard as spend and conversions
+    frozen at 0. Each phase now commits on its own so none can starve another.
     """
     now = datetime.now(timezone.utc)
+
+    # Same reasoning as ga4_sync: Supabase's default statement_timeout kills a
+    # long flush mid-transaction and rolls the whole thing back silently.
+    try:
+        db.execute(text("SET statement_timeout = '180000'"))  # ms
+    except Exception:
+        logger.warning("[lp-importer] could not raise statement_timeout", exc_info=True)
     summary = {
         "meta_ads_scanned": 0,
         "meta_urls_found": 0,
@@ -292,8 +476,18 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         "pages_created": 0,
         "ad_links_created": 0,
         "ad_links_updated": 0,
+        "stale_google_links_removed": 0,
         "errors": 0,
     }
+
+    # Clarity-observed UTM → campaign mapping. First, and on its own commit, so
+    # the scans below cannot starve it.
+    try:
+        summary["clarity_utm"] = import_from_clarity_utms(db)
+    except Exception as e:
+        logger.exception("[lp-importer] clarity-utm pass failed")
+        db.rollback()
+        summary["clarity_utm"] = {"error": f"{type(e).__name__}: {e}"}
 
     # Meta ads
     meta_ads = db.query(Ad).filter(Ad.platform == "meta").all()
@@ -335,6 +529,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         except Exception:
             logger.exception("[lp-importer] failed on meta ad id=%s", ad.id)
             summary["errors"] += 1
+    _commit_phase(db, summary, "meta-ads")
 
     # Google asset groups (PMax)
     asset_groups = db.query(GoogleAssetGroup).all()
@@ -342,6 +537,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
     for ag in asset_groups:
         try:
             urls = _google_extract_urls(ag.final_urls)
+            summary["stale_google_links_removed"] += _prune_asset_group_links(db, ag, urls)
             for url in urls:
                 summary["google_urls_found"] += 1
                 n = normalize_url(url)
@@ -376,6 +572,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         except Exception:
             logger.exception("[lp-importer] failed on google asset group id=%s", ag.id)
             summary["errors"] += 1
+    _commit_phase(db, summary, "google-asset-groups")
 
     # Google Search ads (RSA) — final URLs live on the ad itself (not on an
     # asset group), stored by google_client.fetch_ads into raw_data.final_urls.
@@ -419,17 +616,7 @@ def import_from_ads(db: Session) -> dict[str, Any]:
         except Exception:
             logger.exception("[lp-importer] failed on google ad id=%s", ad.id)
             summary["errors"] += 1
+    _commit_phase(db, summary, "google-ads")
 
-    # After ads-table scan, also pull in the Clarity-observed UTM→campaign mapping.
-    # This is where the real coverage comes from for accounts whose stored
-    # raw_data lacks creative expansion (the default for our Meta sync).
-    try:
-        utm_summary = import_from_clarity_utms(db)
-        summary["clarity_utm"] = utm_summary
-    except Exception:
-        logger.exception("[lp-importer] clarity-utm sub-pass failed")
-        summary["clarity_utm"] = {"error": "see logs"}
-
-    db.commit()
     logger.info("[lp-importer] done: %s", summary)
     return summary

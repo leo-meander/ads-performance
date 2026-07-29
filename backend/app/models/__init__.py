@@ -10,9 +10,15 @@ from app.models.ad_set import AdSet
 from app.models.api_key import ApiKey
 from app.models.approval import ApprovalBatch, ApprovalReviewer, ComboApproval
 from app.models.booking_match import BookingMatch
+from app.models.brand_identity import BrandIdentity
 from app.models.budget import BudgetAllocation, BudgetMonthlySplit, BudgetPlan, BudgetYearlyPlan
 from app.models.campaign import Campaign
+from app.models.campaign_auto_config import CampaignAutoConfig
+from app.models.creative_hypothesis import CreativeHypothesis
+from app.models.creative_principle import CreativePrinciple
 from app.models.creative_visual_tag import CreativeVisualTag
+from app.models.hypothesis_combo_link import HypothesisComboLink
+from app.models.research_question import ResearchQuestion
 from app.models.currency_rate import CurrencyRate
 from app.models.figma import FigmaJob, FigmaTemplate
 from app.models.keypoint import BranchKeypoint
@@ -59,15 +65,21 @@ __all__ = [
     "ApprovalBatch",
     "ApprovalReviewer",
     "BookingMatch",
+    "BrandIdentity",
     "BranchKeypoint",
     "BudgetAllocation",
     "BudgetMonthlySplit",
     "BudgetPlan",
     "BudgetYearlyPlan",
     "Campaign",
+    "CampaignAutoConfig",
     "ComboApproval",
+    "CreativeHypothesis",
+    "CreativePrinciple",
     "CreativeVisualTag",
     "CurrencyRate",
+    "HypothesisComboLink",
+    "ResearchQuestion",
     "FigmaJob",
     "FigmaTemplate",
     "GoogleAssetGroup",

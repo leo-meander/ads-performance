@@ -159,8 +159,30 @@ _BRANCH_LABELS: dict[str, str] = {
     "oani-taipei.staymeander.com": "Oani Taipei",
     "sgn.staymeander.com": "Meander Saigon",
 }
-_EXCLUDE_SLUGS = ("day-by-day-plan%", "thank-you%", "%travel-guide%")
-# Date from which V2 metrics are counted (campaigns switched landing page URLs on this date)
+_EXCLUDE_SLUGS = (
+    # Not landing pages: lead magnets, confirmation pages, content pages.
+    "day-by-day-plan%",
+    "thank-you%",
+    "%travel-guide%",
+    # Cross-sell pages. These share their campaigns with the branch's main
+    # pages, and ad-links are recorded per campaign while the landing page is
+    # actually chosen per ad — so a shared campaign hands its FULL spend and
+    # conversions to every page linked to it. On these pages that reads as an
+    # impossible conversion rate (oani-and-1948: 129 purchases on 1,029
+    # sessions, 12.54%) and it double-reports numbers already shown on
+    # retreat-hotel / taipei-heritage-hotel-cn. Excluded until attribution
+    # moves to ad level, which is the real fix.
+    "oani-and-1948",
+    "1948-and-oani",
+)
+# Date from which V2 metrics are counted (campaigns switched landing page URLs
+# on this date). V1 stays all-time on purpose: it is the lifetime record of the
+# old page set, while V2 only exists from the switchover onward.
+#
+# The two versions therefore sit on DIFFERENT windows by design. That makes the
+# cross-version deltas a volume comparison of 12 months against a few weeks —
+# read the rates (conv. rate, ROAS, bounce), not the absolute counts. Each card
+# reports its own window so the asymmetry is visible on screen.
 _V2_METRICS_FROM = "2026-06-19"
 
 
@@ -171,8 +193,13 @@ def version_overview(
 ):
     """Return per-version aggregate metrics for the 5 active landing page domains.
 
+    Versions sit on different windows by design — see _V2_METRICS_FROM. Each
+    one is reported in `version_windows` so the UI can label its card.
+
     Response: { branches: [{ domain, branch, versions: { "Version 1": VersionAgg, ... } }],
-                version_labels: ["Version 1", "Version 2", ...] }
+                version_labels: ["Version 1", "Version 2", ...],
+                version_windows: { "Version 2": "YYYY-MM-DD", ... },  // null = all-time
+                freshness: { ads|clarity|ga4: "YYYY-MM-DD" | null } }
     VersionAgg includes ads + Clarity + GA4 metrics.
     """
     try:
@@ -222,8 +249,35 @@ def version_overview(
                 WHERE ad_id IS NULL AND ad_set_id IS NULL
                 GROUP BY campaign_id, date
             ),
+            eligible_links AS (
+                -- Which ad-links may contribute metrics to a landing page.
+                --
+                -- Google is restricted to Performance Max. Search, Demand Gen
+                -- and Display campaigns carry final_urls too, but they point at
+                -- pages we do not treat as campaign landing pages, so counting
+                -- their spend inflates every page they touch.
+                --
+                -- campaigns.objective holds the Google channel type verbatim
+                -- (google_client stores it as PERFORMANCE_MAX / SEARCH /
+                -- DEMAND_GEN / DISPLAY) and is populated on every Google row in
+                -- prod, so it is the whole test. Deliberately NOT falling back
+                -- to "has an asset group": fetch_asset_groups queries
+                -- `FROM asset_group` with no campaign-type filter, and Google
+                -- returns asset groups for Demand Gen as well as PMax, so that
+                -- check would quietly readmit the campaigns being excluded.
+                --
+                -- Meta and TikTok are unaffected.
+                SELECT lpal.*
+                FROM landing_page_ad_links lpal
+                JOIN campaigns c ON c.id = lpal.campaign_id
+                WHERE lpal.campaign_id IS NOT NULL
+                  AND (c.platform <> 'google' OR c.objective = 'PERFORMANCE_MAX')
+            ),
             mc_adset_dedup AS (
-                -- Ad-group level metrics (for Google Search non-brand ad groups)
+                -- Ad-group level metrics (for Google Search non-brand ad groups).
+                -- Currently unreachable: Google Search links are filtered out by
+                -- eligible_links above. Kept so restoring Search is a one-line
+                -- change to that filter rather than a rewrite here.
                 SELECT campaign_id, ad_set_id, date,
                     MAX(spend)       AS spend,
                     MAX(conversions) AS conversions,
@@ -245,17 +299,14 @@ def version_overview(
                     SUM(COALESCE(mc_a.clicks, mc_c.clicks, 0))      AS clicks
                 FROM (
                     SELECT lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
-                    FROM landing_page_ad_links lpal
-                    WHERE lpal.campaign_id IS NOT NULL
-                      AND (
-                        lpal.ad_set_id IS NOT NULL
-                        OR NOT EXISTS (
-                            SELECT 1 FROM landing_page_ad_links lpal2
+                    FROM eligible_links lpal
+                    WHERE lpal.ad_set_id IS NOT NULL
+                       OR NOT EXISTS (
+                            SELECT 1 FROM eligible_links lpal2
                             WHERE lpal2.landing_page_id = lpal.landing_page_id
                               AND lpal2.campaign_id = lpal.campaign_id
                               AND lpal2.ad_set_id IS NOT NULL
                         )
-                      )
                     GROUP BY lpal.landing_page_id, lpal.campaign_id, lpal.ad_set_id
                 ) lpal_dedup
                 JOIN page_tags pt ON pt.id = lpal_dedup.landing_page_id
@@ -282,20 +333,17 @@ def version_overview(
                 FROM (
                     SELECT pt.domain, pt.version, lpal.campaign_id, lpal.ad_set_id,
                         MIN(pt.metrics_from) AS metrics_from
-                    FROM landing_page_ad_links lpal
+                    FROM eligible_links lpal
                     JOIN page_tags pt ON pt.id = lpal.landing_page_id
-                    WHERE lpal.campaign_id IS NOT NULL
-                      AND (
-                        lpal.ad_set_id IS NOT NULL
-                        OR NOT EXISTS (
-                            SELECT 1 FROM landing_page_ad_links lpal2
+                    WHERE lpal.ad_set_id IS NOT NULL
+                       OR NOT EXISTS (
+                            SELECT 1 FROM eligible_links lpal2
                             JOIN page_tags pt2 ON pt2.id = lpal2.landing_page_id
                             WHERE lpal2.campaign_id = lpal.campaign_id
                               AND lpal2.ad_set_id IS NOT NULL
                               AND pt2.domain = pt.domain
                               AND pt2.version = pt.version
                         )
-                      )
                     GROUP BY pt.domain, pt.version, lpal.campaign_id, lpal.ad_set_id
                 ) vc
                 LEFT JOIN mc_dedup mc_c ON mc_c.campaign_id = vc.campaign_id
@@ -330,6 +378,17 @@ def version_overview(
                 WHERE g.source IS NULL AND g.medium IS NULL AND g.campaign IS NULL
                   AND g.date >= pt.metrics_from
                 GROUP BY g.landing_page_id
+            ),
+            ad_link_counts AS (
+                -- A page with zero links has no campaign attached, so its spend
+                -- and conversions read as 0 while its sessions still land in the
+                -- version denominator. Surface the count so the UI can flag it.
+                -- Counts eligible_links, not every link: a page whose only links
+                -- are Google Search contributes nothing, and showing it as
+                -- "linked" would hide exactly the case this flag exists for.
+                SELECT landing_page_id, COUNT(*) AS link_count
+                FROM eligible_links
+                GROUP BY landing_page_id
             )
             SELECT
                 pt.id AS page_id,
@@ -361,12 +420,14 @@ def version_overview(
                 ROUND(COALESCE(vam.spend, 0)::numeric, 0)       AS ver_spend,
                 ROUND(COALESCE(vam.revenue, 0)::numeric, 0)     AS ver_revenue,
                 COALESCE(vam.conversions, 0)                     AS ver_conversions,
-                COALESCE(vam.add_to_cart, 0)                     AS ver_add_to_cart
+                COALESCE(vam.add_to_cart, 0)                     AS ver_add_to_cart,
+                COALESCE(alc.link_count, 0)                      AS ad_link_count
             FROM page_tags pt
             LEFT JOIN ad_metrics am ON am.landing_page_id = pt.id
             LEFT JOIN version_ad_metrics vam ON vam.domain = pt.domain AND vam.version = pt.version
             LEFT JOIN clarity_metrics cm ON cm.landing_page_id = pt.id
             LEFT JOIN ga4_metrics gm ON gm.landing_page_id = pt.id
+            LEFT JOIN ad_link_counts alc ON alc.landing_page_id = pt.id
             WHERE COALESCE(am.spend, 0) > 0 OR COALESCE(cm.sessions, 0) > 0
             ORDER BY pt.domain, pt.version DESC, COALESCE(am.spend, 0) DESC
         """)
@@ -402,6 +463,7 @@ def version_overview(
                 "begin_checkout": int(r["begin_checkout"] or 0),
                 "avg_session_duration_sec": float(r["avg_session_duration_sec"] or 0),
                 "low_confidence": int(r["sessions"] or 0) < 10,
+                "ad_link_count": int(r["ad_link_count"] or 0),
                 "ver_spend": float(r["ver_spend"] or 0),
                 "ver_revenue": float(r["ver_revenue"] or 0),
                 "ver_conversions": float(r["ver_conversions"] or 0),
@@ -463,7 +525,45 @@ def version_overview(
                 "versions": {v: _agg(d["versions"].get(v, [])) for v in all_versions},
             })
 
-        return _api({"branches": result, "version_labels": all_versions})
+        # Latest date each upstream source has landed for these domains. Surfaced
+        # so a stalled cron shows up on the page instead of looking like a flat
+        # trend — the three sources have different lags (ads ~same day, Clarity
+        # and GA4 ~1-2 days).
+        freshness_sql = text(f"""
+            SELECT 'clarity' AS source, MAX(cs.date) AS last_date
+            FROM landing_page_clarity_snapshots cs
+            JOIN landing_pages lp ON lp.id = cs.landing_page_id
+            WHERE lp.domain IN ({domain_list})
+            UNION ALL
+            SELECT 'ga4', MAX(g.date)
+            FROM landing_page_ga4_snapshots g
+            JOIN landing_pages lp ON lp.id = g.landing_page_id
+            WHERE lp.domain IN ({domain_list})
+            UNION ALL
+            SELECT 'ads', MAX(mc.date)
+            FROM metrics_cache mc
+            JOIN landing_page_ad_links l ON l.campaign_id = mc.campaign_id
+            JOIN landing_pages lp ON lp.id = l.landing_page_id
+            WHERE mc.ad_id IS NULL AND mc.ad_set_id IS NULL
+              AND lp.domain IN ({domain_list})
+        """)
+        freshness = {
+            r["source"]: r["last_date"].isoformat() if r["last_date"] else None
+            for r in db.execute(freshness_sql).mappings().all()
+        }
+
+        # Mirrors the metrics_from CASE above: V2 starts at the switchover date,
+        # every other version is all-time (null).
+        version_windows = {
+            v: (_V2_METRICS_FROM if v == "Version 2" else None) for v in all_versions
+        }
+
+        return _api({
+            "branches": result,
+            "version_labels": all_versions,
+            "version_windows": version_windows,
+            "freshness": freshness,
+        })
     except Exception as e:
         return _api(error=str(e))
 

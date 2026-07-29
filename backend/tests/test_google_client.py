@@ -9,21 +9,21 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# Mock the google.ads module before importing google_client
 @pytest.fixture(autouse=True)
 def mock_google_ads():
-    """Mock the google-ads SDK so tests don't require it installed."""
+    """Mock the google-ads SDK so tests never reach the real API.
+
+    Patch the names google_client already bound, not sys.modules: that module
+    does `from google.ads.googleads.client import GoogleAdsClient` at import
+    time, so a sys.modules patch only worked while this file happened to be
+    imported before app.services.google_client — i.e. it depended on test order.
+    """
     mock_client_class = MagicMock()
     mock_client_instance = MagicMock()
     mock_client_class.load_from_dict.return_value = mock_client_instance
 
-    with patch.dict("sys.modules", {
-        "google": MagicMock(),
-        "google.ads": MagicMock(),
-        "google.ads.googleads": MagicMock(),
-        "google.ads.googleads.client": MagicMock(GoogleAdsClient=mock_client_class),
-        "google.ads.googleads.errors": MagicMock(GoogleAdsException=Exception),
-    }):
+    with patch("app.services.google_client.GoogleAdsClient", mock_client_class), \
+         patch("app.services.google_client.GoogleAdsException", Exception):
         yield mock_client_instance
 
 

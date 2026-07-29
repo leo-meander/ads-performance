@@ -633,10 +633,28 @@ def trigger_clarity_sync(
 @router.post("/internal/tasks/landing-page-import", status_code=202)
 def trigger_landing_page_import(
     x_internal_secret: str | None = Header(default=None),
+    wait: bool = False,
 ):
     """Periodic: scan all existing ads for destination URLs and upsert
-    `external` landing pages + ad-link rows. Safe to run hourly (idempotent)."""
+    `external` landing pages + ad-link rows. Safe to run hourly (idempotent).
+
+    `wait=true`: run synchronously and return the full summary — including the
+    clarity-UTM sub-pass counts and its first few error strings — instead of
+    firing and forgetting. Use it to check how many ad-links a run actually
+    produced; the cron always uses the default async path.
+    """
     _require_secret(x_internal_secret)
+    if wait:
+        from app.services.landing_page_importer import import_from_ads
+        db = SessionLocal()
+        try:
+            summary = import_from_ads(db)
+        except Exception as e:
+            logger.exception("[lp-import] wait-mode failed")
+            return _api_response(error=f"{type(e).__name__}: {e}")
+        finally:
+            db.close()
+        return _api_response(data=summary)
     _run_in_thread(_do_landing_page_import, "landing-page-import")
     return _api_response(data={"status": "started"})
 

@@ -5,46 +5,22 @@ and the Creative Library coverage filters (search / has_hypothesis / has_keypoin
 """
 import uuid
 
-import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app.database import get_db
 from app.main import app
 from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
-from app.models.base import Base
 from app.models.creative_hypothesis import CreativeHypothesis
 from app.models.hypothesis_combo_link import HypothesisComboLink
 from app.models.keypoint import BranchKeypoint
 from app.models.user import User
 from app.services.auth_service import create_access_token, hash_password
+from tests.db import TestSession
 
 
-engine = create_engine("sqlite:///test_hypothesis_combo_links.db", connect_args={"check_same_thread": False})
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-def override_get_db():
-    db = TestSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
 
 
 def _admin():

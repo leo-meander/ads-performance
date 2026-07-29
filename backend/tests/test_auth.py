@@ -3,39 +3,16 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app.database import get_db
 from app.main import app
-from app.models.base import Base
 from app.models.user import User
 from app.services.auth_service import create_access_token, decode_access_token, hash_password, verify_password
+from tests.db import TestSession
 
 # ── Test database setup ──────────────────────────────────────
 
-engine = create_engine("sqlite:///test_platform.db", connect_args={"check_same_thread": False})
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-
-def override_get_db():
-    db = TestSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    """Create all tables before each test, drop after."""
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
 
 
 def _create_user(roles=None, email=None, password="testpass123"):
@@ -128,14 +105,14 @@ def test_change_password():
     headers = _auth_headers(user)
     response = client.put(
         "/api/auth/me/password",
-        json={"current_password": "oldpass", "new_password": "newpass"},
+        json={"current_password": "oldpass", "new_password": "newpass1"},
         headers=headers,
     )
     data = response.json()
     assert data["success"] is True
 
     # Login with new password
-    response = client.post("/api/auth/login", json={"email": user.email, "password": "newpass"})
+    response = client.post("/api/auth/login", json={"email": user.email, "password": "newpass1"})
     assert response.json()["success"] is True
 
 

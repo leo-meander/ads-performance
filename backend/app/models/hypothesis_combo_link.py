@@ -11,9 +11,10 @@ class HypothesisComboLink(Base):
 
     __tablename__ = "hypothesis_combo_links"
 
-    # The PG table (migration 061) has a gen_random_uuid() column default; the
-    # id is generated Python-side so create_all also works on the SQLite test DB
-    # (sqlite can't parse a function call in DEFAULT).
+    # Generated Python-side (matching TimestampMixin) rather than via a
+    # server_default of gen_random_uuid(): SQLite cannot parse that in DDL, so
+    # create_all aborted and every table sorted after this one went missing.
+    # The Postgres column default from migration 061 is untouched.
     id = Column(UUIDType, primary_key=True, default=lambda: str(uuid.uuid4()))
     hypothesis_id = Column(String(20), ForeignKey("creative_hypotheses.hypothesis_id", ondelete="CASCADE"), nullable=False, index=True)
     combo_id = Column(String(20), ForeignKey("ad_combos.combo_id", ondelete="CASCADE"), nullable=False, index=True)

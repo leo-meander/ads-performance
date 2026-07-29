@@ -13,8 +13,6 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 import app.models  # noqa: F401 — register every table before create_all
 from app.models.account import AdAccount
@@ -22,23 +20,9 @@ from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
-from app.models.base import Base
 from app.models.keypoint import BranchKeypoint
 from app.services.creative_autoassign_service import AutoAssignError, apply, suggest
-
-
-engine = create_engine(
-    "sqlite:///test_autoassign.db",
-    connect_args={"check_same_thread": False},
-)
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+from tests.db import TestSession
 
 
 def _fake_client(payload: dict | str):

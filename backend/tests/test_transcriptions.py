@@ -7,10 +7,7 @@ import requests
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app.models.base import Base
 from app.models.video_transcript import VideoTranscript
 from app.models.ad_material import AdMaterial
 from app.models.ad_combo import AdCombo
@@ -18,15 +15,13 @@ from app.models.ad_angle import AdAngle, ANGLE_TYPES
 from app.models.ad_copy import AdCopy
 from app.models.keypoint import BranchKeypoint
 from app.models.account import AdAccount
+from tests.db import TestSession
 
 
 # ── Test DB ──────────────────────────────────────────────────
 @pytest.fixture
 def db():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine)
-    session = Session()
+    session = TestSession()
     yield session
     session.close()
 

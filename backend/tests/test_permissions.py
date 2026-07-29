@@ -3,8 +3,6 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.core.permissions import (
     accessible_branches,
@@ -15,35 +13,15 @@ from app.core.permissions import (
     is_admin,
     permission_dict,
 )
-from app.database import get_db
 from app.main import app
-from app.models.base import Base
 from app.models.user import User
 from app.models.user_permission import UserPermission
 from app.models.user_page_permission import UserPagePermission
 from app.services.auth_service import create_access_token, hash_password
-
-engine = create_engine("sqlite:///test_platform_perms.db", connect_args={"check_same_thread": False})
-TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from tests.db import TestSession
 
 
-def override_get_db():
-    db = TestSession()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
 
 
 def _create_user(roles=None, email=None):
