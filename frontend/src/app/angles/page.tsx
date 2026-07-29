@@ -338,16 +338,55 @@ function AnglesPageInner() {
     setComboSearchLoading(true)
     const p = new URLSearchParams({ limit: '20' })
     if (branchId) p.set('branch_id', branchId)
+    if (q) p.set('search', q)   // server-side ILIKE on ad_name + combo_id
     fetch(`${API_BASE}/api/combos?${p}`, { credentials: 'include' })
       .then(r => r.json())
-      .then(d => {
-        if (d.success) {
-          const items = d.data.items as {combo_id: string; ad_name: string | null; verdict: string; roas: number | null; branch_id: string}[]
-          setComboResults(q ? items.filter(i => (i.ad_name || '').toLowerCase().includes(q.toLowerCase()) || i.combo_id.toLowerCase().includes(q.toLowerCase())) : items)
-        }
-      })
+      .then(d => { if (d.success) setComboResults(d.data.items) })
       .catch(() => {})
       .finally(() => setComboSearchLoading(false))
+  }
+
+  // ── Link/unlink combos on an EXISTING hypothesis ──────────
+  const [linkingHypoId, setLinkingHypoId] = useState<string | null>(null)
+  const [linkSearch, setLinkSearch] = useState('')
+  const [linkResults, setLinkResults] = useState<{combo_id: string; ad_name: string | null; verdict: string; roas: number | null; branch_id: string}[]>([])
+  const [linkLoading, setLinkLoading] = useState(false)
+  const [linkSaving, setLinkSaving] = useState(false)
+
+  const searchLinkCombos = (q: string, branchName: string) => {
+    const branchId = accounts.find(a => a.account_name === branchName)?.id
+    if (!q && !branchId) { setLinkResults([]); return }
+    setLinkLoading(true)
+    const p = new URLSearchParams({ limit: '20' })
+    if (branchId) p.set('branch_id', branchId)
+    if (q) p.set('search', q)
+    fetch(`${API_BASE}/api/combos?${p}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(d => { if (d.success) setLinkResults(d.data.items) })
+      .catch(() => {})
+      .finally(() => setLinkLoading(false))
+  }
+
+  const mutateComboLink = (hypothesisId: string, comboIds: string[], action: 'add' | 'remove') => {
+    setLinkSaving(true)
+    fetch(`${API_BASE}/api/hypotheses/${hypothesisId}/combos`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', body: JSON.stringify({ combo_ids: comboIds, action }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.success) return
+        setHypotheses(prev => prev.map(h => h.hypothesis_id !== hypothesisId ? h : {
+          ...h,
+          linked_combos: d.data.linked_combos as LinkedCombo[],
+          // Server promotes the legacy combo_id into the junction table on add
+          // and clears it on remove — mirror that so the fallback chip doesn't
+          // render a duplicate.
+          combo_id: action === 'add' || comboIds.includes(h.combo_id || '') ? null : h.combo_id,
+        }))
+      })
+      .catch(() => {})
+      .finally(() => setLinkSaving(false))
   }
 
   // Auto-fetch benchmark win threshold
@@ -1393,27 +1432,82 @@ function AnglesPageInner() {
                               )}
                             </div>
 
-                            {/* Linked combos */}
-                            {(h.linked_combos && h.linked_combos.length > 0) ? (
-                              <div className="flex flex-wrap gap-1.5">
-                                {h.linked_combos.map(lc => (
-                                  <a key={lc.combo_id} href={`/creative?combo=${lc.combo_id}`}
-                                    className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 bg-white hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-lg px-2.5 py-1 transition-colors">
-                                    <span className="font-mono text-gray-400">{lc.combo_id}</span>
-                                    {lc.ad_name && <span className="truncate max-w-[200px]">{lc.ad_name}</span>}
-                                    {lc.verdict && <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${lc.verdict === 'WIN' ? 'bg-green-100 text-green-700' : lc.verdict === 'LOSE' ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'}`}>{lc.verdict}</span>}
-                                    {lc.roas && <span className="text-gray-400">{lc.roas.toFixed(2)}x</span>}
-                                  </a>
-                                ))}
-                              </div>
-                            ) : h.combo_id ? (
-                              <a href={`/creative?combo=${h.combo_id}`}
-                                className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-blue-600 bg-white hover:bg-blue-50 border border-gray-200 hover:border-blue-200 rounded-lg px-2.5 py-1 transition-colors">
-                                <span className="font-mono text-gray-400">{h.combo_id}</span>
-                                {h.ad_name && <span className="truncate max-w-[300px]">{h.ad_name}</span>}
-                                <span className="text-gray-300">→ Creative Library</span>
-                              </a>
-                            ) : null}
+                            {/* Linked combos — many-to-many, editable inline */}
+                            {(() => {
+                              const chips: LinkedCombo[] = (h.linked_combos && h.linked_combos.length > 0)
+                                ? h.linked_combos
+                                : h.combo_id
+                                  ? [{ combo_id: h.combo_id, ad_name: h.ad_name, verdict: null, roas: null }]
+                                  : []
+                              const linkedIds = chips.map(c => c.combo_id)
+                              const isLinking = linkingHypoId === h.hypothesis_id
+                              return (
+                                <div className="space-y-1.5">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    {chips.map(lc => (
+                                      <span key={lc.combo_id}
+                                        className="inline-flex items-center gap-1.5 text-xs text-gray-500 bg-white border border-gray-200 rounded-lg px-2.5 py-1">
+                                        <a href={`/creative?combo=${lc.combo_id}`} className="inline-flex items-center gap-1.5 hover:text-blue-600">
+                                          <span className="font-mono text-gray-400">{lc.combo_id}</span>
+                                          {lc.ad_name && <span className="truncate max-w-[200px]">{lc.ad_name}</span>}
+                                          {lc.verdict && <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${lc.verdict === 'WIN' ? 'bg-green-100 text-green-700' : lc.verdict === 'LOSE' ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'}`}>{lc.verdict}</span>}
+                                          {lc.roas != null && <span className="text-gray-400">{lc.roas.toFixed(2)}x</span>}
+                                        </a>
+                                        {canEdit && (
+                                          <button onClick={() => mutateComboLink(h.hypothesis_id, [lc.combo_id], 'remove')}
+                                            disabled={linkSaving} title="Unlink this creative"
+                                            className="text-gray-300 hover:text-red-500 disabled:opacity-40"><X className="w-3 h-3" /></button>
+                                        )}
+                                      </span>
+                                    ))}
+                                    {canEdit && !isLinking && (
+                                      <button
+                                        onClick={() => { setLinkingHypoId(h.hypothesis_id); setLinkSearch(''); setLinkResults([]); searchLinkCombos('', h.branch_name) }}
+                                        className="text-[11px] text-violet-600 hover:text-violet-800 bg-violet-50 hover:bg-violet-100 border border-violet-200 rounded-lg px-2 py-1 font-medium">
+                                        + Link creative
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  {isLinking && (
+                                    <div className="relative bg-white border border-violet-200 rounded-lg p-2">
+                                      <div className="flex items-center gap-2">
+                                        <input autoFocus value={linkSearch}
+                                          onChange={e => { setLinkSearch(e.target.value); searchLinkCombos(e.target.value, h.branch_name) }}
+                                          placeholder={`Search creatives in ${h.branch_name}…`}
+                                          className="flex-1 px-2.5 py-1.5 border border-gray-200 rounded-lg text-xs" />
+                                        {linkLoading && <span className="text-[10px] text-gray-400 animate-pulse">searching…</span>}
+                                        <button onClick={() => { setLinkingHypoId(null); setLinkResults([]) }}
+                                          className="text-gray-400 hover:text-gray-700"><X className="w-3.5 h-3.5" /></button>
+                                      </div>
+                                      {linkResults.length > 0 && (
+                                        <div className="mt-1 max-h-52 overflow-auto border border-gray-100 rounded-lg">
+                                          {linkResults.map(r => {
+                                            const already = linkedIds.includes(r.combo_id)
+                                            return (
+                                              <button key={r.combo_id} disabled={already || linkSaving}
+                                                onClick={() => { mutateComboLink(h.hypothesis_id, [r.combo_id], 'add'); setLinkSearch(''); setLinkResults([]) }}
+                                                className={`w-full text-left px-2.5 py-1.5 border-b border-gray-50 last:border-0 ${already ? 'bg-gray-50 opacity-60 cursor-default' : 'hover:bg-violet-50'}`}>
+                                                <div className="flex items-center gap-2">
+                                                  {already && <span className="text-violet-500 text-[10px] font-bold">✓ linked</span>}
+                                                  <span className="font-mono text-[10px] text-gray-400">{r.combo_id}</span>
+                                                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${r.verdict === 'WIN' ? 'bg-green-100 text-green-700' : r.verdict === 'LOSE' ? 'bg-red-100 text-red-600' : 'bg-yellow-100 text-yellow-700'}`}>{r.verdict}</span>
+                                                  {r.roas != null && <span className="text-[10px] text-gray-500">{r.roas.toFixed(2)}x</span>}
+                                                </div>
+                                                <p className="text-[11px] text-gray-700 truncate mt-0.5">{r.ad_name || '(no name)'}</p>
+                                              </button>
+                                            )
+                                          })}
+                                        </div>
+                                      )}
+                                      {!linkLoading && linkSearch && linkResults.length === 0 && (
+                                        <p className="text-[11px] text-gray-400 px-1 pt-1.5">No creative matches “{linkSearch}”.</p>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })()}
 
                             {/* 4-tier */}
                             <div className="space-y-1.5">

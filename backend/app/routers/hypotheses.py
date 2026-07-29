@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -644,12 +644,20 @@ def list_hypotheses(
     hypothesis_category: Optional[str] = None,
     target_audience: Optional[str] = None,
     market: Optional[str] = None,
+    search: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     try:
         q = db.query(CreativeHypothesis)
+        if search and search.strip():
+            like = f"%{search.strip()}%"
+            q = q.filter(or_(
+                CreativeHypothesis.hypothesis_id.ilike(like),
+                CreativeHypothesis.hypothesis.ilike(like),
+                CreativeHypothesis.creative_angle.ilike(like),
+            ))
         if branch_name:
             q = q.filter(CreativeHypothesis.branch_name == branch_name)
         if status:
@@ -748,9 +756,22 @@ def link_combos(hypothesis_id: str, payload: dict, db: Session = Depends(get_db)
     """Add or remove combo links. Body: { combo_ids: [...], action: 'add'|'remove' }"""
     try:
         action = payload.get("action", "add")
-        ids = payload.get("combo_ids", [])
+        ids = [c for c in (payload.get("combo_ids") or []) if c]
+        hyp = db.query(CreativeHypothesis).filter(
+            CreativeHypothesis.hypothesis_id == hypothesis_id
+        ).first()
+        if not hyp:
+            return {"success": False, "data": None, "error": "Hypothesis not found",
+                    "timestamp": datetime.now(timezone.utc).isoformat()}
+
         if action == "add":
-            for cid in ids:
+            # Hypotheses created before the junction table carry their single
+            # combo on the legacy column. Promote it to a link on first add so
+            # it doesn't disappear once linked_combos becomes non-empty.
+            to_link = list(ids)
+            if hyp.combo_id and hyp.combo_id not in to_link:
+                to_link.append(hyp.combo_id)
+            for cid in to_link:
                 existing = db.query(HypothesisComboLink).filter_by(hypothesis_id=hypothesis_id, combo_id=cid).first()
                 if not existing:
                     db.add(HypothesisComboLink(hypothesis_id=hypothesis_id, combo_id=cid))
@@ -759,6 +780,10 @@ def link_combos(hypothesis_id: str, payload: dict, db: Session = Depends(get_db)
                 HypothesisComboLink.hypothesis_id == hypothesis_id,
                 HypothesisComboLink.combo_id.in_(ids)
             ).delete(synchronize_session=False)
+            # Unlinking the legacy combo must clear the column too, otherwise
+            # the fallback chip resurrects it.
+            if hyp.combo_id and hyp.combo_id in ids:
+                hyp.combo_id = None
         db.commit()
         linked = db.query(AdCombo).join(
             HypothesisComboLink, HypothesisComboLink.combo_id == AdCombo.combo_id

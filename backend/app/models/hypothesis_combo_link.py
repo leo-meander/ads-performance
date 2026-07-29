@@ -6,6 +6,9 @@ from app.models.base import Base, UUIDType
 
 
 class HypothesisComboLink(Base):
+    """Junction table — a hypothesis can be tested by many combos and a combo
+    can serve many hypotheses."""
+
     __tablename__ = "hypothesis_combo_links"
 
     # Generated Python-side (matching TimestampMixin) rather than via a
