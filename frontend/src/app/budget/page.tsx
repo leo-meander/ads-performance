@@ -442,13 +442,15 @@ export default function BudgetDashboard() {
     }
   }
 
+  // Suggestion is computed for a single target month — only fill that row
   const applySuggestion = (channelPct: Record<string, number>) => {
     setSplitRows(prev => prev.map(r => {
+      if (r.month !== suggestMonth) return r
       const channel_pct = { ...r.channel_pct, ...channelPct }
       const sum = Object.values(channel_pct).reduce((s, v) => s + (Number(v) || 0), 0)
       return { ...r, channel_pct, pct_sum: Math.round(sum * 100) / 100 }
     }))
-    setSaveStatus({})
+    setSaveStatus(prev => ({ ...prev, [suggestMonth]: null }))
   }
 
   // Monthly: filter + group by branch

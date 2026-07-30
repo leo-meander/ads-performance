@@ -207,7 +207,7 @@ export default function BudgetSuggestionPanel({ suggestion, targetMonthLabel, on
       <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
         <p className="text-xs text-gray-400">
           <TrendingUp className="w-3 h-3 inline mr-1" />
-          Apply fills in the channel % inputs — review and click Save per month to confirm.
+          Apply fills in the {targetMonthLabel} channel % inputs only — review and click Save on that row to confirm.
         </p>
         <div className="flex gap-2">
           <button onClick={onDismiss}
@@ -217,7 +217,7 @@ export default function BudgetSuggestionPanel({ suggestion, targetMonthLabel, on
           <button onClick={() => onApply(channelPct)}
             className="px-4 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-1.5">
             <Sparkles className="w-3 h-3" />
-            Apply to form
+            Apply to {targetMonthLabel}
           </button>
         </div>
       </div>
