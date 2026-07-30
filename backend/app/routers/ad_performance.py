@@ -2,9 +2,13 @@
 
 Backs the /ad-performance frontend page:
   - GET  /ad-performance         list ads (Campaign → Ad Set → Ad name) with
-                                 totals over a date window
+                                 totals over a date window, either one row per
+                                 ad (group_by=ad) or pivoted so every ad
+                                 sharing an ad_name collapses into one row
+                                 (group_by=ad_name)
   - GET  /ad-performance/daily   per-day series for one or more ads (drill /
-                                 compare)
+                                 compare) — by ad_id, or by ad_name to match
+                                 the pivot
   - POST /ad-performance/sync    manual "Sync from Meta" button (runs in a
                                  background thread, returns 202 immediately)
 
@@ -99,8 +103,14 @@ _SUM_COLS = [
 _SORTABLE = {
     "spend", "roas", "conversions", "leads", "cost_per_lead", "cost_per_purchase",
     "ctr", "impressions", "clicks", "engagement_rate", "hook_rate",
-    "thruplay_rate", "video_complete_rate",
+    "thruplay_rate", "video_complete_rate", "ad_count",
 }
+
+# Pivot rows are keyed by (account_id, ad_name) — NEVER by ad_name alone:
+# spend/revenue are stored in each branch's native currency, so collapsing the
+# same ad name across branches would sum VND onto TWD.
+def _name_key(account_id, ad_name: str | None) -> str:
+    return f"{account_id}::{ad_name or ''}"
 
 
 @router.get("/ad-performance")
@@ -111,10 +121,18 @@ def list_ad_performance(
     date_to: str | None = None,
     sort_by: str = "spend",
     sort_dir: str = "desc",
+    group_by: str = "ad",
     current_user: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
 ):
-    """Ads aggregated over a date window, one row per ad with full 3-level names."""
+    """Ads aggregated over a date window.
+
+    group_by='ad' (default)  one row per ad, with full 3-level names.
+    group_by='ad_name'       pivot — every ad sharing an ad_name inside the same
+                             branch collapses into one row. Raw counts are
+                             summed first, rates derived after, so the pivoted
+                             ROAS/CTR/CPL are true weighted averages.
+    """
     try:
         ok, scoped_ids, err = scoped_account_ids(
             db, current_user, "meta_ads", requested_account_id=branch_id
@@ -122,16 +140,32 @@ def list_ad_performance(
         if not ok:
             return _api_response(error=err)
         df, dt = _parse_range(date_from, date_to)
+        pivot = group_by == "ad_name"
 
-        q = db.query(
-            AdDailyMetric.account_id.label("account_id"),
-            AdDailyMetric.ad_id.label("ad_id"),
-            sf.max(AdDailyMetric.ad_name).label("ad_name"),
-            sf.max(AdDailyMetric.campaign_id).label("campaign_id"),
-            sf.max(AdDailyMetric.campaign_name).label("campaign_name"),
-            sf.max(AdDailyMetric.adset_name).label("adset_name"),
-            *_SUM_COLS,
-        ).filter(
+        if pivot:
+            q = db.query(
+                AdDailyMetric.account_id.label("account_id"),
+                AdDailyMetric.ad_name.label("ad_name"),
+                sf.count(sf.distinct(AdDailyMetric.ad_id)).label("ad_count"),
+                sf.count(sf.distinct(AdDailyMetric.campaign_id)).label("campaign_count"),
+                sf.count(sf.distinct(AdDailyMetric.adset_id)).label("adset_count"),
+                sf.max(AdDailyMetric.campaign_id).label("campaign_id"),
+                sf.max(AdDailyMetric.campaign_name).label("campaign_name"),
+                sf.max(AdDailyMetric.adset_name).label("adset_name"),
+                *_SUM_COLS,
+            )
+        else:
+            q = db.query(
+                AdDailyMetric.account_id.label("account_id"),
+                AdDailyMetric.ad_id.label("ad_id"),
+                sf.max(AdDailyMetric.ad_name).label("ad_name"),
+                sf.max(AdDailyMetric.campaign_id).label("campaign_id"),
+                sf.max(AdDailyMetric.campaign_name).label("campaign_name"),
+                sf.max(AdDailyMetric.adset_name).label("adset_name"),
+                *_SUM_COLS,
+            )
+
+        q = q.filter(
             AdDailyMetric.date >= df,
             AdDailyMetric.date <= dt,
         )
@@ -141,7 +175,9 @@ def list_ad_performance(
             q = q.filter(AdDailyMetric.account_id.in_(scoped_ids or ["__no_match__"]))
         if campaign_id:
             q = q.filter(AdDailyMetric.campaign_id == campaign_id)
-        q = q.group_by(AdDailyMetric.account_id, AdDailyMetric.ad_id).having(
+
+        grain = AdDailyMetric.ad_name if pivot else AdDailyMetric.ad_id
+        q = q.group_by(AdDailyMetric.account_id, grain).having(
             sf.sum(AdDailyMetric.spend) > 0
         )
 
@@ -149,12 +185,27 @@ def list_ad_performance(
         for r in q.all():
             row = {
                 "account_id": r.account_id,
-                "ad_id": r.ad_id,
                 "ad_name": r.ad_name,
                 "campaign_id": r.campaign_id,
                 "campaign_name": r.campaign_name,
                 "adset_name": r.adset_name,
             }
+            if pivot:
+                row.update({
+                    "key": _name_key(r.account_id, r.ad_name),
+                    "ad_id": None,
+                    "ad_count": int(r.ad_count or 0),
+                    "campaign_count": int(r.campaign_count or 0),
+                    "adset_count": int(r.adset_count or 0),
+                })
+            else:
+                row.update({
+                    "key": r.ad_id,
+                    "ad_id": r.ad_id,
+                    "ad_count": 1,
+                    "campaign_count": 1,
+                    "adset_count": 1,
+                })
             row.update(_derive(r))
             items.append(row)
 
@@ -164,6 +215,7 @@ def list_ad_performance(
         return _api_response(data={
             "items": items,
             "total": len(items),
+            "group_by": "ad_name" if pivot else "ad",
             "period": {"from": df.isoformat(), "to": dt.isoformat()},
         })
     except Exception as e:
@@ -173,47 +225,89 @@ def list_ad_performance(
 
 @router.get("/ad-performance/daily")
 def ad_performance_daily(
-    ad_ids: str = Query(..., description="Comma-separated Meta ad_ids"),
+    ad_ids: str | None = Query(None, description="Comma-separated Meta ad_ids"),
+    ad_names: list[str] | None = Query(
+        None, description="Repeatable — one series per (branch, ad_name), matching the pivot"
+    ),
     date_from: str | None = None,
     date_to: str | None = None,
     current_user: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
 ):
-    """Per-day series for one or more ads (drill-down + multi-ad comparison)."""
+    """Per-day series for one or more ads (drill-down + multi-ad comparison).
+
+    Pass `ad_ids` for the per-ad view, or repeated `ad_name=` params for the
+    ad-name pivot — the latter sums every ad sharing that name inside a branch
+    per day, then derives the rates (same maths as the pivoted list).
+
+    ad_name is repeatable rather than comma-separated because Meta ad names
+    routinely contain commas.
+    """
     try:
         ok, scoped_ids, err = scoped_account_ids(db, current_user, "meta_ads")
         if not ok:
             return _api_response(error=err)
         df, dt = _parse_range(date_from, date_to)
+        period = {"from": df.isoformat(), "to": dt.isoformat()}
         ids = [a.strip() for a in (ad_ids or "").split(",") if a.strip()]
-        if not ids:
-            return _api_response(data={"items": [], "period": {"from": df.isoformat(), "to": dt.isoformat()}})
-
-        q = db.query(AdDailyMetric).filter(
-            AdDailyMetric.ad_id.in_(ids),
-            AdDailyMetric.date >= df,
-            AdDailyMetric.date <= dt,
-        )
-        if scoped_ids is not None:
-            q = q.filter(AdDailyMetric.account_id.in_(scoped_ids or ["__no_match__"]))
-        q = q.order_by(AdDailyMetric.ad_id, AdDailyMetric.date)
+        names = [n for n in (ad_names or []) if n]
+        if not ids and not names:
+            return _api_response(data={"items": [], "period": period})
 
         items = []
-        for r in q.all():
-            row = {
-                "date": r.date.isoformat(),
-                "ad_id": r.ad_id,
-                "ad_name": r.ad_name,
-                "campaign_name": r.campaign_name,
-                "adset_name": r.adset_name,
-            }
-            row.update(_derive(r))
-            items.append(row)
+        if names:
+            q = db.query(
+                AdDailyMetric.date.label("date"),
+                AdDailyMetric.account_id.label("account_id"),
+                AdDailyMetric.ad_name.label("ad_name"),
+                *_SUM_COLS,
+            ).filter(
+                AdDailyMetric.ad_name.in_(names),
+                AdDailyMetric.date >= df,
+                AdDailyMetric.date <= dt,
+            )
+            if scoped_ids is not None:
+                q = q.filter(AdDailyMetric.account_id.in_(scoped_ids or ["__no_match__"]))
+            q = q.group_by(
+                AdDailyMetric.date, AdDailyMetric.account_id, AdDailyMetric.ad_name
+            ).order_by(AdDailyMetric.ad_name, AdDailyMetric.date)
 
-        return _api_response(data={
-            "items": items,
-            "period": {"from": df.isoformat(), "to": dt.isoformat()},
-        })
+            for r in q.all():
+                row = {
+                    "date": r.date.isoformat(),
+                    "key": _name_key(r.account_id, r.ad_name),
+                    "account_id": r.account_id,
+                    "ad_id": None,
+                    "ad_name": r.ad_name,
+                    "campaign_name": None,
+                    "adset_name": None,
+                }
+                row.update(_derive(r))
+                items.append(row)
+        else:
+            q = db.query(AdDailyMetric).filter(
+                AdDailyMetric.ad_id.in_(ids),
+                AdDailyMetric.date >= df,
+                AdDailyMetric.date <= dt,
+            )
+            if scoped_ids is not None:
+                q = q.filter(AdDailyMetric.account_id.in_(scoped_ids or ["__no_match__"]))
+            q = q.order_by(AdDailyMetric.ad_id, AdDailyMetric.date)
+
+            for r in q.all():
+                row = {
+                    "date": r.date.isoformat(),
+                    "key": r.ad_id,
+                    "account_id": r.account_id,
+                    "ad_id": r.ad_id,
+                    "ad_name": r.ad_name,
+                    "campaign_name": r.campaign_name,
+                    "adset_name": r.adset_name,
+                }
+                row.update(_derive(r))
+                items.append(row)
+
+        return _api_response(data={"items": items, "period": period})
     except Exception as e:
         logger.exception("ad_performance_daily failed")
         return _api_response(error=str(e))

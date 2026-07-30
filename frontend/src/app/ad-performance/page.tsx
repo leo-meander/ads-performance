@@ -8,10 +8,16 @@ import { ArrowUpDown, RefreshCw } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
+// One table row. In "Ad name" pivot mode `key` is branch+name and ad_id is
+// null; in per-ad mode `key` is the ad_id.
 interface AdRow {
+  key: string
   account_id: string
-  ad_id: string
+  ad_id: string | null
   ad_name: string | null
+  ad_count: number
+  campaign_count: number
+  adset_count: number
   campaign_id: string | null
   campaign_name: string | null
   adset_name: string | null
@@ -31,7 +37,7 @@ interface AdRow {
   video_complete_rate: number | null
 }
 interface DailyRow {
-  date: string; ad_id: string; ad_name: string | null
+  date: string; key: string; ad_id: string | null; ad_name: string | null
   campaign_name: string | null; adset_name: string | null
   spend: number | null; roas: number | null; conversions: number
   leads: number; cost_per_lead: number | null; cost_per_purchase: number | null
@@ -96,6 +102,15 @@ const METRICS: Record<MetricKey, { label: string; pct?: boolean; money?: boolean
 
 const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#6366f1']
 
+// Row grain. "ad_name" pivots every ad sharing a name (within one branch —
+// spend is in the branch's native currency, so names are never merged across
+// branches) into a single row.
+type GroupKey = 'ad' | 'ad_name'
+const GROUPS: { key: GroupKey; label: string }[] = [
+  { key: 'ad', label: 'Each ad' },
+  { key: 'ad_name', label: 'Ad name (pivot)' },
+]
+
 export default function AdPerformancePage() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [rows, setRows] = useState<AdRow[]>([])
@@ -108,6 +123,8 @@ export default function AdPerformancePage() {
   const [dateFrom, setDateFrom] = useState(() => presetRange('thisMonth')[0])
   const [dateTo, setDateTo] = useState(() => presetRange('thisMonth')[1])
   const [metric, setMetric] = useState<MetricKey>('roas')
+  const [groupBy, setGroupBy] = useState<GroupKey>('ad')
+  const pivot = groupBy === 'ad_name'
 
   // Pick a preset -> set both date inputs. Manually editing a date below
   // flips the selector back to "Custom".
@@ -122,7 +139,7 @@ export default function AdPerformancePage() {
   const [sortBy, setSortBy] = useState('spend')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
-  // Comparison selection (by ad_id)
+  // Comparison selection (row keys — ad_id, or branch+ad_name when pivoted)
   const [selected, setSelected] = useState<string[]>([])
   const [daily, setDaily] = useState<DailyRow[]>([])
 
@@ -137,8 +154,7 @@ export default function AdPerformancePage() {
       .catch(() => {})
   }, [])
 
-  // Fetch the aggregated list whenever filters/sort change.
-  useEffect(() => {
+  const listParams = () => {
     const params = new URLSearchParams()
     if (fBranch) params.set('branch_id', fBranch)
     if (fCampaign) params.set('campaign_id', fCampaign)
@@ -146,35 +162,42 @@ export default function AdPerformancePage() {
     if (dateTo) params.set('date_to', dateTo)
     params.set('sort_by', sortBy)
     params.set('sort_dir', sortDir)
+    params.set('group_by', groupBy)
+    return params
+  }
+
+  // Fetch the aggregated list whenever filters/sort/grain change.
+  useEffect(() => {
     setLoading(true)
-    fetch(`${API_BASE}/api/ad-performance?${params}`, { credentials: 'include' })
+    fetch(`${API_BASE}/api/ad-performance?${listParams()}`, { credentials: 'include' })
       .then(r => r.json())
       .then(d => { if (d.success) setRows(d.data.items) })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [fBranch, fCampaign, dateFrom, dateTo, sortBy, sortDir])
+  }, [fBranch, fCampaign, dateFrom, dateTo, sortBy, sortDir, groupBy])
 
-  // Fetch per-day series for the selected ads (drill / compare).
+  // Fetch per-day series for the selected rows (drill / compare). Pivoted rows
+  // are requested by name — repeated params, since ad names may contain commas.
   useEffect(() => {
     if (selected.length === 0) { setDaily([]); return }
     const params = new URLSearchParams()
-    params.set('ad_ids', selected.join(','))
+    if (pivot) {
+      const names = new Set(selected.map(k => rowByKey[k]?.ad_name).filter((n): n is string => !!n))
+      if (names.size === 0) { setDaily([]); return }
+      names.forEach(n => params.append('ad_names', n))
+    } else {
+      params.set('ad_ids', selected.join(','))
+    }
     if (dateFrom) params.set('date_from', dateFrom)
     if (dateTo) params.set('date_to', dateTo)
     fetch(`${API_BASE}/api/ad-performance/daily?${params}`, { credentials: 'include' })
       .then(r => r.json())
       .then(d => { if (d.success) setDaily(d.data.items) })
       .catch(() => {})
-  }, [selected, dateFrom, dateTo])
+  }, [selected, dateFrom, dateTo, pivot])
 
   const refetchList = () => {
-    const params = new URLSearchParams()
-    if (fBranch) params.set('branch_id', fBranch)
-    if (fCampaign) params.set('campaign_id', fCampaign)
-    if (dateFrom) params.set('date_from', dateFrom)
-    if (dateTo) params.set('date_to', dateTo)
-    params.set('sort_by', sortBy); params.set('sort_dir', sortDir)
-    fetch(`${API_BASE}/api/ad-performance?${params}`, { credentials: 'include' })
+    fetch(`${API_BASE}/api/ad-performance?${listParams()}`, { credentials: 'include' })
       .then(r => r.json()).then(d => { if (d.success) setRows(d.data.items) }).catch(() => {})
   }
 
@@ -203,23 +226,35 @@ export default function AdPerformancePage() {
     else { setSortBy(col); setSortDir('desc') }
   }
 
-  const toggleSelect = (adId: string) => {
-    setSelected(prev => prev.includes(adId) ? prev.filter(x => x !== adId) : [...prev, adId])
+  const toggleSelect = (key: string) => {
+    setSelected(prev => prev.includes(key) ? prev.filter(x => x !== key) : [...prev, key])
   }
 
-  // Header tick: select every visible ad, or clear when all are already on.
-  const allSelected = rows.length > 0 && rows.every(r => selected.includes(r.ad_id))
-  const someSelected = rows.some(r => selected.includes(r.ad_id))
-  const toggleSelectAll = () => setSelected(allSelected ? [] : rows.map(r => r.ad_id))
+  // Switching grain invalidates every selected key (ad_id vs branch+name).
+  const applyGroupBy = (key: GroupKey) => { setGroupBy(key); setSelected([]) }
+
+  // Header tick: select every visible row, or clear when all are already on.
+  const allSelected = rows.length > 0 && rows.every(r => selected.includes(r.key))
+  const someSelected = rows.some(r => selected.includes(r.key))
+  const toggleSelectAll = () => setSelected(allSelected ? [] : rows.map(r => r.key))
 
   const accName = (id: string) => accounts.find(a => a.id === id)?.account_name || '—'
 
-  // Campaign filter options derived from the current rows.
-  const campaigns = useMemo(() => {
+  const rowByKey = useMemo(() => {
+    const m: Record<string, AdRow> = {}
+    rows.forEach(r => { m[r.key] = r })
+    return m
+  }, [rows])
+
+  // Campaign filter options derived from the current rows. Pivoted rows span
+  // several campaigns, so keep the options last seen in per-ad mode.
+  const [campaigns, setCampaigns] = useState<[string, string][]>([])
+  useEffect(() => {
+    if (pivot) return
     const m = new Map<string, string>()
     rows.forEach(r => { if (r.campaign_id) m.set(r.campaign_id, r.campaign_name || r.campaign_id) })
-    return Array.from(m.entries()).sort((a, b) => a[1].localeCompare(b[1]))
-  }, [rows])
+    setCampaigns(Array.from(m.entries()).sort((a, b) => a[1].localeCompare(b[1])))
+  }, [rows, pivot])
 
   // Currency lives on each branch (account). Map account/ad -> currency so
   // monetary columns render in the right currency per branch.
@@ -230,31 +265,31 @@ export default function AdPerformancePage() {
   }, [accounts])
   const adCurrency = useMemo(() => {
     const m: Record<string, string> = {}
-    rows.forEach(r => { m[r.ad_id] = accountCurrency[r.account_id] || '' })
+    rows.forEach(r => { m[r.key] = accountCurrency[r.account_id] || '' })
     return m
   }, [rows, accountCurrency])
-  // Only label the chart with a currency when the selected ads share one.
+  // Only label the chart with a currency when the selected rows share one.
   const chartCurrency = useMemo(() => {
-    const set = new Set(selected.map(id => adCurrency[id]).filter(Boolean))
+    const set = new Set(selected.map(k => adCurrency[k]).filter(Boolean))
     return set.size === 1 ? [...set][0] : ''
   }, [selected, adCurrency])
 
-  // Reshape daily series into recharts rows: { date, [ad_id]: metricValue }.
+  // Reshape daily series into recharts rows: { date, [key]: metricValue }.
   const chartData = useMemo(() => {
     const byDate = new Map<string, Record<string, number | string | null>>()
     daily.forEach(d => {
       const row = byDate.get(d.date) || { date: d.date }
-      row[d.ad_id] = d[metric] ?? null
+      row[d.key] = d[metric] ?? null
       byDate.set(d.date, row)
     })
     return Array.from(byDate.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)))
   }, [daily, metric])
 
-  // ad_id -> display label for legend.
+  // row key -> display label for legend.
   const adLabel = useMemo(() => {
     const m: Record<string, string> = {}
-    rows.forEach(r => { m[r.ad_id] = r.ad_name || r.ad_id })
-    daily.forEach(d => { if (!m[d.ad_id]) m[d.ad_id] = d.ad_name || d.ad_id })
+    rows.forEach(r => { m[r.key] = r.ad_name || r.ad_id || r.key })
+    daily.forEach(d => { if (!m[d.key]) m[d.key] = d.ad_name || d.key })
     return m
   }, [rows, daily])
 
@@ -271,7 +306,10 @@ export default function AdPerformancePage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Ad Name Performance</h1>
-          <p className="text-xs text-gray-500 mt-1">Track each ad by day — pulled from Meta (only ads with spend).</p>
+          <p className="text-xs text-gray-500 mt-1">
+            Track each ad by day — pulled from Meta (only ads with spend).
+            {pivot && ' Pivoted: ads sharing a name are merged per branch.'}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {syncMsg && <span className="text-xs text-gray-500">{syncMsg}</span>}
@@ -301,6 +339,10 @@ export default function AdPerformancePage() {
         <input type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPreset('custom') }} className="px-2 py-1.5 border border-gray-200 rounded-lg text-sm" />
         <span className="text-gray-400 text-sm">→</span>
         <input type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setPreset('custom') }} className="px-2 py-1.5 border border-gray-200 rounded-lg text-sm" />
+        <span className="text-xs text-gray-400 ml-2">Group by:</span>
+        <select value={groupBy} onChange={e => applyGroupBy(e.target.value as GroupKey)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
+          {GROUPS.map(g => <option key={g.key} value={g.key}>{g.label}</option>)}
+        </select>
         <span className="text-xs text-gray-400 ml-2">Chart metric:</span>
         <select value={metric} onChange={e => setMetric(e.target.value as MetricKey)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
           {(Object.keys(METRICS) as MetricKey[]).map(k => <option key={k} value={k}>{METRICS[k].label}</option>)}
@@ -310,11 +352,11 @@ export default function AdPerformancePage() {
       {/* Comparison chart */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-4">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold text-gray-700">{mcfg.label}{mcfg.money && chartCurrency ? ` (${curLabel(chartCurrency)})` : ''} by day {selected.length > 0 ? `— ${selected.length} ad` : ''}</h2>
+          <h2 className="text-sm font-semibold text-gray-700">{mcfg.label}{mcfg.money && chartCurrency ? ` (${curLabel(chartCurrency)})` : ''} by day {selected.length > 0 ? `— ${selected.length} ${pivot ? 'ad name' : 'ad'}` : ''}</h2>
           {selected.length > 0 && <button onClick={() => setSelected([])} className="text-xs text-blue-600">Clear selection</button>}
         </div>
         {selected.length === 0 ? (
-          <div className="h-[300px] flex items-center justify-center text-gray-400 text-sm">Tick one or more ads in the table below to see their daily trend.</div>
+          <div className="h-[300px] flex items-center justify-center text-gray-400 text-sm">Tick one or more {pivot ? 'ad names' : 'ads'} in the table below to see their daily trend.</div>
         ) : (
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={chartData}>
@@ -355,6 +397,7 @@ export default function AdPerformancePage() {
                 <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Ad Set</th>
                 <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Ad Name</th>
                 <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Branch</th>
+                {pivot && <SortHeader col="ad_count" label="Ads" />}
                 <SortHeader col="spend" label="Spend" />
                 <SortHeader col="roas" label="ROAS" />
                 <SortHeader col="conversions" label="Book." />
@@ -364,14 +407,19 @@ export default function AdPerformancePage() {
                 <SortHeader col="hook_rate" label="Hook" />
               </tr></thead>
               <tbody>{rows.map(r => {
-                const sel = selected.includes(r.ad_id)
+                const sel = selected.includes(r.key)
+                // A pivoted row spanning several campaigns/ad sets has no single
+                // name to show — surface the count instead.
+                const campaignCell = r.campaign_count > 1 ? `${r.campaign_count} campaigns` : (r.campaign_name || '—')
+                const adsetCell = r.adset_count > 1 ? `${r.adset_count} ad sets` : (r.adset_name || '—')
                 return (
-                  <tr key={r.ad_id} className={`border-b border-gray-50 hover:bg-gray-50 cursor-pointer ${sel ? 'bg-blue-50/40' : ''}`} onClick={() => toggleSelect(r.ad_id)}>
-                    <td className="py-2 px-2 text-center"><input type="checkbox" checked={sel} onChange={() => toggleSelect(r.ad_id)} onClick={e => e.stopPropagation()} className="w-3.5 h-3.5" /></td>
-                    <td className="py-2 px-2 text-xs text-gray-600 max-w-[160px] truncate" title={r.campaign_name || ''}>{r.campaign_name || '—'}</td>
-                    <td className="py-2 px-2 text-xs text-gray-600 max-w-[160px] truncate" title={r.adset_name || ''}>{r.adset_name || '—'}</td>
+                  <tr key={r.key} className={`border-b border-gray-50 hover:bg-gray-50 cursor-pointer ${sel ? 'bg-blue-50/40' : ''}`} onClick={() => toggleSelect(r.key)}>
+                    <td className="py-2 px-2 text-center"><input type="checkbox" checked={sel} onChange={() => toggleSelect(r.key)} onClick={e => e.stopPropagation()} className="w-3.5 h-3.5" /></td>
+                    <td className={`py-2 px-2 text-xs max-w-[160px] truncate ${r.campaign_count > 1 ? 'text-gray-400 italic' : 'text-gray-600'}`} title={r.campaign_count > 1 ? '' : (r.campaign_name || '')}>{campaignCell}</td>
+                    <td className={`py-2 px-2 text-xs max-w-[160px] truncate ${r.adset_count > 1 ? 'text-gray-400 italic' : 'text-gray-600'}`} title={r.adset_count > 1 ? '' : (r.adset_name || '')}>{adsetCell}</td>
                     <td className="py-2 px-2 text-xs font-medium text-gray-900 max-w-[200px] truncate" title={r.ad_name || ''}>{r.ad_name || '—'}</td>
                     <td className="py-2 px-2 text-xs text-gray-600">{accName(r.account_id)}</td>
+                    {pivot && <td className="py-2 px-2 text-right text-xs text-gray-600">{r.ad_count}</td>}
                     <td className="py-2 px-2 text-right text-xs">{money(r.spend, accountCurrency[r.account_id])}</td>
                     <td className="py-2 px-2 text-right text-xs font-semibold">{r.roas != null ? `${r.roas.toFixed(2)}x` : '—'}</td>
                     <td className="py-2 px-2 text-right text-xs">{r.conversions}</td>
