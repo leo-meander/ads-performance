@@ -448,6 +448,107 @@ def test_response_is_cached_per_branch_and_window(monkeypatch):
     assert len(calls) > after_first
 
 
+# ── cross-filter segments ──────────────────────────────────────────────────
+
+
+def _filter_of(call):
+    return call["dimension_filter"]
+
+
+def test_single_segment_becomes_a_bare_string_filter(monkeypatch):
+    db = TestSession(); _account(db); db.close()
+    calls = []
+    _patch(monkeypatch, capture=calls)
+
+    _get("/api/ga4/overview?branch=Taipei&host_scope=all&compare=false&device=mobile")
+    f = _filter_of(calls[0])
+    assert f == {
+        "filter": {
+            "field_name": "deviceCategory",
+            "string_filter": {"match_type": "EXACT", "value": "mobile"},
+        }
+    }
+
+
+def test_multiple_segments_are_anded_together(monkeypatch):
+    db = TestSession(); _account(db); db.close()
+    calls = []
+    _patch(monkeypatch, capture=calls)
+
+    _get("/api/ga4/devices?branch=Taipei&device=desktop&channel=Paid%20Social&country=Taiwan")
+    exprs = _filter_of(calls[0])["and_group"]["expressions"]
+    fields = {e["filter"]["field_name"]: e["filter"]["string_filter"]["value"] for e in exprs}
+    assert fields == {
+        "deviceCategory": "desktop",
+        "sessionDefaultChannelGroup": "Paid Social",
+        "country": "Taiwan",
+    }
+
+
+def test_segment_combines_with_host_scope(monkeypatch):
+    """Host scope and a pinned segment must both apply, not override each other."""
+    db = TestSession(); _account(db); db.close()
+    calls = []
+    _patch(monkeypatch, capture=calls)
+
+    _get("/api/ga4/funnel?branch=Taipei&host_scope=site&device=mobile")
+    exprs = _filter_of(calls[0])["and_group"]["expressions"]
+    assert exprs[0]["filter"]["in_list_filter"]["values"] == ["tpe.staymeander.com"]
+    assert exprs[1]["filter"]["string_filter"]["value"] == "mobile"
+
+
+def test_segments_apply_to_every_report_in_a_section(monkeypatch):
+    db = TestSession(); _account(db); db.close()
+    calls = []
+    _patch(monkeypatch, capture=calls)
+
+    _get("/api/ga4/devices?branch=Taipei&channel=Referral")
+    assert len(calls) >= 2
+    assert all(_filter_of(c) is not None for c in calls), "every report must carry the filter"
+
+
+def test_segments_are_echoed_back(monkeypatch):
+    db = TestSession(); _account(db); db.close()
+    _patch(monkeypatch)
+    d = _get("/api/ga4/overview?branch=Taipei&compare=false&device=mobile&country=Japan")["data"]
+    assert d["segments"] == {"device": "mobile", "country": "Japan"}
+
+
+def test_empty_segment_values_are_ignored(monkeypatch):
+    db = TestSession(); _account(db); db.close()
+    calls = []
+    _patch(monkeypatch, capture=calls)
+
+    _get("/api/ga4/overview?branch=Taipei&host_scope=all&compare=false&device=&channel=")
+    assert _filter_of(calls[0]) is None
+    assert _get("/api/ga4/overview?branch=Taipei&compare=false&device=")["data"]["segments"] == {}
+
+
+def test_cache_key_separates_segments(monkeypatch):
+    db = TestSession(); _account(db); db.close()
+    calls = []
+    _patch(monkeypatch, capture=calls)
+
+    _get("/api/ga4/devices?branch=Taipei&device=mobile")
+    n = len(calls)
+    _get("/api/ga4/devices?branch=Taipei&device=mobile")
+    assert len(calls) == n, "identical segment should hit the cache"
+    _get("/api/ga4/devices?branch=Taipei&device=desktop")
+    assert len(calls) > n, "a different segment must miss the cache"
+
+
+def test_sources_carry_raw_source_and_medium_for_cross_filtering(monkeypatch):
+    """The combined "source / medium" label can't be split — a source may
+    itself contain a slash — so both raw values ride along."""
+    db = TestSession(); _account(db); db.close()
+    _patch(monkeypatch)
+    d = _get("/api/ga4/acquisition?branch=Taipei")["data"]
+    top = d["sources"][0]
+    assert top["source_medium"] == "instagram / organic"
+    assert top["source"] == "instagram"
+    assert top["medium"] == "organic"
+
+
 def test_cache_key_separates_host_scopes(monkeypatch):
     db = TestSession(); _account(db); db.close()
     calls = []
