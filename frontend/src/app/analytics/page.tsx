@@ -6,6 +6,7 @@ import {
   Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { API_BASE } from '@/lib/api'
+import { DataTable, TD, TH, type Col } from '@/components/analytics/DataTable'
 
 // Revenue is reported in each property's own currency — never sum across
 // branches. Same rule as the ads dashboard.
@@ -14,6 +15,15 @@ const BRANCH_CURRENCY: Record<string, string> = {
 }
 
 type HostScope = 'all' | 'site' | 'booking'
+
+// Cross-filter keys — must match SEGMENT_DIMENSIONS in backend/app/routers/ga4.py.
+// Pinning one narrows every section, Looker-Studio style; the filtering happens
+// server-side because each section is its own GA4 aggregation.
+const SEGMENT_LABELS: Record<string, string> = {
+  device: 'Device', channel: 'Channel', source: 'Source', medium: 'Medium',
+  campaign: 'Campaign', country: 'Country', landing_page: 'Landing page', host: 'Host',
+}
+type Segments = Partial<Record<keyof typeof SEGMENT_LABELS, string>>
 
 type Property = {
   property_id: string
@@ -49,7 +59,7 @@ type Breakdown = {
   conversion_rate: number | null; revenue_per_session: number | null
 }
 type ChannelRow = Breakdown & { channel: string }
-type SourceRow = Breakdown & { source_medium: string }
+type SourceRow = Breakdown & { source_medium: string; source: string; medium: string }
 type DeviceRow = Breakdown & { device: string }
 type PageRow = Breakdown & { page: string }
 type CountryRow = Breakdown & { country: string }
@@ -176,9 +186,6 @@ function Banner({ tone, title, children }: {
   )
 }
 
-const TH = 'py-2 px-3 text-gray-500 font-medium text-xs'
-const TD = 'py-2 px-3 text-xs text-gray-700'
-
 export default function AnalyticsPage() {
   const [properties, setProperties] = useState<Property[]>([])
   const [branch, setBranch] = useState<string>('')
@@ -186,6 +193,7 @@ export default function AnalyticsPage() {
   const [dateFrom, setDateFrom] = useState(isoDaysAgo(28))
   const [dateTo, setDateTo] = useState(isoDaysAgo(1))
   const [hostScope, setHostScope] = useState<HostScope>('all')
+  const [segments, setSegments] = useState<Segments>({})
 
   const [overview, setOverview] = useState<Overview | null>(null)
   const [acquisition, setAcquisition] = useState<Acquisition | null>(null)
@@ -222,7 +230,12 @@ export default function AnalyticsPage() {
     if (!branch) return
     setLoading(true)
     setError(null)
-    const qs = `branch=${encodeURIComponent(branch)}&date_from=${dateFrom}&date_to=${dateTo}&host_scope=${hostScope}`
+    const segmentQs = Object.entries(segments)
+      .filter(([, v]) => v)
+      .map(([k, v]) => `&${k}=${encodeURIComponent(v as string)}`)
+      .join('')
+    const qs = `branch=${encodeURIComponent(branch)}&date_from=${dateFrom}&date_to=${dateTo}`
+      + `&host_scope=${hostScope}${segmentQs}`
     try {
       // Five parallel requests — one combined endpoint would serialise ~12
       // GA4 reports behind a single spinner.
@@ -245,7 +258,7 @@ export default function AnalyticsPage() {
     } finally {
       setLoading(false)
     }
-  }, [branch, dateFrom, dateTo, hostScope])
+  }, [branch, dateFrom, dateTo, hostScope, segments])
 
   useEffect(() => { load() }, [load])
 
@@ -255,6 +268,62 @@ export default function AnalyticsPage() {
   const funnelChartData = useMemo(
     () => (funnel?.steps || []).map(st => ({ name: st.label, users: st.users })),
     [funnel],
+  )
+
+  // Clicking the pinned row again clears it, so a cross-filter is always one
+  // click away from being undone.
+  const toggleSegment = useCallback((key: keyof Segments, value: string) => {
+    if (!value) return
+    setSegments(prev => (prev[key] === value ? { ...prev, [key]: undefined } : { ...prev, [key]: value }))
+  }, [])
+
+  const setManySegments = useCallback((patch: Segments) => {
+    setSegments(prev => {
+      const alreadyPinned = Object.entries(patch).every(([k, v]) => prev[k as keyof Segments] === v)
+      if (alreadyPinned) {
+        const next = { ...prev }
+        Object.keys(patch).forEach(k => { delete next[k as keyof Segments] })
+        return next
+      }
+      return { ...prev, ...patch }
+    })
+  }, [])
+
+  const activeSegments = useMemo(
+    () => Object.entries(segments).filter(([, v]) => !!v) as [keyof Segments, string][],
+    [segments],
+  )
+
+  // Session share is precomputed so the column can be sorted on its raw value
+  // rather than on a formatted percentage string.
+  const deviceRows = useMemo(() => {
+    const list = devices?.devices || []
+    const total = list.reduce((a, x) => a + x.sessions, 0) || 1
+    return list.map(d => ({ ...d, share: d.sessions / total }))
+  }, [devices])
+
+  // Every breakdown (channel, source, campaign, page, country, host) carries
+  // the same metric block, so the columns are built once instead of six times.
+  const breakdownCols = useCallback(
+    <T extends Breakdown>(key: keyof T & string, label: string): Col<T>[] => [
+      {
+        key,
+        label,
+        value: r => String(r[key] ?? ''),
+        render: r => (
+          <span className="block max-w-[220px] truncate" title={String(r[key] ?? '')}>
+            {String(r[key] ?? '') || '—'}
+          </span>
+        ),
+      },
+      { key: 'sessions', label: 'Sessions', align: 'right', value: r => r.sessions, render: r => fmtInt(r.sessions) },
+      { key: 'engagement_rate', label: 'Engagement', align: 'right', value: r => r.engagement_rate, render: r => fmtPct(r.engagement_rate) },
+      { key: 'key_events', label: 'Key events', align: 'right', value: r => r.key_events, render: r => fmtInt(r.key_events) },
+      { key: 'conversion_rate', label: 'Conv. rate', align: 'right', value: r => r.conversion_rate, render: r => fmtPct(r.conversion_rate, 2) },
+      { key: 'revenue', label: 'Revenue', align: 'right', value: r => r.revenue, render: r => fmtMoney(r.revenue, currency) },
+      { key: 'revenue_per_session', label: 'Rev / session', align: 'right', value: r => r.revenue_per_session, render: r => fmtMoney(r.revenue_per_session, currency) },
+    ],
+    [currency],
   )
 
   const deviceLeader = devices?.verdict.best_revenue_per_session
@@ -304,6 +373,30 @@ export default function AnalyticsPage() {
           </span>
         )}
       </div>
+
+      {activeSegments.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 mb-4 bg-blue-50 border border-blue-200 rounded-xl px-3 py-2">
+          <span className="text-xs font-semibold text-blue-900">Cross-filter:</span>
+          {activeSegments.map(([key, value]) => (
+            <button
+              key={key}
+              onClick={() => setSegments(prev => ({ ...prev, [key]: undefined }))}
+              className="text-xs bg-white border border-blue-300 text-blue-900 rounded-lg px-2 py-1 hover:bg-blue-100"
+              title="Remove this filter"
+            >
+              <span className="text-blue-500">{SEGMENT_LABELS[key]}:</span>{' '}
+              <span className="font-medium">{value}</span>
+              <span className="ml-1.5 text-blue-400">✕</span>
+            </button>
+          ))}
+          <button onClick={() => setSegments({})} className="text-xs text-blue-700 underline ml-1">
+            Clear all
+          </button>
+          <span className="text-[11px] text-blue-600 ml-auto">
+            Every number on this page is narrowed to this segment.
+          </span>
+        </div>
+      )}
 
       {error && (
         <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-xl px-4 py-3 mb-4 text-sm">{error}</div>
@@ -391,65 +484,43 @@ export default function AnalyticsPage() {
             {rpsRatio ? <> — desktop is <strong>{rpsRatio.toFixed(1)}×</strong> mobile on revenue per session</> : null}.
           </div>
         )}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead><tr className="bg-gray-50 border-b">
-              <th className={`text-left ${TH}`}>Device</th>
-              <th className={`text-right ${TH}`}>Sessions</th>
-              <th className={`text-right ${TH}`}>Share</th>
-              <th className={`text-right ${TH}`}>Engagement</th>
-              <th className={`text-right ${TH}`}>Key events</th>
-              <th className={`text-right ${TH}`}>Conv. rate</th>
-              <th className={`text-right ${TH}`}>Revenue</th>
-              <th className={`text-right ${TH}`}>Rev / session</th>
-            </tr></thead>
-            <tbody>
-              {(devices?.devices || []).map(d => {
-                const total = (devices?.devices || []).reduce((a, x) => a + x.sessions, 0) || 1
-                return (
-                  <tr key={d.device} className="border-b last:border-0">
-                    <td className={`${TD} font-medium capitalize`}>{d.device}</td>
-                    <td className={`${TD} text-right`}>{fmtInt(d.sessions)}</td>
-                    <td className={`${TD} text-right text-gray-400`}>{fmtPct(d.sessions / total)}</td>
-                    <td className={`${TD} text-right`}>{fmtPct(d.engagement_rate)}</td>
-                    <td className={`${TD} text-right`}>{fmtInt(d.key_events)}</td>
-                    <td className={`${TD} text-right`}>{fmtPct(d.conversion_rate, 2)}</td>
-                    <td className={`${TD} text-right`}>{fmtMoney(d.revenue, currency)}</td>
-                    <td className={`${TD} text-right font-semibold`}>{fmtMoney(d.revenue_per_session, currency)}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          rows={deviceRows}
+          initialSort={{ key: 'sessions', dir: 'desc' }}
+          onRowClick={r => toggleSegment('device', r.device)}
+          isRowActive={r => segments.device === r.device}
+          cols={[
+            { key: 'device', label: 'Device', value: r => r.device, className: 'font-medium capitalize' },
+            { key: 'sessions', label: 'Sessions', align: 'right', value: r => r.sessions, render: r => fmtInt(r.sessions) },
+            { key: 'share', label: 'Share', align: 'right', value: r => r.share, render: r => fmtPct(r.share), className: 'text-gray-400' },
+            { key: 'engagement_rate', label: 'Engagement', align: 'right', value: r => r.engagement_rate, render: r => fmtPct(r.engagement_rate) },
+            { key: 'key_events', label: 'Key events', align: 'right', value: r => r.key_events, render: r => fmtInt(r.key_events) },
+            { key: 'conversion_rate', label: 'Conv. rate', align: 'right', value: r => r.conversion_rate, render: r => fmtPct(r.conversion_rate, 2) },
+            { key: 'revenue', label: 'Revenue', align: 'right', value: r => r.revenue, render: r => fmtMoney(r.revenue, currency) },
+            { key: 'revenue_per_session', label: 'Rev / session', align: 'right', value: r => r.revenue_per_session, render: r => fmtMoney(r.revenue_per_session, currency), className: 'font-semibold' },
+          ]}
+        />
 
         {!!devices?.device_channel_matrix?.length && (
           <>
             <h3 className="text-xs font-semibold text-gray-600 mt-6 mb-2">Device × channel</h3>
-            <div className="overflow-x-auto max-h-[320px] overflow-y-auto">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0"><tr className="bg-gray-50 border-b">
-                  <th className={`text-left ${TH}`}>Device</th>
-                  <th className={`text-left ${TH}`}>Channel</th>
-                  <th className={`text-right ${TH}`}>Sessions</th>
-                  <th className={`text-right ${TH}`}>Key events</th>
-                  <th className={`text-right ${TH}`}>Conv. rate</th>
-                  <th className={`text-right ${TH}`}>Revenue</th>
-                </tr></thead>
-                <tbody>
-                  {devices.device_channel_matrix.slice(0, 40).map((r, i) => (
-                    <tr key={i} className="border-b last:border-0">
-                      <td className={`${TD} capitalize`}>{r.device}</td>
-                      <td className={TD}>{r.channel}</td>
-                      <td className={`${TD} text-right`}>{fmtInt(r.sessions)}</td>
-                      <td className={`${TD} text-right`}>{fmtInt(r.key_events)}</td>
-                      <td className={`${TD} text-right`}>{fmtPct(r.conversion_rate, 2)}</td>
-                      <td className={`${TD} text-right`}>{fmtMoney(r.revenue, currency)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              rows={devices.device_channel_matrix}
+              initialSort={{ key: 'sessions', dir: 'desc' }}
+              onRowClick={r => setManySegments({ device: r.device, channel: r.channel })}
+              isRowActive={r => segments.device === r.device && segments.channel === r.channel}
+              filterOn={['device', 'channel']}
+              filterPlaceholder="Filter by device or channel…"
+              maxHeight="max-h-[320px]"
+              cols={[
+                { key: 'device', label: 'Device', value: r => r.device, className: 'capitalize' },
+                { key: 'channel', label: 'Channel', value: r => r.channel },
+                { key: 'sessions', label: 'Sessions', align: 'right', value: r => r.sessions, render: r => fmtInt(r.sessions) },
+                { key: 'key_events', label: 'Key events', align: 'right', value: r => r.key_events, render: r => fmtInt(r.key_events) },
+                { key: 'conversion_rate', label: 'Conv. rate', align: 'right', value: r => r.conversion_rate, render: r => fmtPct(r.conversion_rate, 2) },
+                { key: 'revenue', label: 'Revenue', align: 'right', value: r => r.revenue, render: r => fmtMoney(r.revenue, currency) },
+              ]}
+            />
           </>
         )}
       </Section>
@@ -506,24 +577,29 @@ export default function AnalyticsPage() {
         {!!funnel?.by_device?.length && (
           <>
             <h3 className="text-xs font-semibold text-gray-600 mt-6 mb-2">Funnel by device</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead><tr className="bg-gray-50 border-b">
-                  <th className={`text-left ${TH}`}>Device</th>
-                  {(funnel.steps || []).map(st => <th key={st.event} className={`text-right ${TH}`}>{st.label}</th>)}
-                  <th className={`text-right ${TH}`}>Session → booking</th>
-                </tr></thead>
-                <tbody>
-                  {funnel.by_device.map(d => (
-                    <tr key={d.device} className="border-b last:border-0">
-                      <td className={`${TD} font-medium capitalize`}>{d.device}</td>
-                      {d.steps.map(st => <td key={st.event} className={`${TD} text-right`}>{fmtInt(st.users)}</td>)}
-                      <td className={`${TD} text-right font-semibold`}>{fmtPct(d.top_to_purchase, 2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              rows={funnel.by_device}
+              initialSort={{ key: 'top_to_purchase', dir: 'desc' }}
+              onRowClick={d => toggleSegment('device', d.device)}
+              isRowActive={d => segments.device === d.device}
+              cols={[
+                { key: 'device', label: 'Device', value: d => d.device, className: 'font-medium capitalize' },
+                ...(funnel.steps || []).map(step => ({
+                  key: step.event,
+                  label: step.label,
+                  align: 'right' as const,
+                  value: (d: typeof funnel.by_device[number]) =>
+                    d.steps.find(s => s.event === step.event)?.users ?? 0,
+                  render: (d: typeof funnel.by_device[number]) =>
+                    fmtInt(d.steps.find(s => s.event === step.event)?.users ?? 0),
+                })),
+                {
+                  key: 'top_to_purchase', label: 'Session → booking', align: 'right',
+                  value: d => d.top_to_purchase, render: d => fmtPct(d.top_to_purchase, 2),
+                  className: 'font-semibold',
+                },
+              ]}
+            />
           </>
         )}
       </Section>
@@ -533,96 +609,107 @@ export default function AnalyticsPage() {
         <div className="grid lg:grid-cols-2 gap-6">
           <div>
             <h3 className="text-xs font-semibold text-gray-600 mb-2">By channel group</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead><tr className="bg-gray-50 border-b">
-                  <th className={`text-left ${TH}`}>Channel</th>
-                  <th className={`text-right ${TH}`}>Sessions</th>
-                  <th className={`text-right ${TH}`}>Conv. rate</th>
-                  <th className={`text-right ${TH}`}>Revenue</th>
-                </tr></thead>
-                <tbody>
-                  {(acquisition?.channels || []).map(c => (
-                    <tr key={c.channel} className="border-b last:border-0">
-                      <td className={TD}>{c.channel}</td>
-                      <td className={`${TD} text-right`}>{fmtInt(c.sessions)}</td>
-                      <td className={`${TD} text-right`}>{fmtPct(c.conversion_rate, 2)}</td>
-                      <td className={`${TD} text-right`}>{fmtMoney(c.revenue, currency)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              rows={acquisition?.channels || []}
+              initialSort={{ key: 'sessions', dir: 'desc' }}
+              filterOn={['channel']}
+              filterPlaceholder="Filter channels…"
+              onRowClick={r => toggleSegment('channel', r.channel)}
+              isRowActive={r => segments.channel === r.channel}
+              cols={breakdownCols<ChannelRow>('channel', 'Channel')}
+            />
           </div>
           <div>
             <h3 className="text-xs font-semibold text-gray-600 mb-2">By source / medium</h3>
-            <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0"><tr className="bg-gray-50 border-b">
-                  <th className={`text-left ${TH}`}>Source / medium</th>
-                  <th className={`text-right ${TH}`}>Sessions</th>
-                  <th className={`text-right ${TH}`}>Conv. rate</th>
-                  <th className={`text-right ${TH}`}>Revenue</th>
-                </tr></thead>
-                <tbody>
-                  {(acquisition?.sources || []).map(sr => (
-                    <tr key={sr.source_medium} className="border-b last:border-0">
-                      <td className={`${TD} max-w-[220px] truncate`} title={sr.source_medium}>{sr.source_medium}</td>
-                      <td className={`${TD} text-right`}>{fmtInt(sr.sessions)}</td>
-                      <td className={`${TD} text-right`}>{fmtPct(sr.conversion_rate, 2)}</td>
-                      <td className={`${TD} text-right`}>{fmtMoney(sr.revenue, currency)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              rows={acquisition?.sources || []}
+              initialSort={{ key: 'sessions', dir: 'desc' }}
+              filterOn={['source_medium']}
+              filterPlaceholder="Filter source / medium…"
+              maxHeight="max-h-[360px]"
+              onRowClick={r => setManySegments({ source: r.source, medium: r.medium })}
+              isRowActive={r => segments.source === r.source && segments.medium === r.medium}
+              cols={breakdownCols<SourceRow>('source_medium', 'Source / medium')}
+            />
           </div>
         </div>
+
+        {!!acquisition?.campaigns?.length && (
+          <>
+            <h3 className="text-xs font-semibold text-gray-600 mt-6 mb-2">By campaign</h3>
+            <DataTable
+              rows={acquisition.campaigns}
+              initialSort={{ key: 'sessions', dir: 'desc' }}
+              filterOn={['campaign']}
+              filterPlaceholder="Filter campaigns…"
+              maxHeight="max-h-[320px]"
+              onRowClick={r => toggleSegment('campaign', r.campaign)}
+              isRowActive={r => segments.campaign === r.campaign}
+              cols={breakdownCols<Breakdown & { campaign: string }>('campaign', 'Campaign')}
+            />
+          </>
+        )}
       </Section>
 
       {/* ── pages / countries / hosts ───────────────────────────────── */}
-      <Section title="Landing pages, countries, hosts">
-        <div className="grid lg:grid-cols-3 gap-6">
-          {[
-            { title: 'Top landing pages', rows: pages?.pages || [], key: 'page' as const },
-            { title: 'Countries', rows: pages?.countries || [], key: 'country' as const },
-            { title: 'Hosts in this property', rows: pages?.hosts || [], key: 'host' as const },
-          ].map(block => (
-            <div key={block.title}>
-              <h3 className="text-xs font-semibold text-gray-600 mb-2">{block.title}</h3>
-              <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0"><tr className="bg-gray-50 border-b">
-                    <th className={`text-left ${TH}`}>Name</th>
-                    <th className={`text-right ${TH}`}>Sessions</th>
-                    <th className={`text-right ${TH}`}>Revenue</th>
-                  </tr></thead>
-                  <tbody>
-                    {(block.rows as any[]).map((r, i) => (
-                      <tr key={i} className="border-b last:border-0">
-                        <td className={`${TD} max-w-[200px] truncate`} title={r[block.key]}>{r[block.key] || '—'}</td>
-                        <td className={`${TD} text-right`}>{fmtInt(r.sessions)}</td>
-                        <td className={`${TD} text-right`}>{fmtMoney(r.revenue, currency)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ))}
-        </div>
+      <Section title="Landing pages">
+        <DataTable
+          rows={pages?.pages || []}
+          initialSort={{ key: 'sessions', dir: 'desc' }}
+          filterOn={['page']}
+          filterPlaceholder="Filter landing pages…"
+          maxHeight="max-h-[420px]"
+          onRowClick={r => toggleSegment('landing_page', r.page)}
+          isRowActive={r => segments.landing_page === r.page}
+          cols={breakdownCols<PageRow>('page', 'Landing page')}
+        />
+      </Section>
+
+      <Section title="Countries">
+        <DataTable
+          rows={pages?.countries || []}
+          initialSort={{ key: 'sessions', dir: 'desc' }}
+          filterOn={['country']}
+          filterPlaceholder="Filter countries…"
+          maxHeight="max-h-[420px]"
+          onRowClick={r => toggleSegment('country', r.country)}
+          isRowActive={r => segments.country === r.country}
+          cols={breakdownCols<CountryRow>('country', 'Country')}
+        />
+      </Section>
+
+      <Section
+        title="Hosts in this property"
+        note="Every domain reporting into this GA4 property. A host belonging to another branch means the tag is deployed twice — the row is highlighted."
+      >
+        <DataTable
+          rows={pages?.hosts || []}
+          initialSort={{ key: 'sessions', dir: 'desc' }}
+          filterOn={['host']}
+          filterPlaceholder="Filter hosts…"
+          onRowClick={r => toggleSegment('host', r.host)}
+          isRowActive={r => segments.host === r.host}
+          rowClassName={r =>
+            (pages?.foreign_branch_hosts || []).some(f => f.host === r.host) ? 'bg-amber-50' : ''
+          }
+          cols={breakdownCols<HostRow>('host', 'Host')}
+        />
       </Section>
 
       {!!funnel?.other_events?.length && (
         <Section title="All other events" note="Anything fired outside the funnel — useful for spotting a new GTM tag or a broken one.">
-          <div className="flex flex-wrap gap-2">
-            {funnel.other_events.map(e => (
-              <span key={e.event} className="text-xs bg-gray-100 text-gray-700 rounded-lg px-2 py-1">
-                <span className="font-mono">{e.event}</span>
-                <span className="text-gray-400 ml-1.5">{fmtInt(e.count)}</span>
-              </span>
-            ))}
-          </div>
+          <DataTable
+            rows={funnel.other_events}
+            initialSort={{ key: 'count', dir: 'desc' }}
+            filterOn={['event']}
+            filterPlaceholder="Filter events…"
+            maxHeight="max-h-[360px]"
+            cols={[
+              { key: 'event', label: 'Event', value: e => e.event, className: 'font-mono' },
+              { key: 'count', label: 'Events', align: 'right', value: e => e.count, render: e => fmtInt(e.count) },
+              { key: 'users', label: 'Users', align: 'right', value: e => e.users, render: e => fmtInt(e.users) },
+            ]}
+          />
         </Section>
       )}
     </div>
