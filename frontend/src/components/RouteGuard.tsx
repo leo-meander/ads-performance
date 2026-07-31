@@ -24,6 +24,7 @@ const ROUTE_SECTION_MAP: Array<[string, string]> = [
   ['/country', 'analytics'],
   ['/action-needed', 'analytics'],
   ['/booking-matches', 'analytics'],
+  ['/analytics', 'analytics'],
   ['/landing-pages', 'landing_pages'],
   ['/accounts', 'settings'],
   ['/users', 'settings'],   // still admin-gated inside the page itself
@@ -49,6 +50,7 @@ function sectionForPath(pathname: string): string | null {
 const ROUTE_PAGE_MAP: Array<[string, string]> = [
   ['/action-needed', 'dashboard'],
   ['/booking-matches', 'booking_matches'],
+  ['/analytics', 'ga4_analytics'],
   ['/meta/recommendations', 'meta_recommendations'],
   ['/angles', 'angles'],
   ['/creative', 'creative'],

@@ -24,6 +24,7 @@ export type Level = 'view' | 'edit'
 export const PAGE_SECTION: Record<string, string> = {
   dashboard: 'analytics',
   booking_matches: 'analytics',
+  ga4_analytics: 'analytics',
   meta_recommendations: 'meta_ads',
   angles: 'meta_ads',
   creative: 'meta_ads',

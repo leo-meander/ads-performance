@@ -47,8 +47,12 @@ country/TA analytics, AI creative suggestions, and Figma integration.
 
 ## Navigation Pages (17 routes)
 /, /country, /creative, /approvals, /angles, /keypoints, /ad-research, /rules,
-/logs, /insights, /budget, /accounts, /users, /login,
+/logs, /insights, /budget, /accounts, /users, /login, /analytics,
 /google, /google/pmax, /google/pmax/{id}, /google/search, /google/search/{id}
+
+/analytics is the GA4 overview — live reads against the Google Analytics
+Data API (no tables, no sync). See app/routers/ga4.py for the host-scope
+and shared-property caveats before trusting a branch total.
 
 New in Phase 6: /approvals, /approvals/{id}, /approvals/{id}/launch,
 /creative/{id}/submit, /users, /login
