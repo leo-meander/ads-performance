@@ -1,7 +1,26 @@
-"""GA4 analytics router.
+"""GA4 analytics router — diagnostics probe + the live /analytics endpoints.
 
-Phase 0 (this file): **diagnostics only**. Before building the /analytics
-overview page we need to know, per property, what GA4 actually measures:
+Everything here reads the GA4 Data API live. No tables, no sync, no cron:
+GA4 keeps 14 months of history and answers any dimension combination we ask
+for, so storing a copy would only add staleness. Responses are memoised for
+`_CACHE_TTL_SECONDS` so flipping between tabs doesn't re-bill the quota.
+
+Two facts about our properties, established by the diagnostics probe on
+2026-07-31, that shape every query below:
+
+1. `hotels.cloudbeds.com` appears as a *hostname with its own sessions* in
+   every property. Cross-domain measurement is on (purchases are visible)
+   but the referral exclusion is incomplete, so a booking-engine hop can
+   start a fresh session attributed to Referral. Channel-level conversion
+   counts are therefore directional, not settlement-grade — ROAS still
+   belongs to the ads platform + booking matches.
+2. Property 514380737 (registered as Oani) is also tagged on the 1948 and
+   Osaka sites, so its property-wide totals double-count those branches.
+   That's why every endpoint accepts `host_scope` and why `site` scope
+   exists: it pins a branch to its own subdomain.
+
+Phase 0 (diagnostics): before building anything we needed to know, per
+property, what GA4 actually measures:
 
   - which hostnames the property sees (is the Cloudbeds booking engine
     tracked cross-domain, or does the session end at our landing page?)
@@ -17,6 +36,7 @@ sync, no cron. Reports are capped at a handful of calls per property.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -67,6 +87,43 @@ BOOKING_ENGINE_HINTS = ["cloudbeds", "bookingengine", "secure-booking", "reserva
 CONVERSION_METRIC_CANDIDATES = ["keyEvents", "conversions"]
 REVENUE_METRIC_CANDIDATES = ["purchaseRevenue", "totalRevenue"]
 
+# ── host scoping ───────────────────────────────────────────────────────────
+# Each branch owns exactly one subdomain. `staymeander.com` (the group site)
+# is tagged into *every* property, so it is deliberately excluded from `site`
+# scope — counting it per branch would multiply the same sessions five times.
+BRANCH_SITE_HOSTS: dict[str, list[str]] = {
+    "Saigon": ["sgn.staymeander.com"],
+    "Taipei": ["tpe.staymeander.com"],
+    "1948": ["1948.staymeander.com"],
+    "Osaka": ["osk.staymeander.com"],
+    "Oani": ["oani-taipei.staymeander.com"],
+}
+
+BOOKING_HOSTS = ["hotels.cloudbeds.com", "meander.cloudbeds.com", "api.cloudbeds.com"]
+
+# Properties whose tag is deployed on more than one branch's site. Reported to
+# the client so the page can warn instead of quietly showing inflated totals.
+SHARED_PROPERTIES: dict[str, list[str]] = {
+    "514380737": ["1948", "Osaka"],
+}
+
+# The funnel our sites actually emit. The generic GA4 retail steps
+# (view_item / select_item / add_payment_info) are never fired by Cloudbeds,
+# so using them would draw four empty bars. `cb_booking_engine_load` is the
+# Cloudbeds widget booting — the real "entered the booking flow" moment.
+SITE_FUNNEL = [
+    {"event": "session_start", "label": "Sessions"},
+    {"event": "cb_booking_engine_load", "label": "Booking engine opened"},
+    {"event": "add_to_cart", "label": "Room selected"},
+    {"event": "begin_checkout", "label": "Checkout started"},
+    {"event": "purchase", "label": "Booking completed"},
+]
+
+_CACHE_TTL_SECONDS = 600
+_cache: dict[str, tuple[float, Any]] = {}
+_metadata_cache: dict[str, tuple[float, set[str]]] = {}
+_METADATA_TTL_SECONDS = 3600
+
 
 def _configured_properties(db: Session, branch_filter: str | None = None) -> list[dict[str, Any]]:
     """Ad accounts that have a GA4 property attached, deduped by property id."""
@@ -108,6 +165,179 @@ def _pick_supported(candidates: list[str], supported: set[str]) -> str | None:
         if name in supported:
             return name
     return None
+
+
+# ── analytics helpers ──────────────────────────────────────────────────────
+
+
+def _cache_get(key: str) -> Any | None:
+    hit = _cache.get(key)
+    if hit and (time.monotonic() - hit[0]) < _CACHE_TTL_SECONDS:
+        return hit[1]
+    return None
+
+
+def _cache_put(key: str, value: Any) -> None:
+    _cache[key] = (time.monotonic(), value)
+    # Bounded so a long-lived process can't grow the dict without limit.
+    if len(_cache) > 200:
+        oldest = sorted(_cache.items(), key=lambda kv: kv[1][0])[:50]
+        for k, _ in oldest:
+            _cache.pop(k, None)
+
+
+def _supported_metrics(property_id: str) -> set[str]:
+    """Metric names this property accepts, cached for an hour.
+
+    A property's metric list only changes when someone edits the GA4 config,
+    so re-fetching it on every request would be pure latency.
+    """
+    hit = _metadata_cache.get(property_id)
+    if hit and (time.monotonic() - hit[0]) < _METADATA_TTL_SECONDS:
+        return hit[1]
+    from app.services.ga4_client import get_metadata
+
+    try:
+        names = set(get_metadata(property_id).get("metrics") or [])
+    except Exception:
+        logger.warning("[ga4] metadata lookup failed for %s", property_id, exc_info=True)
+        names = set()
+    _metadata_cache[property_id] = (time.monotonic(), names)
+    return names
+
+
+def _resolve_branch_property(db: Session, branch: str) -> dict[str, Any] | None:
+    """Canonical branch key → its GA4 property (or None if not configured)."""
+    for prop in _configured_properties(db):
+        if prop["branch"] == branch:
+            return prop
+    return None
+
+
+def _host_filter(branch: str, host_scope: str) -> dict[str, Any] | None:
+    """Build the hostName dimension filter for the requested scope.
+
+    `all`     — everything the property sees. Correct for four of the five
+                branches; inflated for a shared property (see SHARED_PROPERTIES).
+    `site`    — the branch's own subdomain only. Excludes the booking engine,
+                so conversions will be near-zero — this scope answers "how is
+                my landing site doing", not "how many bookings".
+    `booking` — the Cloudbeds hosts only.
+    """
+    hosts: list[str] = []
+    if host_scope == "site":
+        hosts = BRANCH_SITE_HOSTS.get(branch, [])
+    elif host_scope == "booking":
+        hosts = BOOKING_HOSTS
+    if not hosts:
+        return None
+    return {"filter": {"field_name": "hostName", "in_list_filter": {"values": hosts}}}
+
+
+def _window(date_from: str | None, date_to: str | None) -> tuple[date, date]:
+    """Requested window, defaulting to the last 28 full days ending yesterday."""
+    today = datetime.now(timezone.utc).date()
+    end = date.fromisoformat(date_to) if date_to else today - timedelta(days=1)
+    start = date.fromisoformat(date_from) if date_from else end - timedelta(days=27)
+    if start > end:
+        start, end = end, start
+    return start, end
+
+
+def _rate(numerator: float, denominator: float) -> float | None:
+    return (numerator / denominator) if denominator else None
+
+
+def _parse_ga4_date(s: str) -> date:
+    """GA4 returns the `date` dimension as a YYYYMMDD string."""
+    return date(int(s[0:4]), int(s[4:6]), int(s[6:8]))
+
+
+class _Ctx:
+    """Everything the section endpoints need, resolved once per request."""
+
+    def __init__(self, db: Session, branch: str, date_from, date_to, host_scope: str):
+        self.branch = branch
+        self.prop = _resolve_branch_property(db, branch)
+        self.date_from, self.date_to = _window(date_from, date_to)
+        self.host_scope = host_scope
+        self.filter = _host_filter(branch, host_scope)
+        self.property_id = self.prop["property_id"] if self.prop else None
+        supported = _supported_metrics(self.property_id) if self.property_id else set()
+        self.conv = _pick_supported(CONVERSION_METRIC_CANDIDATES, supported) or "keyEvents"
+        self.rev = _pick_supported(REVENUE_METRIC_CANDIDATES, supported) or "purchaseRevenue"
+
+    @property
+    def shared_with(self) -> list[str]:
+        return SHARED_PROPERTIES.get(self.property_id or "", [])
+
+    def key(self, section: str, *extra: Any) -> str:
+        return "|".join([
+            section, self.property_id or "-", self.branch, self.host_scope,
+            self.date_from.isoformat(), self.date_to.isoformat(), *[str(e) for e in extra],
+        ])
+
+    def run(self, dimensions: list[str], metrics: list[str], *, limit: int = 100,
+            date_from: date | None = None, date_to: date | None = None) -> list[dict]:
+        from app.services.ga4_client import run_report
+
+        return run_report(
+            self.property_id,
+            date_from=date_from or self.date_from,
+            date_to=date_to or self.date_to,
+            dimensions=dimensions,
+            metrics=metrics,
+            dimension_filter=self.filter,
+            limit=limit,
+        )
+
+    def envelope(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "branch": self.branch,
+            "property_id": self.property_id,
+            "date_from": self.date_from.isoformat(),
+            "date_to": self.date_to.isoformat(),
+            "host_scope": self.host_scope,
+            "conversion_metric": self.conv,
+            "shared_property_with": self.shared_with,
+            **payload,
+        }
+
+
+def _ctx_or_error(db: Session, branch: str, date_from, date_to, host_scope: str):
+    """Returns (ctx, error_response). Exactly one of the two is None."""
+    if host_scope not in ("all", "site", "booking"):
+        return None, _api(error="host_scope must be one of: all, site, booking")
+    ctx = _Ctx(db, branch, date_from, date_to, host_scope)
+    if not ctx.property_id:
+        return None, _api(error=f"No GA4 property configured for branch '{branch}'")
+    return ctx, None
+
+
+def _enrich(rows: list[dict], ctx: _Ctx, key_field: str, label: str) -> list[dict]:
+    """Attach derived rates to a breakdown, sorted by sessions desc.
+
+    Conversion rate and revenue-per-session are computed here rather than in
+    the frontend so every table derives them the same way — from raw sums,
+    never by averaging pre-computed rates.
+    """
+    out = []
+    for r in rows:
+        sessions = r.get("sessions", 0) or 0
+        conv = r.get(ctx.conv, 0) or 0
+        rev = r.get(ctx.rev, 0) or 0
+        out.append({
+            label: r.get(key_field, ""),
+            "sessions": sessions,
+            "engaged_sessions": r.get("engagedSessions", 0) or 0,
+            "engagement_rate": r.get("engagementRate"),
+            "key_events": conv,
+            "revenue": rev,
+            "conversion_rate": _rate(conv, sessions),
+            "revenue_per_session": _rate(rev, sessions),
+        })
+    out.sort(key=lambda r: r["sessions"], reverse=True)
+    return out
 
 
 @router.get("/ga4/properties")
@@ -312,4 +542,410 @@ def ga4_diagnostics(
         })
     except Exception as e:
         logger.exception("[ga4] diagnostics failed")
+        return _api(error=str(e))
+
+
+# ── /analytics page sections ───────────────────────────────────────────────
+# Five endpoints instead of one so the page can fetch them in parallel — a
+# single combined call would serialise ~12 GA4 reports behind one spinner.
+
+_COMMON = dict(
+    branch=Query(..., description="Canonical branch key, e.g. Saigon / Taipei / 1948 / Osaka / Oani"),
+    date_from=Query(None, description="ISO date. Defaults to 28 days before date_to."),
+    date_to=Query(None, description="ISO date. Defaults to yesterday (GA4 finalization delay)."),
+    host_scope=Query("all", description="all | site | booking"),
+)
+
+
+@router.get("/ga4/overview")
+def ga4_overview(
+    branch: str = _COMMON["branch"],
+    date_from: str | None = _COMMON["date_from"],
+    date_to: str | None = _COMMON["date_to"],
+    host_scope: str = _COMMON["host_scope"],
+    compare: bool = Query(True, description="Also return the preceding equal-length period"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_section("analytics")),
+):
+    """Headline KPIs + daily trend, with an optional previous-period delta."""
+    try:
+        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope)
+        if err:
+            return err
+
+        cache_key = ctx.key("overview", compare)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return _api(cached)
+
+        totals_metrics = [
+            "sessions", "activeUsers", "newUsers", "screenPageViews",
+            "engagedSessions", "engagementRate", "averageSessionDuration",
+            "bounceRate", ctx.conv, ctx.rev,
+        ]
+        totals_rows = ctx.run([], totals_metrics)
+        totals = totals_rows[0] if totals_rows else {}
+
+        sessions = totals.get("sessions", 0) or 0
+        conv = totals.get(ctx.conv, 0) or 0
+        rev = totals.get(ctx.rev, 0) or 0
+        summary = {
+            "sessions": sessions,
+            "active_users": totals.get("activeUsers", 0),
+            "new_users": totals.get("newUsers", 0),
+            "page_views": totals.get("screenPageViews", 0),
+            "engaged_sessions": totals.get("engagedSessions", 0),
+            "engagement_rate": totals.get("engagementRate"),
+            "avg_session_duration_sec": totals.get("averageSessionDuration"),
+            "bounce_rate": totals.get("bounceRate"),
+            "key_events": conv,
+            "revenue": rev,
+            "conversion_rate": _rate(conv, sessions),
+            "revenue_per_session": _rate(rev, sessions),
+        }
+
+        previous = None
+        if compare:
+            span = (ctx.date_to - ctx.date_from).days + 1
+            prev_to = ctx.date_from - timedelta(days=1)
+            prev_from = prev_to - timedelta(days=span - 1)
+            prev_rows = ctx.run([], totals_metrics, date_from=prev_from, date_to=prev_to)
+            prev = prev_rows[0] if prev_rows else {}
+            p_sessions = prev.get("sessions", 0) or 0
+            p_conv = prev.get(ctx.conv, 0) or 0
+            p_rev = prev.get(ctx.rev, 0) or 0
+            previous = {
+                "date_from": prev_from.isoformat(),
+                "date_to": prev_to.isoformat(),
+                "sessions": p_sessions,
+                "active_users": prev.get("activeUsers", 0),
+                "key_events": p_conv,
+                "revenue": p_rev,
+                "conversion_rate": _rate(p_conv, p_sessions),
+                "revenue_per_session": _rate(p_rev, p_sessions),
+                "engagement_rate": prev.get("engagementRate"),
+            }
+
+        trend_rows = ctx.run(["date"], ["sessions", "activeUsers", ctx.conv, ctx.rev], limit=400)
+        trend = sorted(
+            (
+                {
+                    "date": _parse_ga4_date(r["date"]).isoformat(),
+                    "sessions": r.get("sessions", 0),
+                    "active_users": r.get("activeUsers", 0),
+                    "key_events": r.get(ctx.conv, 0),
+                    "revenue": r.get(ctx.rev, 0),
+                }
+                for r in trend_rows if r.get("date")
+            ),
+            key=lambda r: r["date"],
+        )
+
+        payload = ctx.envelope({"summary": summary, "previous": previous, "trend": trend})
+        _cache_put(cache_key, payload)
+        return _api(payload)
+    except Exception as e:
+        logger.exception("[ga4] overview failed")
+        return _api(error=str(e))
+
+
+@router.get("/ga4/acquisition")
+def ga4_acquisition(
+    branch: str = _COMMON["branch"],
+    date_from: str | None = _COMMON["date_from"],
+    date_to: str | None = _COMMON["date_to"],
+    host_scope: str = _COMMON["host_scope"],
+    db: Session = Depends(get_db),
+    user: User = Depends(require_section("analytics")),
+):
+    """Where traffic comes from: channel group, source/medium, campaign."""
+    try:
+        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope)
+        if err:
+            return err
+
+        cache_key = ctx.key("acquisition")
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return _api(cached)
+
+        breakdown_metrics = ["sessions", "engagedSessions", "engagementRate", ctx.conv, ctx.rev]
+
+        channels = _enrich(
+            ctx.run(["sessionDefaultChannelGroup"], breakdown_metrics, limit=50),
+            ctx, "sessionDefaultChannelGroup", "channel",
+        )
+
+        sm_rows = ctx.run(["sessionSource", "sessionMedium"], breakdown_metrics, limit=200)
+        sources = _enrich(
+            [{**r, "_sm": f"{r.get('sessionSource', '')} / {r.get('sessionMedium', '')}"} for r in sm_rows],
+            ctx, "_sm", "source_medium",
+        )[:30]
+
+        campaigns = _enrich(
+            ctx.run(["sessionCampaignName"], breakdown_metrics, limit=100),
+            ctx, "sessionCampaignName", "campaign",
+        )[:30]
+
+        # Self-referral check: booking-engine hosts showing up as a traffic
+        # *source* means the cross-domain referral exclusion is leaking, and
+        # channel-level conversion credit is being stolen from the real source.
+        leaked = [
+            s for s in sources
+            if any(hint in (s["source_medium"] or "").lower() for hint in BOOKING_ENGINE_HINTS)
+        ]
+
+        payload = ctx.envelope({
+            "channels": channels,
+            "sources": sources,
+            "campaigns": campaigns,
+            "self_referral": {
+                "detected": bool(leaked),
+                "rows": leaked,
+                "note": (
+                    "Booking-engine hosts appear as a traffic source. GA4 is "
+                    "starting a new session on the Cloudbeds hop, so these "
+                    "conversions were really earned by the original channel."
+                ) if leaked else None,
+            },
+        })
+        _cache_put(cache_key, payload)
+        return _api(payload)
+    except Exception as e:
+        logger.exception("[ga4] acquisition failed")
+        return _api(error=str(e))
+
+
+@router.get("/ga4/devices")
+def ga4_devices(
+    branch: str = _COMMON["branch"],
+    date_from: str | None = _COMMON["date_from"],
+    date_to: str | None = _COMMON["date_to"],
+    host_scope: str = _COMMON["host_scope"],
+    db: Session = Depends(get_db),
+    user: User = Depends(require_section("analytics")),
+):
+    """Mobile vs desktop vs tablet — and the same split crossed with channel."""
+    try:
+        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope)
+        if err:
+            return err
+
+        cache_key = ctx.key("devices")
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return _api(cached)
+
+        devices = _enrich(
+            ctx.run(
+                ["deviceCategory"],
+                ["sessions", "engagedSessions", "engagementRate", ctx.conv, ctx.rev],
+                limit=10,
+            ),
+            ctx, "deviceCategory", "device",
+        )
+
+        # Revenue per session is the honest comparator here: mobile always
+        # wins on volume, so raw session share says nothing about which
+        # device actually books.
+        best = max(
+            (d for d in devices if d["sessions"]),
+            key=lambda d: d["revenue_per_session"] or 0,
+            default=None,
+        )
+        mobile = next((d for d in devices if d["device"] == "mobile"), None)
+        desktop = next((d for d in devices if d["device"] == "desktop"), None)
+        ratio = None
+        if mobile and desktop and (mobile["revenue_per_session"] or 0) > 0:
+            ratio = (desktop["revenue_per_session"] or 0) / mobile["revenue_per_session"]
+
+        matrix_rows = ctx.run(
+            ["deviceCategory", "sessionDefaultChannelGroup"],
+            ["sessions", ctx.conv, ctx.rev],
+            limit=200,
+        )
+        matrix = [
+            {
+                "device": r.get("deviceCategory", ""),
+                "channel": r.get("sessionDefaultChannelGroup", ""),
+                "sessions": r.get("sessions", 0),
+                "key_events": r.get(ctx.conv, 0),
+                "revenue": r.get(ctx.rev, 0),
+                "conversion_rate": _rate(r.get(ctx.conv, 0) or 0, r.get("sessions", 0) or 0),
+            }
+            for r in matrix_rows
+        ]
+        matrix.sort(key=lambda r: r["sessions"], reverse=True)
+
+        payload = ctx.envelope({
+            "devices": devices,
+            "device_channel_matrix": matrix,
+            "verdict": {
+                "best_revenue_per_session": best["device"] if best else None,
+                "desktop_vs_mobile_rps_ratio": ratio,
+            },
+        })
+        _cache_put(cache_key, payload)
+        return _api(payload)
+    except Exception as e:
+        logger.exception("[ga4] devices failed")
+        return _api(error=str(e))
+
+
+@router.get("/ga4/funnel")
+def ga4_funnel(
+    branch: str = _COMMON["branch"],
+    date_from: str | None = _COMMON["date_from"],
+    date_to: str | None = _COMMON["date_to"],
+    host_scope: str = _COMMON["host_scope"],
+    db: Session = Depends(get_db),
+    user: User = Depends(require_section("analytics")),
+):
+    """Booking funnel, overall and per device.
+
+    NOTE: the GA4 Data API exposes no sequential-funnel report — Explorations
+    are UI-only. These are independent per-step event counts, so a step can
+    exceed the one above it (a user reopening the booking engine, for
+    instance). Read the drop-off as a ratio, not as a strict path.
+    """
+    try:
+        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope)
+        if err:
+            return err
+
+        cache_key = ctx.key("funnel")
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return _api(cached)
+
+        wanted = [s["event"] for s in SITE_FUNNEL]
+        rows = ctx.run(["eventName"], ["eventCount", "totalUsers"], limit=300)
+        by_event = {r.get("eventName", ""): r for r in rows}
+
+        steps: list[dict[str, Any]] = []
+        first_users = None
+        prev_users = None
+        for spec in SITE_FUNNEL:
+            r = by_event.get(spec["event"], {})
+            users = r.get("totalUsers", 0) or 0
+            count = r.get("eventCount", 0) or 0
+            if first_users is None:
+                first_users = users
+            steps.append({
+                "event": spec["event"],
+                "label": spec["label"],
+                "users": users,
+                "count": count,
+                "pct_of_top": _rate(users, first_users or 0),
+                "step_conversion": _rate(users, prev_users) if prev_users else None,
+                "dropoff": (1 - (users / prev_users)) if prev_users else None,
+                "present": count > 0,
+            })
+            prev_users = users if users else prev_users
+
+        device_rows = ctx.run(["eventName", "deviceCategory"], ["eventCount", "totalUsers"], limit=500)
+        per_device: dict[str, dict[str, int]] = {}
+        for r in device_rows:
+            ev = r.get("eventName", "")
+            if ev not in wanted:
+                continue
+            per_device.setdefault(r.get("deviceCategory", ""), {})[ev] = r.get("totalUsers", 0) or 0
+
+        by_device = [
+            {
+                "device": dev,
+                "steps": [
+                    {"event": s["event"], "label": s["label"], "users": counts.get(s["event"], 0)}
+                    for s in SITE_FUNNEL
+                ],
+                "top_to_purchase": _rate(
+                    counts.get("purchase", 0), counts.get("session_start", 0)
+                ),
+            }
+            for dev, counts in sorted(
+                per_device.items(),
+                key=lambda kv: kv[1].get("session_start", 0),
+                reverse=True,
+            )
+        ]
+
+        # Everything else the property emits, so a new event someone adds in
+        # GTM shows up here instead of being silently invisible.
+        other_events = sorted(
+            (
+                {"event": r.get("eventName", ""), "count": r.get("eventCount", 0),
+                 "users": r.get("totalUsers", 0)}
+                for r in rows if r.get("eventName") not in wanted
+            ),
+            key=lambda r: r["count"], reverse=True,
+        )[:40]
+
+        payload = ctx.envelope({
+            "steps": steps,
+            "by_device": by_device,
+            "other_events": other_events,
+            "caveat": (
+                "Independent event counts, not a sequential funnel — the GA4 "
+                "Data API has no Explorations endpoint."
+            ),
+        })
+        _cache_put(cache_key, payload)
+        return _api(payload)
+    except Exception as e:
+        logger.exception("[ga4] funnel failed")
+        return _api(error=str(e))
+
+
+@router.get("/ga4/pages")
+def ga4_pages(
+    branch: str = _COMMON["branch"],
+    date_from: str | None = _COMMON["date_from"],
+    date_to: str | None = _COMMON["date_to"],
+    host_scope: str = _COMMON["host_scope"],
+    db: Session = Depends(get_db),
+    user: User = Depends(require_section("analytics")),
+):
+    """Top landing pages, countries, and the hostname split.
+
+    The hostname table is not decoration: it is how you catch a property
+    whose tag is deployed on another branch's site.
+    """
+    try:
+        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope)
+        if err:
+            return err
+
+        cache_key = ctx.key("pages")
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return _api(cached)
+
+        metrics = ["sessions", "engagedSessions", "engagementRate", ctx.conv, ctx.rev]
+
+        pages = _enrich(ctx.run(["landingPage"], metrics, limit=200), ctx, "landingPage", "page")[:30]
+        countries = _enrich(ctx.run(["country"], metrics, limit=200), ctx, "country", "country")[:30]
+        hosts = _enrich(ctx.run(["hostName"], metrics, limit=100), ctx, "hostName", "host")
+
+        own = set(BRANCH_SITE_HOSTS.get(ctx.branch, []))
+        foreign = [
+            h for h in hosts
+            if h["host"] not in own
+            and not any(b in h["host"] for b in BOOKING_ENGINE_HINTS)
+            and any(
+                other_host in h["host"]
+                for b, other_hosts in BRANCH_SITE_HOSTS.items() if b != ctx.branch
+                for other_host in other_hosts
+            )
+        ]
+
+        payload = ctx.envelope({
+            "pages": pages,
+            "countries": countries,
+            "hosts": hosts,
+            "foreign_branch_hosts": foreign,
+        })
+        _cache_put(cache_key, payload)
+        return _api(payload)
+    except Exception as e:
+        logger.exception("[ga4] pages failed")
         return _api(error=str(e))

@@ -39,6 +39,7 @@ PAGES: dict[str, dict[str, str]] = {
     # analytics
     "dashboard": {"section": "analytics", "label": "Dashboard"},
     "booking_matches": {"section": "analytics", "label": "Booking from Ads"},
+    "ga4_analytics": {"section": "analytics", "label": "GA4 Analytics"},
     # meta_ads
     "meta_recommendations": {"section": "meta_ads", "label": "Recommendations"},
     "angles": {"section": "meta_ads", "label": "Ad Angles"},
