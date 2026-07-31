@@ -61,6 +61,25 @@ def get_client():
     return _client
 
 
+def get_metadata(property_id: str) -> dict[str, list[str]]:
+    """Return every dimension + metric API name the property supports.
+
+    Cheaper and more definitive than probing metrics one report at a time:
+    the response includes custom dimensions/metrics and reflects Google's
+    ongoing renames (e.g. `conversions` → `keyEvents`), so callers can pick
+    whichever name this property actually accepts.
+    """
+    from google.analytics.data_v1beta.types import GetMetadataRequest
+
+    client = get_client()
+    prop = property_id if property_id.startswith("properties/") else f"properties/{property_id}"
+    resp = client.get_metadata(GetMetadataRequest(name=f"{prop}/metadata"))
+    return {
+        "dimensions": [d.api_name for d in resp.dimensions],
+        "metrics": [m.api_name for m in resp.metrics],
+    }
+
+
 def run_report(
     property_id: str,
     *,
