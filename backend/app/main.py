@@ -39,6 +39,7 @@ from app.routers import (
     export,
     figma,
     funnel_recommendations,
+    ga4,
     google_campaigns,
     google_recommendations,
     hypotheses,
@@ -162,6 +163,7 @@ app.include_router(booking_matches.router, prefix="/api", tags=["booking-matches
 app.include_router(internal_tasks.router, prefix="/api", tags=["internal-tasks"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(landing_pages.router, prefix="/api", tags=["landing-pages"])
+app.include_router(ga4.router, prefix="/api", tags=["ga4"])
 app.include_router(public_landing.router, prefix="/api", tags=["public-landing"])
 app.include_router(changelog.router, prefix="/api", tags=["changelog"])
 app.include_router(winning_ads.router, prefix="/api", tags=["winning-ads"])
