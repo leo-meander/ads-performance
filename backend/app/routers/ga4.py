@@ -234,6 +234,51 @@ def _host_filter(branch: str, host_scope: str) -> dict[str, Any] | None:
     return {"filter": {"field_name": "hostName", "in_list_filter": {"values": hosts}}}
 
 
+# Cross-filter dimensions. Clicking a row on the page pins that value and every
+# other section re-queries with it applied — the same "one segment, all charts"
+# behaviour as a Looker Studio cross-filter. Filtering has to happen at the API
+# because each section is its own aggregation; you cannot intersect pre-summed
+# rows client-side.
+SEGMENT_DIMENSIONS: dict[str, str] = {
+    "device": "deviceCategory",
+    "channel": "sessionDefaultChannelGroup",
+    "source": "sessionSource",
+    "medium": "sessionMedium",
+    "campaign": "sessionCampaignName",
+    "country": "country",
+    "landing_page": "landingPage",
+    "host": "hostName",
+}
+
+
+def _combined_filter(
+    branch: str, host_scope: str, segments: dict[str, str]
+) -> dict[str, Any] | None:
+    """AND together the host scope and every pinned segment."""
+    expressions: list[dict[str, Any]] = []
+
+    host = _host_filter(branch, host_scope)
+    if host:
+        expressions.append(host)
+
+    for key, value in segments.items():
+        field = SEGMENT_DIMENSIONS.get(key)
+        if not field or value in (None, ""):
+            continue
+        expressions.append({
+            "filter": {
+                "field_name": field,
+                "string_filter": {"match_type": "EXACT", "value": value},
+            }
+        })
+
+    if not expressions:
+        return None
+    if len(expressions) == 1:
+        return expressions[0]
+    return {"and_group": {"expressions": expressions}}
+
+
 def _window(date_from: str | None, date_to: str | None) -> tuple[date, date]:
     """Requested window, defaulting to the last 28 full days ending yesterday."""
     today = datetime.now(timezone.utc).date()
@@ -256,12 +301,14 @@ def _parse_ga4_date(s: str) -> date:
 class _Ctx:
     """Everything the section endpoints need, resolved once per request."""
 
-    def __init__(self, db: Session, branch: str, date_from, date_to, host_scope: str):
+    def __init__(self, db: Session, branch: str, date_from, date_to, host_scope: str,
+                 segments: dict[str, str] | None = None):
         self.branch = branch
         self.prop = _resolve_branch_property(db, branch)
         self.date_from, self.date_to = _window(date_from, date_to)
         self.host_scope = host_scope
-        self.filter = _host_filter(branch, host_scope)
+        self.segments = {k: v for k, v in (segments or {}).items() if v}
+        self.filter = _combined_filter(branch, host_scope, self.segments)
         self.property_id = self.prop["property_id"] if self.prop else None
         supported = _supported_metrics(self.property_id) if self.property_id else set()
         self.conv = _pick_supported(CONVERSION_METRIC_CANDIDATES, supported) or "keyEvents"
@@ -272,8 +319,9 @@ class _Ctx:
         return SHARED_PROPERTIES.get(self.property_id or "", [])
 
     def key(self, section: str, *extra: Any) -> str:
+        seg = ",".join(f"{k}={v}" for k, v in sorted(self.segments.items()))
         return "|".join([
-            section, self.property_id or "-", self.branch, self.host_scope,
+            section, self.property_id or "-", self.branch, self.host_scope, seg,
             self.date_from.isoformat(), self.date_to.isoformat(), *[str(e) for e in extra],
         ])
 
@@ -300,21 +348,24 @@ class _Ctx:
             "host_scope": self.host_scope,
             "conversion_metric": self.conv,
             "shared_property_with": self.shared_with,
+            "segments": self.segments,
             **payload,
         }
 
 
-def _ctx_or_error(db: Session, branch: str, date_from, date_to, host_scope: str):
+def _ctx_or_error(db: Session, branch: str, date_from, date_to, host_scope: str,
+                  segments: dict[str, str] | None = None):
     """Returns (ctx, error_response). Exactly one of the two is None."""
     if host_scope not in ("all", "site", "booking"):
         return None, _api(error="host_scope must be one of: all, site, booking")
-    ctx = _Ctx(db, branch, date_from, date_to, host_scope)
+    ctx = _Ctx(db, branch, date_from, date_to, host_scope, segments)
     if not ctx.property_id:
         return None, _api(error=f"No GA4 property configured for branch '{branch}'")
     return ctx, None
 
 
-def _enrich(rows: list[dict], ctx: _Ctx, key_field: str, label: str) -> list[dict]:
+def _enrich(rows: list[dict], ctx: _Ctx, key_field: str, label: str,
+            carry: dict[str, str] | None = None) -> list[dict]:
     """Attach derived rates to a breakdown, sorted by sessions desc.
 
     Conversion rate and revenue-per-session are computed here rather than in
@@ -328,6 +379,10 @@ def _enrich(rows: list[dict], ctx: _Ctx, key_field: str, label: str) -> list[dic
         rev = r.get(ctx.rev, 0) or 0
         out.append({
             label: r.get(key_field, ""),
+            # Raw dimension values the page needs to build a cross-filter from
+            # a row the user clicks (a "source / medium" label can't be split
+            # reliably — the source itself may contain a slash).
+            **{out_key: r.get(in_key, "") for out_key, in_key in (carry or {}).items()},
             "sessions": sessions,
             "engaged_sessions": r.get("engagedSessions", 0) or 0,
             "engagement_rate": r.get("engagementRate"),
@@ -557,6 +612,28 @@ _COMMON = dict(
 )
 
 
+def segment_params(
+    device: str | None = Query(None, description="deviceCategory, e.g. mobile"),
+    channel: str | None = Query(None, description="sessionDefaultChannelGroup, e.g. Paid Social"),
+    source: str | None = Query(None, description="sessionSource"),
+    medium: str | None = Query(None, description="sessionMedium"),
+    campaign: str | None = Query(None, description="sessionCampaignName"),
+    country: str | None = Query(None),
+    landing_page: str | None = Query(None, description="landingPage path"),
+    host: str | None = Query(None, description="hostName"),
+) -> dict[str, str]:
+    """Cross-filter segment, shared by every section endpoint.
+
+    Each value is ANDed into the dimension filter of every report, so pinning
+    one row on the page narrows all the others to that slice.
+    """
+    raw = {
+        "device": device, "channel": channel, "source": source, "medium": medium,
+        "campaign": campaign, "country": country, "landing_page": landing_page, "host": host,
+    }
+    return {k: v for k, v in raw.items() if v}
+
+
 @router.get("/ga4/overview")
 def ga4_overview(
     branch: str = _COMMON["branch"],
@@ -564,12 +641,13 @@ def ga4_overview(
     date_to: str | None = _COMMON["date_to"],
     host_scope: str = _COMMON["host_scope"],
     compare: bool = Query(True, description="Also return the preceding equal-length period"),
+    segments: dict = Depends(segment_params),
     db: Session = Depends(get_db),
     user: User = Depends(require_section("analytics")),
 ):
     """Headline KPIs + daily trend, with an optional previous-period delta."""
     try:
-        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope)
+        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope, segments)
         if err:
             return err
 
@@ -655,12 +733,13 @@ def ga4_acquisition(
     date_from: str | None = _COMMON["date_from"],
     date_to: str | None = _COMMON["date_to"],
     host_scope: str = _COMMON["host_scope"],
+    segments: dict = Depends(segment_params),
     db: Session = Depends(get_db),
     user: User = Depends(require_section("analytics")),
 ):
     """Where traffic comes from: channel group, source/medium, campaign."""
     try:
-        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope)
+        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope, segments)
         if err:
             return err
 
@@ -680,6 +759,7 @@ def ga4_acquisition(
         sources = _enrich(
             [{**r, "_sm": f"{r.get('sessionSource', '')} / {r.get('sessionMedium', '')}"} for r in sm_rows],
             ctx, "_sm", "source_medium",
+            carry={"source": "sessionSource", "medium": "sessionMedium"},
         )[:30]
 
         campaigns = _enrich(
@@ -722,12 +802,13 @@ def ga4_devices(
     date_from: str | None = _COMMON["date_from"],
     date_to: str | None = _COMMON["date_to"],
     host_scope: str = _COMMON["host_scope"],
+    segments: dict = Depends(segment_params),
     db: Session = Depends(get_db),
     user: User = Depends(require_section("analytics")),
 ):
     """Mobile vs desktop vs tablet — and the same split crossed with channel."""
     try:
-        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope)
+        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope, segments)
         if err:
             return err
 
@@ -798,6 +879,7 @@ def ga4_funnel(
     date_from: str | None = _COMMON["date_from"],
     date_to: str | None = _COMMON["date_to"],
     host_scope: str = _COMMON["host_scope"],
+    segments: dict = Depends(segment_params),
     db: Session = Depends(get_db),
     user: User = Depends(require_section("analytics")),
 ):
@@ -809,7 +891,7 @@ def ga4_funnel(
     instance). Read the drop-off as a ratio, not as a strict path.
     """
     try:
-        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope)
+        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope, segments)
         if err:
             return err
 
@@ -902,6 +984,7 @@ def ga4_pages(
     date_from: str | None = _COMMON["date_from"],
     date_to: str | None = _COMMON["date_to"],
     host_scope: str = _COMMON["host_scope"],
+    segments: dict = Depends(segment_params),
     db: Session = Depends(get_db),
     user: User = Depends(require_section("analytics")),
 ):
@@ -911,7 +994,7 @@ def ga4_pages(
     whose tag is deployed on another branch's site.
     """
     try:
-        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope)
+        ctx, err = _ctx_or_error(db, branch, date_from, date_to, host_scope, segments)
         if err:
             return err
 
