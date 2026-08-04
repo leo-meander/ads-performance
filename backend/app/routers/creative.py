@@ -26,6 +26,7 @@ from app.services.creative_service import (
     next_copy_id, next_material_id, propagate_derived_verdicts,
 )
 from app.services.parse_utils import parse_campaign_metadata
+from app.services.winning_months_service import freeze_winning_months, list_winning_months
 
 router = APIRouter()
 
@@ -1174,6 +1175,71 @@ def analytics_by_angle(
         result.sort(key=lambda x: x["roas"], reverse=True)
         return _api_response(data=result)
     except Exception as e:
+        return _api_response(error=str(e))
+
+
+# ── Winning ads by month ──────────────────────────────────
+
+
+@router.get("/creative/winning-months")
+def winning_months(
+    branch_id: str | None = None,
+    month: str | None = None,
+    refresh: bool = True,
+    current_user: User = Depends(require_section("meta_ads")),
+    db: Session = Depends(get_db),
+):
+    """Monthly winning-creative counts, frozen at award time.
+
+    The Library's WIN/LOSE is dynamic (lifetime ROAS vs the account's CURRENT
+    blended ROAS), so it can't answer "how many winners in May?". These rows
+    can: each is written once, when the ad first cleared that month's bar, and
+    is never recomputed.
+
+    `refresh=True` (default) runs the append-only freeze pass first so a month
+    that just crossed the line shows up without anyone clicking a button. It
+    can only ADD awards — never rewrite or remove one.
+
+    Scope: only ads whose name contains "CRTV".
+    """
+    try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=branch_id
+        )
+        if not ok:
+            return _api_response(error=err)
+
+        frozen = None
+        if refresh:
+            frozen = freeze_winning_months(db, account_ids=scoped_ids)
+
+        data = list_winning_months(
+            db, account_ids=scoped_ids, branch_id=branch_id, month=month
+        )
+        data["refreshed"] = frozen
+        return _api_response(data=data)
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+@router.post("/creative/winning-months/recompute")
+def recompute_winning_months(
+    branch_id: str | None = None,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Force the freeze pass (append-only) and report what was newly awarded."""
+    try:
+        ok, scoped_ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=branch_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
+        ids = [branch_id] if branch_id else scoped_ids
+        return _api_response(data=freeze_winning_months(db, account_ids=ids))
+    except Exception as e:
+        db.rollback()
         return _api_response(error=str(e))
 
 
