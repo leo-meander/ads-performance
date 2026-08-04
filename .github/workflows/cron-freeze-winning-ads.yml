@@ -1,0 +1,41 @@
+# Daily 05:30 UTC — freeze the monthly winning creatives.
+#
+# Runs after the 05:00 combo-metrics job so ad_daily_metrics is current. The
+# Creative Library verdict is dynamic (lifetime ROAS vs the account's CURRENT
+# blended ROAS), so a past month's winner count drifts every time the benchmark
+# moves. This pass writes each award once and never rewrites it.
+#
+# Append-only: a re-run can add winners to a month, never demote one. Scope is
+# ads whose name contains "CRTV".
+name: Cron — Freeze winning ads by month
+
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+env:
+  BACKEND_URL: https://ads-performance-fuls.zeabur.app
+  ENDPOINT: freeze-winning-ads
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/internal/tasks/freeze-winning-ads
+        env:
+          INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}
+        run: |
+          set -euo pipefail
+          echo "Triggering endpoint: $ENDPOINT"
+          HTTP_CODE=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+            -X POST \
+            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET" \
+            "$BACKEND_URL/api/internal/tasks/$ENDPOINT")
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/body.txt || true
+          echo
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::endpoint $ENDPOINT returned HTTP $HTTP_CODE"
+            exit 1
+          fi

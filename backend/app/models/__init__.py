@@ -50,6 +50,7 @@ from app.models.landing_page_ga4 import LandingPageGA4Snapshot
 from app.models.user import User
 from app.models.user_permission import UserPermission
 from app.models.user_page_permission import UserPagePermission
+from app.models.winning_ad_month import WinningAdMonth
 
 __all__ = [
     "AdAccount",
@@ -112,4 +113,5 @@ __all__ = [
     "User",
     "UserPermission",
     "UserPagePermission",
+    "WinningAdMonth",
 ]

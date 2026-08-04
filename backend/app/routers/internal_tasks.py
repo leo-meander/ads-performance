@@ -411,6 +411,29 @@ def trigger_sync_combo_metrics(
     )
 
 
+@router.post("/internal/tasks/freeze-winning-ads", status_code=200)
+def trigger_freeze_winning_ads(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Daily: award and FREEZE the monthly winning creatives.
+
+    The Creative Library verdict is dynamic (lifetime ROAS vs the account's
+    current blended ROAS), so a past month's winner count drifts. This pass
+    snapshots it: any CRTV ad that clears its month's benchmark gets a
+    permanent winning_ad_months row. Append-only — it can add awards to a
+    month, never rewrite or remove one. Runs inline (pure SQL over
+    ad_daily_metrics, no external API calls)."""
+    from app.services.winning_months_service import freeze_winning_months
+
+    _require_secret(x_internal_secret)
+    db = SessionLocal()
+    try:
+        summary = freeze_winning_months(db)
+    finally:
+        db.close()
+    return _api_response(data={"status": "ok", **summary})
+
+
 @router.post("/internal/tasks/vision-tag-materials", status_code=200)
 def trigger_vision_tag_materials(
     x_internal_secret: str | None = Header(default=None),
