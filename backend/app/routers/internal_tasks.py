@@ -1080,6 +1080,67 @@ def trigger_merge_orphan_combo(
     return _api_response(data=result)
 
 
+@router.post("/internal/tasks/find-duplicate-combos", status_code=200)
+def trigger_find_duplicate_combos(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Synchronous, read-only: find combos sharing (branch_id, ad_name).
+
+    ad_combos has no unique constraint on (branch_id, ad_name) — only on
+    (copy_id, material_id) — and the application-level dedupe in
+    sync_creative_library_for_account is a plain dict lookup, not atomic.
+    See creative_sync.find_duplicate_named_combos docstring for how that lets
+    two rows for the same real ad slip in (an overlapping sync run, or a
+    manual "+ New Combo" landing between the lookup and the insert), and why
+    the duplicates usually show different spend/roas/updated_at despite being
+    the same ad.
+    """
+    _require_secret(x_internal_secret)
+    from app.services.creative_sync import find_duplicate_named_combos
+
+    db = SessionLocal()
+    try:
+        result = find_duplicate_named_combos(db)
+    except Exception as e:
+        logger.exception("[find-duplicate-combos] failed")
+        return _api_response(error=f"{type(e).__name__}: {e}")
+    finally:
+        db.close()
+    return _api_response(data={"groups": result, "count": len(result)})
+
+
+@router.post("/internal/tasks/merge-duplicate-combo", status_code=200)
+def trigger_merge_duplicate_combo(
+    combo_id_a: str,
+    combo_id_b: str,
+    x_internal_secret: str | None = Header(default=None),
+    apply: bool = False,
+):
+    """Consolidate two combos that share the same (branch_id, ad_name) — see
+    /internal/tasks/find-duplicate-combos to discover pairs first.
+
+    The combo with higher current spend is kept; the other is merged into it
+    via the same FK-repoint logic as merge-orphan-combo. Default is a DRY RUN;
+    pass `apply=true` to commit.
+    """
+    _require_secret(x_internal_secret)
+    from app.services.creative_sync import merge_duplicate_combo
+
+    db = SessionLocal()
+    try:
+        result = merge_duplicate_combo(db, combo_id_a, combo_id_b, dry_run=not apply)
+    except Exception as e:
+        db.rollback()
+        logger.exception("[merge-duplicate-combo] failed for %s/%s", combo_id_a, combo_id_b)
+        return _api_response(error=f"{type(e).__name__}: {e}")
+    finally:
+        db.close()
+
+    if "error" in result:
+        return _api_response(error=result["error"])
+    return _api_response(data=result)
+
+
 @router.post("/internal/tasks/diagnose-orphan-combos", status_code=200)
 def trigger_diagnose_orphan_combos(
     x_internal_secret: str | None = Header(default=None),
