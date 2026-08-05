@@ -23,6 +23,7 @@ from facebook_business.api import FacebookAdsApi
 from sqlalchemy.orm import Session
 
 from app.models.account import AdAccount
+from app.models.ad import Ad
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
