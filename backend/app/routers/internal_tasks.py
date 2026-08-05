@@ -1016,34 +1016,6 @@ def debug_combo(
         db.close()
 
 
-@router.post("/internal/tasks/diagnose-orphan-combos", status_code=200)
-def trigger_diagnose_orphan_combos(
-    x_internal_secret: str | None = Header(default=None),
-    account: str | None = None,
-):
-    """Synchronous: find Creative Library combos whose ad_name matches no `ads`
-    row, and classify each as a real Meta rename/delete vs a harmless gap in
-    the `ads` table (see creative_sync.diagnose_orphan_combos docstring — the
-    naive SQL check over-selects because `ads` isn't a complete Meta mirror).
-
-    Pass `?account=Meander%201948` to scope to one branch (substring match on
-    account_name). Read-only. Makes one Meta API call per account with
-    orphaned combos, so a full run across all branches can take a minute or two.
-    """
-    _require_secret(x_internal_secret)
-    from app.services.creative_sync import diagnose_orphan_combos
-
-    db = SessionLocal()
-    try:
-        result = diagnose_orphan_combos(db, account_name_filter=account)
-    except Exception as e:
-        logger.exception("[diagnose-orphan-combos] failed")
-        return _api_response(error=f"{type(e).__name__}: {e}")
-    finally:
-        db.close()
-    return _api_response(data=result)
-
-
 # ------------------------------------------- Hypothesis backfill + sync ------
 
 
