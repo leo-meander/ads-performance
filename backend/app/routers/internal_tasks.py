@@ -1016,6 +1016,33 @@ def debug_combo(
         db.close()
 
 
+@router.post("/internal/tasks/diagnose-winning-by-month", status_code=200)
+def trigger_diagnose_winning_by_month(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Synchronous, read-only: explain an empty Winning-by-Month tab.
+
+    freeze_winning_months() has two silent skip conditions — an account with
+    zero ad_daily_metrics rows, and an account whose ad_daily_metrics has no
+    ad_name containing "CRTV" — neither logs anything, so there's nothing to
+    grep. This surfaces both per account, plus a naming sample when the CRTV
+    filter is the blocker, so a naming-convention mismatch is obvious instead
+    of guessed at.
+    """
+    _require_secret(x_internal_secret)
+    from app.services.winning_months_service import diagnose_winning_by_month
+
+    db = SessionLocal()
+    try:
+        result = diagnose_winning_by_month(db)
+    except Exception as e:
+        logger.exception("[diagnose-winning-by-month] failed")
+        return _api_response(error=f"{type(e).__name__}: {e}")
+    finally:
+        db.close()
+    return _api_response(data=result)
+
+
 @router.post("/internal/tasks/merge-orphan-combo", status_code=200)
 def trigger_merge_orphan_combo(
     orphan_combo_id: str,

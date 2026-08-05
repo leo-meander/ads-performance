@@ -204,6 +204,84 @@ def freeze_winning_months(
     return summary
 
 
+def diagnose_winning_by_month(db: Session) -> dict:
+    """Explain an empty Winning-by-Month tab: is ad_daily_metrics unpopulated,
+    or is it populated but nothing matches the "CRTV" naming filter?
+
+    freeze_winning_months() silently skips an account with zero ad_daily_metrics
+    rows (bounds[0] is None) and silently skips a month with zero CRTV-matching
+    rows (compute_month_winners returns no winners) — neither is an error, so
+    there's nothing in the logs to point at. This makes both conditions visible
+    at once, plus a naming sample so a naming-convention mismatch (the account
+    just doesn't use "CRTV") is obvious rather than guessed at. Read-only.
+    """
+    accounts = (
+        db.query(AdAccount)
+        .filter(AdAccount.platform == "meta", AdAccount.is_active.is_(True))
+        .all()
+    )
+
+    per_account = []
+    for acc in accounts:
+        bounds = (
+            db.query(sf.min(AdDailyMetric.date), sf.max(AdDailyMetric.date), sf.count())
+            .filter(AdDailyMetric.account_id == acc.id)
+            .first()
+        )
+        row_count = bounds[2] or 0
+        crtv_count = (
+            db.query(sf.count(sf.distinct(AdDailyMetric.ad_name)))
+            .filter(AdDailyMetric.account_id == acc.id, AdDailyMetric.ad_name.ilike(_CRTV_LIKE))
+            .scalar()
+        ) or 0
+
+        entry = {
+            "account_name": acc.account_name,
+            "ad_daily_metrics_rows": row_count,
+            "date_range": (
+                f"{bounds[0].isoformat()} to {bounds[1].isoformat()}" if bounds[0] else None
+            ),
+            "distinct_crtv_ad_names": crtv_count,
+        }
+        if row_count and not crtv_count:
+            # Populated but nothing matches — show what naming this account
+            # actually uses instead of leaving Mason to guess.
+            sample = (
+                db.query(AdDailyMetric.ad_name)
+                .filter(AdDailyMetric.account_id == acc.id, AdDailyMetric.ad_name.isnot(None))
+                .distinct()
+                .limit(10)
+                .all()
+            )
+            entry["sample_ad_names"] = [s[0] for s in sample]
+        per_account.append(entry)
+
+    never_synced = [e["account_name"] for e in per_account if e["ad_daily_metrics_rows"] == 0]
+    synced_no_crtv = [
+        e["account_name"] for e in per_account
+        if e["ad_daily_metrics_rows"] > 0 and e["distinct_crtv_ad_names"] == 0
+    ]
+
+    frozen_awards = db.query(sf.count()).select_from(WinningAdMonth).scalar() or 0
+
+    return {
+        "frozen_awards_so_far": frozen_awards,
+        "accounts_never_synced_daily_metrics": never_synced,
+        "accounts_synced_but_no_crtv_ads": synced_no_crtv,
+        "diagnosis": (
+            "ad_daily_metrics is never populated by cron — only by the manual "
+            "'Sync from Meta' button on the ad-performance page "
+            "(POST /api/ad-performance/sync-daily). If accounts_never_synced_daily_metrics "
+            "is non-empty, that's why: freeze_winning_months silently skips an "
+            "account with zero rows. If accounts_synced_but_no_crtv_ads is "
+            "non-empty instead, daily metrics ARE flowing but no ad name in "
+            "that account contains \"CRTV\" — check sample_ad_names below to see "
+            "what naming convention is actually in use."
+        ),
+        "accounts": per_account,
+    }
+
+
 def list_winning_months(
     db: Session,
     account_ids: list[str] | None = None,
