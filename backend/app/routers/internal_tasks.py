@@ -1016,6 +1016,43 @@ def debug_combo(
         db.close()
 
 
+@router.post("/internal/tasks/merge-orphan-combo", status_code=200)
+def trigger_merge_orphan_combo(
+    orphan_combo_id: str,
+    x_internal_secret: str | None = Header(default=None),
+    apply: bool = False,
+):
+    """Consolidate one orphaned combo (see diagnose-orphan-combos) into its live
+    twin — another combo in the same branch sharing the same material file_url.
+    See creative_sync.merge_orphan_combo docstring for exactly what moves
+    (hypothesis links, winning-month records, figma jobs) and how the target
+    is picked when the ad was split into more than one twin (higher spend
+    wins; runner-up twins are left untouched).
+
+    Default is a DRY RUN: returns the plan (chosen target, declined twins,
+    counts of what would move) without writing anything. Pass `apply=true` to
+    actually commit — the orphan's full state is snapshotted to the changelog
+    before its row is deleted, since ad_combos has no archived flag to
+    soft-delete into instead.
+    """
+    _require_secret(x_internal_secret)
+    from app.services.creative_sync import merge_orphan_combo
+
+    db = SessionLocal()
+    try:
+        result = merge_orphan_combo(db, orphan_combo_id, dry_run=not apply)
+    except Exception as e:
+        db.rollback()
+        logger.exception("[merge-orphan-combo] failed for %s", orphan_combo_id)
+        return _api_response(error=f"{type(e).__name__}: {e}")
+    finally:
+        db.close()
+
+    if "error" in result:
+        return _api_response(error=result["error"])
+    return _api_response(data=result)
+
+
 @router.post("/internal/tasks/diagnose-orphan-combos", status_code=200)
 def trigger_diagnose_orphan_combos(
     x_internal_secret: str | None = Header(default=None),
