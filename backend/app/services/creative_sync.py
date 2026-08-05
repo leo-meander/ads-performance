@@ -405,6 +405,181 @@ def diagnose_orphan_combos(db: Session, account_name_filter: str | None = None) 
     }
 
 
+def merge_orphan_combo(db: Session, orphan_combo_id: str, dry_run: bool = True) -> dict:
+    """Consolidate an orphaned combo (see diagnose_orphan_combos) into its live
+    twin — another combo in the same branch whose material shares the same
+    file_url, i.e. the same creative asset re-imported under Meta's new name.
+
+    If more than one twin exists (the ad was split into several Meta ads, not
+    simply renamed), the twin with the higher current spend is treated as the
+    dominant successor — the same spend-weighted tie-break already used for
+    country assignment (see dominant_country_map). The runner-up(s) are left
+    completely untouched; only the chosen twin receives the merge.
+
+    Every table that references ad_combos.combo_id is re-pointed from the
+    orphan to the target before the orphan is deleted:
+      - hypothesis_combo_links: ON DELETE CASCADE — moved first, or the link
+        (which hypothesis this combo tested) would be silently destroyed.
+        Skipped (not duplicated) if the target already has a link to that
+        same hypothesis, since (hypothesis_id, combo_id) is unique.
+      - creative_hypotheses.combo_id, winning_ad_months.combo_id,
+        figma_jobs.source_combo_id: ON DELETE SET NULL — moved so those rows
+        keep resolving to something that still exists, instead of quietly
+        going NULL.
+
+    ad_combos has no archived/is_active column to soft-delete into, so the
+    orphan row is hard-deleted — but only after its full state is captured in
+    a changelog before_value snapshot, so the merge is auditable even after
+    the row is gone.
+
+    dry_run=True (default) computes and returns the plan — including which
+    twin was picked and why, and exact counts of what would move — without
+    writing anything. Call again with dry_run=False to commit.
+    """
+    from app.models.creative_hypothesis import CreativeHypothesis
+    from app.models.figma import FigmaJob
+    from app.models.hypothesis_combo_link import HypothesisComboLink
+
+    orphan = db.query(AdCombo).filter(AdCombo.combo_id == orphan_combo_id).first()
+    if orphan is None:
+        return {"error": f"combo {orphan_combo_id} not found"}
+
+    material = (
+        db.query(AdMaterial).filter(AdMaterial.material_id == orphan.material_id).first()
+    )
+    if material is None or not material.file_url:
+        return {"error": f"combo {orphan_combo_id} has no material/file_url to match twins on"}
+
+    twins = (
+        db.query(AdCombo)
+        .join(AdMaterial, AdMaterial.material_id == AdCombo.material_id)
+        .filter(
+            AdCombo.branch_id == orphan.branch_id,
+            AdCombo.combo_id != orphan.combo_id,
+            AdMaterial.file_url == material.file_url,
+        )
+        .all()
+    )
+    if not twins:
+        return {"error": f"no live twin found for {orphan_combo_id} — nothing to merge into"}
+
+    target = max(twins, key=lambda c: float(c.spend or 0))
+    declined = [c.combo_id for c in twins if c.combo_id != target.combo_id]
+
+    plan = {
+        "orphan_combo_id": orphan.combo_id,
+        "orphan_ad_name": orphan.ad_name,
+        "orphan_verdict": orphan.verdict,
+        "orphan_spend": float(orphan.spend or 0),
+        "target_combo_id": target.combo_id,
+        "target_ad_name": target.ad_name,
+        "target_spend": float(target.spend or 0),
+        "declined_twins": declined,
+        "dry_run": dry_run,
+    }
+
+    if dry_run:
+        plan["would_move"] = {
+            "hypothesis_links": db.query(HypothesisComboLink)
+            .filter(HypothesisComboLink.combo_id == orphan.combo_id).count(),
+            "direct_hypotheses": db.query(CreativeHypothesis)
+            .filter(CreativeHypothesis.combo_id == orphan.combo_id).count(),
+            "winning_months": db.query(WinningAdMonth)
+            .filter(WinningAdMonth.combo_id == orphan.combo_id).count(),
+            "figma_jobs": db.query(FigmaJob)
+            .filter(FigmaJob.source_combo_id == orphan.combo_id).count(),
+        }
+        return plan
+
+    moved = {
+        "hypothesis_links_moved": 0, "hypothesis_links_dropped_duplicate": 0,
+        "direct_hypotheses_repointed": 0, "winning_months_repointed": 0,
+        "figma_jobs_repointed": 0,
+    }
+
+    for link in (
+        db.query(HypothesisComboLink)
+        .filter(HypothesisComboLink.combo_id == orphan.combo_id)
+        .all()
+    ):
+        clash = (
+            db.query(HypothesisComboLink)
+            .filter(
+                HypothesisComboLink.hypothesis_id == link.hypothesis_id,
+                HypothesisComboLink.combo_id == target.combo_id,
+            )
+            .first()
+        )
+        if clash:
+            db.delete(link)
+            moved["hypothesis_links_dropped_duplicate"] += 1
+        else:
+            link.combo_id = target.combo_id
+            moved["hypothesis_links_moved"] += 1
+
+    for h in (
+        db.query(CreativeHypothesis)
+        .filter(CreativeHypothesis.combo_id == orphan.combo_id)
+        .all()
+    ):
+        h.combo_id = target.combo_id
+        moved["direct_hypotheses_repointed"] += 1
+
+    for w in (
+        db.query(WinningAdMonth)
+        .filter(WinningAdMonth.combo_id == orphan.combo_id)
+        .all()
+    ):
+        w.combo_id = target.combo_id
+        moved["winning_months_repointed"] += 1
+
+    for j in (
+        db.query(FigmaJob)
+        .filter(FigmaJob.source_combo_id == orphan.combo_id)
+        .all()
+    ):
+        j.source_combo_id = target.combo_id
+        moved["figma_jobs_repointed"] += 1
+
+    log_change(
+        db,
+        category="ad_mutation",
+        title=f"Combo merged: {orphan.combo_id} -> {target.combo_id}"[:200],
+        source="manual",
+        triggered_by="user",
+        description=(
+            f"Orphaned combo {orphan.combo_id} ({orphan.ad_name!r}) matched no "
+            f"live Meta ad; its creative asset now lives under {target.combo_id} "
+            f"({target.ad_name!r}). Full pre-delete state kept in before_value."
+            + (f" Declined twin(s), left untouched: {declined}." if declined else "")
+        ),
+        platform="meta",
+        account_id=orphan.branch_id,
+        before_value={
+            "combo_id": orphan.combo_id,
+            "ad_name": orphan.ad_name,
+            "verdict": orphan.verdict,
+            "verdict_source": orphan.verdict_source,
+            "verdict_notes": orphan.verdict_notes,
+            "spend": float(orphan.spend) if orphan.spend else 0,
+            "roas": float(orphan.roas) if orphan.roas else 0,
+            "conversions": orphan.conversions,
+            "angle_id": orphan.angle_id,
+            "keypoint_ids": orphan.keypoint_ids,
+            "target_audience": orphan.target_audience,
+            "country": orphan.country,
+        },
+        after_value={"merged_into": target.combo_id, "declined_twins": declined},
+    )
+
+    db.delete(orphan)
+    db.commit()
+
+    plan["applied"] = True
+    plan["moved"] = moved
+    return plan
+
+
 def sync_creative_library_for_account(db: Session, account: AdAccount) -> dict:
     """Upsert AdMaterial / AdCopy / AdCombo rows from Meta ad creatives for one account."""
     summary = {
