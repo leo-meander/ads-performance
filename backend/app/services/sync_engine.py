@@ -31,7 +31,7 @@ from app.services.meta_client import (
 )
 from app.services.rule_engine import evaluate_all_rules
 from app.services.creative_service import auto_classify_all_combos
-from app.services.creative_sync import sync_creative_library_for_account
+from app.services.creative_sync import apply_ad_renames, sync_creative_library_for_account
 from app.services.angle_assign_service import assign_angles_for_new_combos
 
 logger = logging.getLogger(__name__)
@@ -288,6 +288,8 @@ def sync_meta_account(
         "materials_created": 0,
         "copies_created": 0,
         "combos_created": 0,
+        "combos_renamed": 0,
+        "renames_skipped": 0,
         "errors": [],
     }
 
@@ -455,7 +457,21 @@ def sync_meta_account(
         summary["errors"].append(f"Failed to fetch ads: {e}")
         raw_ads = []
 
+    # Meta renames are only visible during this loop — `existing.name` below is
+    # overwritten in place, and ad_name is the creative library's identity key.
+    # Collect them here and hand them to apply_ad_renames() before the creative
+    # sync runs, or the library silently forks the combo. See creative_sync.
+    rename_pairs: set[tuple[str, str]] = set()
+    names_seen: set[str] = set()
+
     for raw in raw_ads:
+        # Recorded before the adset/campaign guard below: an ad we skip still
+        # occupies its name on Meta, so it must count when deciding whether a
+        # rename was complete.
+        raw_name = (raw.get("name") or "").strip()
+        if raw_name:
+            names_seen.add(raw_name)
+
         adset = (
             db.query(AdSet)
             .filter(AdSet.platform_adset_id == raw["platform_adset_id"])
@@ -476,6 +492,9 @@ def sync_meta_account(
             .first()
         )
         if existing:
+            old_name = (existing.name or "").strip()
+            if old_name and raw_name and old_name != raw_name:
+                rename_pairs.add((old_name, raw_name))
             existing.name = raw["name"]
             existing.status = raw["status"]
             existing.creative_id = raw["creative_id"]
@@ -519,6 +538,18 @@ def sync_meta_account(
 
     db.flush()  # ensure ad IDs are available
 
+    # --- 3b. Follow Meta renames in the creative library ---
+    # Runs here, in the ad-upsert transaction, because the old names only exist
+    # in `rename_pairs` now. Must precede the creative sync below so a renamed
+    # combo is found under its new name instead of being forked into a new row.
+    try:
+        rename_summary = apply_ad_renames(db, account, rename_pairs, names_seen)
+        summary["combos_renamed"] = rename_summary["combos_renamed"]
+        summary["renames_skipped"] = rename_summary["renames_skipped"]
+    except Exception as e:
+        logger.exception("Ad rename propagation failed for account %s", account.account_id)
+        summary["errors"].append(f"Ad rename propagation failed: {e}")
+
     # Default rolling window: last SYNC_LOOKBACK_DAYS including today —
     # conversions (esp. pixel/CRM-matched bookings) arrive a few days late.
     if date_to is None:
@@ -547,7 +578,7 @@ def sync_meta_account(
 
     logger.info(
         "Meta sync complete for account %s: %d campaigns, %d ad sets, %d ads, %d metrics, "
-        "%d materials, %d copies, %d combos",
+        "%d materials, %d copies, %d combos, %d combos renamed",
         account.account_id,
         summary["campaigns_synced"],
         summary["adsets_synced"],
@@ -556,6 +587,7 @@ def sync_meta_account(
         summary["materials_created"],
         summary["copies_created"],
         summary["combos_created"],
+        summary["combos_renamed"],
     )
     return summary
 
