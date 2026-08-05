@@ -405,6 +405,135 @@ def diagnose_orphan_combos(db: Session, account_name_filter: str | None = None) 
     }
 
 
+def _plan_and_maybe_apply_consolidation(
+    db: Session, source: AdCombo, target: AdCombo, dry_run: bool, reason: str
+) -> dict:
+    """Shared core for merge_orphan_combo and merge_duplicate_combo: re-point
+    every table that references ad_combos.combo_id from `source` to `target`,
+    then delete `source`. See merge_orphan_combo's docstring for the full
+    rationale (CASCADE vs SET NULL handling, why source is hard-deleted).
+
+    `reason` is a short human-readable phrase describing WHY source and target
+    were judged to be the same underlying ad — folded into the changelog
+    description so the audit trail explains itself without cross-referencing
+    code.
+    """
+    from app.models.creative_hypothesis import CreativeHypothesis
+    from app.models.figma import FigmaJob
+    from app.models.hypothesis_combo_link import HypothesisComboLink
+
+    plan = {
+        "source_combo_id": source.combo_id,
+        "source_ad_name": source.ad_name,
+        "source_verdict": source.verdict,
+        "source_spend": float(source.spend or 0),
+        "target_combo_id": target.combo_id,
+        "target_ad_name": target.ad_name,
+        "target_spend": float(target.spend or 0),
+        "dry_run": dry_run,
+    }
+
+    if dry_run:
+        plan["would_move"] = {
+            "hypothesis_links": db.query(HypothesisComboLink)
+            .filter(HypothesisComboLink.combo_id == source.combo_id).count(),
+            "direct_hypotheses": db.query(CreativeHypothesis)
+            .filter(CreativeHypothesis.combo_id == source.combo_id).count(),
+            "winning_months": db.query(WinningAdMonth)
+            .filter(WinningAdMonth.combo_id == source.combo_id).count(),
+            "figma_jobs": db.query(FigmaJob)
+            .filter(FigmaJob.source_combo_id == source.combo_id).count(),
+        }
+        return plan
+
+    moved = {
+        "hypothesis_links_moved": 0, "hypothesis_links_dropped_duplicate": 0,
+        "direct_hypotheses_repointed": 0, "winning_months_repointed": 0,
+        "figma_jobs_repointed": 0,
+    }
+
+    for link in (
+        db.query(HypothesisComboLink)
+        .filter(HypothesisComboLink.combo_id == source.combo_id)
+        .all()
+    ):
+        clash = (
+            db.query(HypothesisComboLink)
+            .filter(
+                HypothesisComboLink.hypothesis_id == link.hypothesis_id,
+                HypothesisComboLink.combo_id == target.combo_id,
+            )
+            .first()
+        )
+        if clash:
+            db.delete(link)
+            moved["hypothesis_links_dropped_duplicate"] += 1
+        else:
+            link.combo_id = target.combo_id
+            moved["hypothesis_links_moved"] += 1
+
+    for h in (
+        db.query(CreativeHypothesis)
+        .filter(CreativeHypothesis.combo_id == source.combo_id)
+        .all()
+    ):
+        h.combo_id = target.combo_id
+        moved["direct_hypotheses_repointed"] += 1
+
+    for w in (
+        db.query(WinningAdMonth)
+        .filter(WinningAdMonth.combo_id == source.combo_id)
+        .all()
+    ):
+        w.combo_id = target.combo_id
+        moved["winning_months_repointed"] += 1
+
+    for j in (
+        db.query(FigmaJob)
+        .filter(FigmaJob.source_combo_id == source.combo_id)
+        .all()
+    ):
+        j.source_combo_id = target.combo_id
+        moved["figma_jobs_repointed"] += 1
+
+    log_change(
+        db,
+        category="ad_mutation",
+        title=f"Combo merged: {source.combo_id} -> {target.combo_id}"[:200],
+        source="manual",
+        triggered_by="user",
+        description=(
+            f"{reason} {source.combo_id} ({source.ad_name!r}) consolidated into "
+            f"{target.combo_id} ({target.ad_name!r}). Full pre-delete state kept "
+            f"in before_value."
+        ),
+        platform="meta",
+        account_id=source.branch_id,
+        before_value={
+            "combo_id": source.combo_id,
+            "ad_name": source.ad_name,
+            "verdict": source.verdict,
+            "verdict_source": source.verdict_source,
+            "verdict_notes": source.verdict_notes,
+            "spend": float(source.spend) if source.spend else 0,
+            "roas": float(source.roas) if source.roas else 0,
+            "conversions": source.conversions,
+            "angle_id": source.angle_id,
+            "keypoint_ids": source.keypoint_ids,
+            "target_audience": source.target_audience,
+            "country": source.country,
+        },
+        after_value={"merged_into": target.combo_id},
+    )
+
+    db.delete(source)
+    db.commit()
+
+    plan["applied"] = True
+    plan["moved"] = moved
+    return plan
+
+
 def merge_orphan_combo(db: Session, orphan_combo_id: str, dry_run: bool = True) -> dict:
     """Consolidate an orphaned combo (see diagnose_orphan_combos) into its live
     twin — another combo in the same branch whose material shares the same
@@ -416,30 +545,13 @@ def merge_orphan_combo(db: Session, orphan_combo_id: str, dry_run: bool = True) 
     country assignment (see dominant_country_map). The runner-up(s) are left
     completely untouched; only the chosen twin receives the merge.
 
-    Every table that references ad_combos.combo_id is re-pointed from the
-    orphan to the target before the orphan is deleted:
-      - hypothesis_combo_links: ON DELETE CASCADE — moved first, or the link
-        (which hypothesis this combo tested) would be silently destroyed.
-        Skipped (not duplicated) if the target already has a link to that
-        same hypothesis, since (hypothesis_id, combo_id) is unique.
-      - creative_hypotheses.combo_id, winning_ad_months.combo_id,
-        figma_jobs.source_combo_id: ON DELETE SET NULL — moved so those rows
-        keep resolving to something that still exists, instead of quietly
-        going NULL.
-
-    ad_combos has no archived/is_active column to soft-delete into, so the
-    orphan row is hard-deleted — but only after its full state is captured in
-    a changelog before_value snapshot, so the merge is auditable even after
-    the row is gone.
+    See _plan_and_maybe_apply_consolidation for exactly what moves and why
+    the loser is hard-deleted rather than soft-deleted.
 
     dry_run=True (default) computes and returns the plan — including which
     twin was picked and why, and exact counts of what would move — without
     writing anything. Call again with dry_run=False to commit.
     """
-    from app.models.creative_hypothesis import CreativeHypothesis
-    from app.models.figma import FigmaJob
-    from app.models.hypothesis_combo_link import HypothesisComboLink
-
     orphan = db.query(AdCombo).filter(AdCombo.combo_id == orphan_combo_id).first()
     if orphan is None:
         return {"error": f"combo {orphan_combo_id} not found"}
@@ -466,118 +578,113 @@ def merge_orphan_combo(db: Session, orphan_combo_id: str, dry_run: bool = True) 
     target = max(twins, key=lambda c: float(c.spend or 0))
     declined = [c.combo_id for c in twins if c.combo_id != target.combo_id]
 
-    plan = {
-        "orphan_combo_id": orphan.combo_id,
-        "orphan_ad_name": orphan.ad_name,
-        "orphan_verdict": orphan.verdict,
-        "orphan_spend": float(orphan.spend or 0),
-        "target_combo_id": target.combo_id,
-        "target_ad_name": target.ad_name,
-        "target_spend": float(target.spend or 0),
-        "declined_twins": declined,
-        "dry_run": dry_run,
-    }
-
-    if dry_run:
-        plan["would_move"] = {
-            "hypothesis_links": db.query(HypothesisComboLink)
-            .filter(HypothesisComboLink.combo_id == orphan.combo_id).count(),
-            "direct_hypotheses": db.query(CreativeHypothesis)
-            .filter(CreativeHypothesis.combo_id == orphan.combo_id).count(),
-            "winning_months": db.query(WinningAdMonth)
-            .filter(WinningAdMonth.combo_id == orphan.combo_id).count(),
-            "figma_jobs": db.query(FigmaJob)
-            .filter(FigmaJob.source_combo_id == orphan.combo_id).count(),
-        }
-        return plan
-
-    moved = {
-        "hypothesis_links_moved": 0, "hypothesis_links_dropped_duplicate": 0,
-        "direct_hypotheses_repointed": 0, "winning_months_repointed": 0,
-        "figma_jobs_repointed": 0,
-    }
-
-    for link in (
-        db.query(HypothesisComboLink)
-        .filter(HypothesisComboLink.combo_id == orphan.combo_id)
-        .all()
-    ):
-        clash = (
-            db.query(HypothesisComboLink)
-            .filter(
-                HypothesisComboLink.hypothesis_id == link.hypothesis_id,
-                HypothesisComboLink.combo_id == target.combo_id,
-            )
-            .first()
+    plan = _plan_and_maybe_apply_consolidation(
+        db, orphan, target, dry_run,
+        reason="Orphaned combo (no live Meta ad under its name)",
+    )
+    plan["declined_twins"] = declined
+    if declined and plan.get("applied"):
+        # Record the road not taken now that the merge is committed, so a
+        # future reader of the changelog doesn't have to guess why a
+        # multi-twin split wasn't fully consolidated.
+        log_change(
+            db,
+            category="ad_mutation",
+            title=f"Merge declined alternate twin(s) for {target.combo_id}"[:200],
+            source="manual",
+            triggered_by="user",
+            description=(
+                f"{orphan_combo_id} had more than one live twin (the ad was "
+                f"split into several Meta ads, not simply renamed); "
+                f"{target.combo_id} was chosen as the dominant successor by "
+                f"spend. Left untouched: {declined}."
+            ),
+            platform="meta",
+            account_id=orphan.branch_id,
+            after_value={"target": target.combo_id, "declined_twins": declined},
         )
-        if clash:
-            db.delete(link)
-            moved["hypothesis_links_dropped_duplicate"] += 1
-        else:
-            link.combo_id = target.combo_id
-            moved["hypothesis_links_moved"] += 1
+        db.commit()
+    return plan
 
-    for h in (
-        db.query(CreativeHypothesis)
-        .filter(CreativeHypothesis.combo_id == orphan.combo_id)
+
+def find_duplicate_named_combos(db: Session) -> list[dict]:
+    """Combos sharing (branch_id, ad_name) — nothing enforces this is unique at
+    the DB level (ad_combos only has a unique constraint on (copy_id,
+    material_id)), and the application-level dedupe in
+    sync_creative_library_for_account (a plain dict lookup before insert) is
+    not atomic: two overlapping sync runs, or a manual "+ New Combo" landing
+    between the lookup and the insert, can both pass the check and both
+    insert. Once that happens, combo_metrics_sync's
+    `.filter(ad_name == ...).first()` picks one of the duplicates
+    nondeterministically each run, so metrics/history end up split across
+    them instead of consistently landing on one — this is why duplicates
+    often show DIFFERENT spend/roas/updated_at despite representing the same
+    real ad. Read-only.
+    """
+    from sqlalchemy import func as sf
+
+    dupes = (
+        db.query(AdCombo.branch_id, AdCombo.ad_name, sf.count().label("n"))
+        .filter(AdCombo.ad_name.isnot(None))
+        .group_by(AdCombo.branch_id, AdCombo.ad_name)
+        .having(sf.count() > 1)
         .all()
-    ):
-        h.combo_id = target.combo_id
-        moved["direct_hypotheses_repointed"] += 1
-
-    for w in (
-        db.query(WinningAdMonth)
-        .filter(WinningAdMonth.combo_id == orphan.combo_id)
-        .all()
-    ):
-        w.combo_id = target.combo_id
-        moved["winning_months_repointed"] += 1
-
-    for j in (
-        db.query(FigmaJob)
-        .filter(FigmaJob.source_combo_id == orphan.combo_id)
-        .all()
-    ):
-        j.source_combo_id = target.combo_id
-        moved["figma_jobs_repointed"] += 1
-
-    log_change(
-        db,
-        category="ad_mutation",
-        title=f"Combo merged: {orphan.combo_id} -> {target.combo_id}"[:200],
-        source="manual",
-        triggered_by="user",
-        description=(
-            f"Orphaned combo {orphan.combo_id} ({orphan.ad_name!r}) matched no "
-            f"live Meta ad; its creative asset now lives under {target.combo_id} "
-            f"({target.ad_name!r}). Full pre-delete state kept in before_value."
-            + (f" Declined twin(s), left untouched: {declined}." if declined else "")
-        ),
-        platform="meta",
-        account_id=orphan.branch_id,
-        before_value={
-            "combo_id": orphan.combo_id,
-            "ad_name": orphan.ad_name,
-            "verdict": orphan.verdict,
-            "verdict_source": orphan.verdict_source,
-            "verdict_notes": orphan.verdict_notes,
-            "spend": float(orphan.spend) if orphan.spend else 0,
-            "roas": float(orphan.roas) if orphan.roas else 0,
-            "conversions": orphan.conversions,
-            "angle_id": orphan.angle_id,
-            "keypoint_ids": orphan.keypoint_ids,
-            "target_audience": orphan.target_audience,
-            "country": orphan.country,
-        },
-        after_value={"merged_into": target.combo_id, "declined_twins": declined},
     )
 
-    db.delete(orphan)
-    db.commit()
+    groups = []
+    for branch_id, ad_name, n in dupes:
+        account = db.query(AdAccount).filter(AdAccount.id == branch_id).first()
+        combos = (
+            db.query(AdCombo)
+            .filter(AdCombo.branch_id == branch_id, AdCombo.ad_name == ad_name)
+            .order_by(AdCombo.spend.desc().nullslast())
+            .all()
+        )
+        groups.append({
+            "account_name": account.account_name if account else None,
+            "ad_name": ad_name,
+            "combos": [
+                {
+                    "combo_id": c.combo_id,
+                    "verdict": c.verdict,
+                    "country": c.country,
+                    "spend": float(c.spend) if c.spend else 0,
+                    "roas": float(c.roas) if c.roas else 0,
+                    "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+                }
+                for c in combos
+            ],
+        })
+    return groups
 
-    plan["applied"] = True
-    plan["moved"] = moved
-    return plan
+
+def merge_duplicate_combo(db: Session, combo_id_a: str, combo_id_b: str, dry_run: bool = True) -> dict:
+    """Consolidate two combos that share the same (branch_id, ad_name) — see
+    find_duplicate_named_combos for how this class of duplicate happens.
+
+    Unlike merge_orphan_combo, neither row is inherently "the" survivor — both
+    are live and both have been receiving metrics at different times. The one
+    with higher current spend is kept (deeper history, closer to the ad's real
+    performance); the other is consolidated into it via the same FK-repoint
+    logic. dry_run=True (default) previews without writing.
+    """
+    a = db.query(AdCombo).filter(AdCombo.combo_id == combo_id_a).first()
+    b = db.query(AdCombo).filter(AdCombo.combo_id == combo_id_b).first()
+    if a is None or b is None:
+        return {"error": f"combo not found: {combo_id_a if a is None else combo_id_b}"}
+    if a.branch_id != b.branch_id or a.ad_name != b.ad_name:
+        return {
+            "error": (
+                f"{combo_id_a} and {combo_id_b} are not duplicates — different "
+                f"branch or ad_name ({a.ad_name!r} vs {b.ad_name!r})"
+            )
+        }
+
+    target, source = (a, b) if float(a.spend or 0) >= float(b.spend or 0) else (b, a)
+    return _plan_and_maybe_apply_consolidation(
+        db, source, target, dry_run,
+        reason=f"Duplicate combo under the same ad_name {target.ad_name!r}",
+    )
 
 
 def sync_creative_library_for_account(db: Session, account: AdAccount) -> dict:
