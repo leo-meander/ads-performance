@@ -395,6 +395,72 @@ def diagnose_winning_by_month(db: Session) -> dict:
     }
 
 
+def list_non_crtv_ads(db: Session, account_name_filter: str | None = None, limit: int = 200) -> dict:
+    """Ads currently spending that DON'T match the "CRTV" naming filter —
+    i.e. every ad invisible to Winning by Month, by name alone. Read-only.
+
+    Aggregates ad_daily_metrics per (account, ad_name) across all synced
+    history (no month boundary — this isn't a verdict decision, just "what's
+    out there"), so the creative team can see exactly which running ads need
+    a rename on Meta to start counting toward the KPI, ranked by spend so the
+    highest-impact renames surface first.
+
+    `account_name_filter` is an ILIKE substring match (e.g. "Oani" or "1948"),
+    same convention as diagnose_orphan_combos.
+    """
+    accounts = (
+        db.query(AdAccount)
+        .filter(AdAccount.platform == "meta", AdAccount.is_active.is_(True))
+        .all()
+    )
+    if account_name_filter:
+        needle = account_name_filter.lower()
+        accounts = [a for a in accounts if needle in (a.account_name or "").lower()]
+
+    out_ads = []
+    for acc in accounts:
+        rows = (
+            db.query(
+                AdDailyMetric.ad_name.label("ad_name"),
+                sf.sum(AdDailyMetric.spend).label("spend"),
+                sf.sum(AdDailyMetric.revenue).label("revenue"),
+                sf.sum(AdDailyMetric.conversions).label("conversions"),
+                sf.max(AdDailyMetric.date).label("last_seen"),
+            )
+            .filter(
+                AdDailyMetric.account_id == acc.id,
+                AdDailyMetric.ad_name.isnot(None),
+                ~AdDailyMetric.ad_name.ilike(_CRTV_LIKE),
+            )
+            .group_by(AdDailyMetric.ad_name)
+            .all()
+        )
+        for r in rows:
+            spend = float(r.spend or 0)
+            revenue = float(r.revenue or 0)
+            out_ads.append({
+                "account_name": acc.account_name,
+                "ad_name": r.ad_name,
+                "spend": spend,
+                "revenue": revenue,
+                "roas": (revenue / spend) if spend > 0 else None,
+                "conversions": int(r.conversions or 0),
+                "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+            })
+
+    out_ads.sort(key=lambda a: -a["spend"])
+    return {
+        "count": len(out_ads),
+        "ads": out_ads[:limit],
+        "note": (
+            'Every ad here is excluded from Winning by Month solely because its '
+            'name has no "CRTV" — rename it on Meta (case-insensitive, any '
+            "position in the name) to make it eligible from the next sync onward. "
+            "Renaming does not retroactively decide past months."
+        ),
+    }
+
+
 def list_winning_months(
     db: Session,
     account_ids: list[str] | None = None,

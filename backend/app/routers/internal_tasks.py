@@ -1043,6 +1043,34 @@ def trigger_diagnose_winning_by_month(
     return _api_response(data=result)
 
 
+@router.post("/internal/tasks/list-non-crtv-ads", status_code=200)
+def trigger_list_non_crtv_ads(
+    x_internal_secret: str | None = Header(default=None),
+    account: str | None = None,
+    limit: int = 200,
+):
+    """Synchronous, read-only: every currently-spending ad whose name has no
+    "CRTV" in it, ranked by spend — i.e. exactly what Winning by Month is
+    blind to. Pass `?account=Oani` (or `1948`, substring match) to scope to
+    one branch. Use this to find which running ads need a rename on Meta to
+    start counting toward the KPI.
+    """
+    _require_secret(x_internal_secret)
+    if limit <= 0 or limit > 1000:
+        raise HTTPException(status_code=400, detail="limit must be 1..1000")
+    from app.services.winning_months_service import list_non_crtv_ads
+
+    db = SessionLocal()
+    try:
+        result = list_non_crtv_ads(db, account_name_filter=account, limit=limit)
+    except Exception as e:
+        logger.exception("[list-non-crtv-ads] failed")
+        return _api_response(error=f"{type(e).__name__}: {e}")
+    finally:
+        db.close()
+    return _api_response(data=result)
+
+
 @router.post("/internal/tasks/merge-orphan-combo", status_code=200)
 def trigger_merge_orphan_combo(
     orphan_combo_id: str,
