@@ -101,6 +101,9 @@ type CampaignInsights = {
   currency: string
   campaigns: CampaignInsight[]
   country_flow: CountryFlow[]
+  // Window-wide reservation stats, folded into this response so the page
+  // doesn't need a second full scan from /booking-matches/insights.
+  overall: Omit<Insights, 'currency' | 'period'>
   totals: {
     bookings: number
     cancel_count: number
@@ -347,13 +350,13 @@ export default function BookingMatchesDashboard() {
     return getDateRange(datePreset)
   }, [datePreset, customFrom, customTo])
   const [summary, setSummary] = useState<Summary | null>(null)
-  const [insights, setInsights] = useState<Insights | null>(null)
   const [campaignInsights, setCampaignInsights] = useState<CampaignInsights | null>(null)
   const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null)
   const [showRawTable, setShowRawTable] = useState(false)
   const [matches, setMatches] = useState<BookingMatch[]>([])
   const [listCurrency, setListCurrency] = useState<string>('VND')
   const [loading, setLoading] = useState(false)
+  const [rowsLoading, setRowsLoading] = useState(false)
   const [running, setRunning] = useState(false)
   const [runMessage, setRunMessage] = useState<string | null>(null)
 
@@ -377,44 +380,59 @@ export default function BookingMatchesDashboard() {
       .catch(() => {})
   }, [])
 
+  // Every endpoint honours the same filters (channel / result / kind /
+  // confidence) so the KPI cards and charts reflect exactly what the table shows.
+  const buildParams = useCallback(() => {
+    const { from, to } = resolveRange()
+    if (!from || !to) return null
+    const params = new URLSearchParams({ date_from: from, date_to: to })
+    if (branchParam) params.set('branches', branchParam)
+    if (channel) params.set('channel', channel)
+    if (matchResult) params.set('match_result', matchResult)
+    if (purchaseKind) params.set('purchase_kind', purchaseKind)
+    if (confidenceFilter) params.set('confidence', confidenceFilter)
+    return params
+  }, [resolveRange, branchParam, channel, matchResult, purchaseKind, confidenceFilter])
+
+  // Charts + KPIs. campaign-insights carries the window-wide reservation stats
+  // in `overall`, so there's no separate /insights round trip.
   const fetchData = useCallback(async () => {
+    const params = buildParams()
+    if (!params) return
     setLoading(true)
     try {
-      const { from, to } = resolveRange()
-      if (!from || !to) { setLoading(false); return }
-      const params = new URLSearchParams({ date_from: from, date_to: to })
-      if (branchParam) params.set('branches', branchParam)
-      if (channel) params.set('channel', channel)
-      if (matchResult) params.set('match_result', matchResult)
-      if (purchaseKind) params.set('purchase_kind', purchaseKind)
-      if (confidenceFilter) params.set('confidence', confidenceFilter)
-
-      // Summary + insights honour the same filters as the list (channel /
-      // result / kind / confidence) so every KPI card and chart reflects
-      // exactly what the filtered table shows.
-      const summaryParams = new URLSearchParams(params)
-      const insightsParams = new URLSearchParams(params)
-
-      const [summaryRes, listRes, insightsRes, campaignRes] = await Promise.all([
-        fetch(`${API_BASE}/api/booking-matches/summary?${summaryParams}`, { credentials: 'include' }).then(r => r.json()),
-        fetch(`${API_BASE}/api/booking-matches?${params}`, { credentials: 'include' }).then(r => r.json()),
-        fetch(`${API_BASE}/api/booking-matches/insights?${insightsParams}`, { credentials: 'include' }).then(r => r.json()),
-        fetch(`${API_BASE}/api/booking-matches/campaign-insights?${insightsParams}`, { credentials: 'include' }).then(r => r.json()),
+      const [summaryRes, campaignRes] = await Promise.all([
+        fetch(`${API_BASE}/api/booking-matches/summary?${params}`, { credentials: 'include' }).then(r => r.json()),
+        fetch(`${API_BASE}/api/booking-matches/campaign-insights?${params}`, { credentials: 'include' }).then(r => r.json()),
       ])
-
       if (summaryRes.success) setSummary(summaryRes.data)
-      if (listRes.success) {
-        setMatches(listRes.data.items)
-        setListCurrency(listRes.data.currency || 'VND')
-      }
-      if (insightsRes.success) setInsights(insightsRes.data)
       if (campaignRes.success) setCampaignInsights(campaignRes.data)
     } finally {
       setLoading(false)
     }
-  }, [resolveRange, branchParam, channel, matchResult, purchaseKind, confidenceFilter])
+  }, [buildParams])
+
+  // The raw row dump is collapsed by default and nothing above it depends on
+  // the rows, so it's only fetched once the user actually opens it.
+  const fetchRows = useCallback(async () => {
+    const params = buildParams()
+    if (!params) return
+    setRowsLoading(true)
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/booking-matches?${params}`, { credentials: 'include' },
+      ).then(r => r.json())
+      if (res.success) {
+        setMatches(res.data.items)
+        setListCurrency(res.data.currency || 'VND')
+      }
+    } finally {
+      setRowsLoading(false)
+    }
+  }, [buildParams])
 
   useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => { if (showRawTable) fetchRows() }, [showRawTable, fetchRows])
 
   // Close branch dropdown on outside click.
   const branchDropdownRef = useRef<HTMLDivElement>(null)
@@ -472,7 +490,7 @@ export default function BookingMatchesDashboard() {
           + ` · ads no-branch ${matching?.ads_rows_no_branch ?? 0}`
           + ` · ads no-candidate ${matching?.ads_rows_no_candidates ?? 0}`
         setRunMessage(`${from} → ${to} · ${scopeLabel} · ${syncPart} · ${matchPart}`)
-        await fetchData()
+        await Promise.all([fetchData(), showRawTable ? fetchRows() : null])
       } else {
         setRunMessage(`Error: ${res.error}`)
       }
@@ -489,7 +507,10 @@ export default function BookingMatchesDashboard() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Booking from Ads</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-gray-900">Booking from Ads</h1>
+            {loading && <span className="text-xs text-gray-400">Loading...</span>}
+          </div>
           <p className="text-sm text-gray-500 mt-1">
             Match real PMS reservations to ad campaigns by date + branch + country. Each campaign claims up to its reported conversion count; revenue shown is the real PMS total.
           </p>
@@ -727,44 +748,47 @@ export default function BookingMatchesDashboard() {
       )}
 
       {/* Reservation Insights */}
-      {insights && insights.total_reservations > 0 && (
+      {campaignInsights && campaignInsights.overall.total_reservations > 0 && (() => {
+        const overall = campaignInsights.overall
+        const currency = campaignInsights.currency
+        return (
         <div className="space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <StatCard
               label="Lead time (days)"
-              avg={insights.lead_time_days.avg}
-              median={insights.lead_time_days.median}
-              min={insights.lead_time_days.min}
-              max={insights.lead_time_days.max}
-              count={insights.lead_time_days.count}
+              avg={overall.lead_time_days.avg}
+              median={overall.lead_time_days.median}
+              min={overall.lead_time_days.min}
+              max={overall.lead_time_days.max}
+              count={overall.lead_time_days.count}
               digits={1}
             />
             <StatCard
               label="Nights"
-              avg={insights.nights.avg}
-              median={insights.nights.median}
-              min={insights.nights.min}
-              max={insights.nights.max}
-              count={insights.nights.count}
+              avg={overall.nights.avg}
+              median={overall.nights.median}
+              min={overall.nights.min}
+              max={overall.nights.max}
+              count={overall.nights.count}
               digits={1}
             />
             <StatCard
               label="Adults"
-              avg={insights.adults.avg}
-              median={insights.adults.median}
-              min={insights.adults.min}
-              max={insights.adults.max}
-              count={insights.adults.count}
+              avg={overall.adults.avg}
+              median={overall.adults.median}
+              min={overall.adults.min}
+              max={overall.adults.max}
+              count={overall.adults.count}
               digits={1}
             />
             <StatCard
-              label={`ADR (${insights.currency})`}
-              avg={insights.adr.avg}
-              median={insights.adr.median}
-              min={insights.adr.min}
-              max={insights.adr.max}
-              count={insights.adr.count}
-              currency={insights.currency}
+              label={`ADR (${currency})`}
+              avg={overall.adr.avg}
+              median={overall.adr.median}
+              min={overall.adr.min}
+              max={overall.adr.max}
+              count={overall.adr.count}
+              currency={currency}
               isMoney
             />
           </div>
@@ -772,11 +796,11 @@ export default function BookingMatchesDashboard() {
           <div className="bg-white border border-gray-200 rounded-lg p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-gray-900">Top Rooms Booked</h3>
-              <span className="text-xs text-gray-400">{insights.total_reservations} reservations</span>
+              <span className="text-xs text-gray-400">{overall.total_reservations} reservations</span>
             </div>
             <div className="space-y-1.5">
               {(() => {
-                const rows = [...insights.room_types].sort((a, b) => b.revenue - a.revenue).slice(0, 8)
+                const rows = [...overall.room_types].sort((a, b) => b.revenue - a.revenue).slice(0, 8)
                 const max = Math.max(1, ...rows.map(r => r.revenue))
                 return rows.map((rt, i) => (
                   <HBar
@@ -784,7 +808,7 @@ export default function BookingMatchesDashboard() {
                     color={CHART_COLORS[i % CHART_COLORS.length]}
                     right={<>
                       <span className="text-gray-400">{rt.count} bk</span>
-                      <span className="font-medium text-gray-700">{fmtMoney(rt.revenue, insights.currency)}</span>
+                      <span className="font-medium text-gray-700">{fmtMoney(rt.revenue, currency)}</span>
                     </>}
                   />
                 ))
@@ -792,7 +816,8 @@ export default function BookingMatchesDashboard() {
             </div>
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* Campaign Performance — visual bar list, click to drill in */}
       {campaignInsights && campaignInsights.campaigns.length > 0 && (
@@ -953,7 +978,12 @@ export default function BookingMatchesDashboard() {
         <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h3 className="text-sm font-semibold text-gray-900">Matched Bookings</h3>
-            <span className="text-xs text-gray-400">{matches.length} rows · {listCurrency}</span>
+            <span className="text-xs text-gray-400">
+              {summary?.total_matches ?? 0} rows · {showRawTable ? listCurrency : summaryCurrency}
+              {showRawTable && matches.length < (summary?.total_matches ?? 0) && (
+                <span className="ml-1">(showing first {matches.length})</span>
+              )}
+            </span>
           </div>
           <button
             onClick={() => setShowRawTable(v => !v)}
@@ -988,10 +1018,10 @@ export default function BookingMatchesDashboard() {
               </tr>
             </thead>
             <tbody>
-              {loading && (
+              {rowsLoading && (
                 <tr><td colSpan={18} className="text-center py-8 text-gray-400">Loading...</td></tr>
               )}
-              {!loading && matches.length === 0 && (
+              {!rowsLoading && matches.length === 0 && (
                 <tr><td colSpan={18} className="text-center py-8 text-gray-400">No matches found</td></tr>
               )}
               {matches.map(m => (

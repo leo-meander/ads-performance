@@ -143,6 +143,88 @@ def _apply_branch_scope(q, column, user, db, requested_branches: list[str] | Non
     return True, q, None
 
 
+# --- Lightweight column projections -----------------------------------------
+# The analytics endpoints below scan every match/reservation in the window, so
+# they must never load full ORM entities: Reservation.raw_data is a multi-KB
+# JSONB blob per row that nothing here reads, and hydrating it for thousands of
+# rows was the dominant cost of this page (network + JSON decode + ORM identity
+# map). Selecting explicit columns returns plain row tuples instead.
+
+_MATCH_COLS = (
+    BookingMatch.branch,
+    BookingMatch.matched_revenue,
+    BookingMatch.ads_revenue,
+    BookingMatch.ads_bookings,
+    BookingMatch.confidence,
+    BookingMatch.ads_country,
+    BookingMatch.ads_channel,
+    BookingMatch.campaign_id,
+    BookingMatch.campaign_name,
+    BookingMatch.reservation_numbers,
+)
+
+_RES_COLS = (
+    Reservation.reservation_number,
+    Reservation.reservation_date,
+    Reservation.check_in_date,
+    Reservation.grand_total,
+    Reservation.country_iso,
+    Reservation.status,
+    Reservation.source,
+    Reservation.room_type,
+    Reservation.branch,
+    Reservation.nights,
+    Reservation.adults,
+)
+
+# Postgres tops out at 65535 bind params per statement; chunk well under that.
+_IN_CHUNK = 5000
+
+
+def _split_res_numbers(joined: str | None) -> list[str]:
+    if not joined:
+        return []
+    return [n.strip() for n in joined.split(",") if n.strip()]
+
+
+def _load_reservations(db: Session, numbers: set[str]) -> dict:
+    """Fetch the matched reservations as column tuples, keyed by number."""
+    out: dict = {}
+    nums = list(numbers)
+    for i in range(0, len(nums), _IN_CHUNK):
+        rows = (
+            db.query(*_RES_COLS)
+            .filter(Reservation.reservation_number.in_(nums[i:i + _IN_CHUNK]))
+            .all()
+        )
+        for r in rows:
+            if r.reservation_number:
+                out[r.reservation_number] = r
+    return out
+
+
+def _empty_stats() -> dict:
+    return {"count": 0, "avg": 0, "median": 0, "min": 0, "max": 0}
+
+
+def _stats(vals: list[float]) -> dict:
+    if not vals:
+        return _empty_stats()
+    sorted_v = sorted(vals)
+    n = len(sorted_v)
+    if n % 2 == 1:
+        median = sorted_v[n // 2]
+    else:
+        median = (sorted_v[n // 2 - 1] + sorted_v[n // 2]) / 2
+    return {
+        "count": n,
+        "avg": sum(sorted_v) / n,
+        "median": median,
+        "min": sorted_v[0],
+        "max": sorted_v[-1],
+    }
+
+
 def _serialize_match(m: BookingMatch) -> dict:
     return {
         "id": m.id,
@@ -295,97 +377,80 @@ def booking_matches_summary(
         if confidence:
             base = base.filter(BookingMatch.confidence == confidence)
 
-        # Counts don't depend on currency.
-        total_matches = base.count()
-        total_bookings = int(base.with_entities(func.sum(BookingMatch.ads_bookings)).scalar() or 0)
-
-        # Revenue must be aggregated per branch first so we can apply the
-        # right FX rate per branch when converting to VND.
-        by_branch_rows = (
-            base.with_entities(
-                BookingMatch.branch,
-                func.count(BookingMatch.id).label("matches"),
-                func.sum(BookingMatch.matched_revenue).label("revenue"),
-                func.sum(BookingMatch.ads_bookings).label("bookings"),
-            )
-            .group_by(BookingMatch.branch)
-            .all()
-        )
-        total_revenue = sum(
-            _convert_revenue(r.branch, float(r.revenue or 0), convert)
-            for r in by_branch_rows
-        )
-        by_branch = [
-            {
-                "branch": r.branch or "unknown",
-                "matches": int(r.matches or 0),
-                "revenue": _convert_revenue(r.branch, float(r.revenue or 0), convert),
-                "bookings": int(r.bookings or 0),
-            }
-            for r in by_branch_rows
-        ]
-
-        # By channel — group by (branch, channel) so we can FX-convert per
-        # branch, then collapse across branches into channel totals.
-        by_channel_raw = (
+        # One grouped scan feeds every KPI. Grouping by the full
+        # (branch, channel, result, confidence) tuple keeps `branch` on each row
+        # — which is what lets us FX-convert per branch before rolling up — and
+        # its cardinality is tiny (6 branches x 2 channels x 4 results x 2
+        # tiers), so collapsing the pivots in Python is free. This replaces six
+        # separate aggregate queries, i.e. six round trips to Supabase.
+        rows = (
             base.with_entities(
                 BookingMatch.branch,
                 BookingMatch.ads_channel,
-                func.count(BookingMatch.id).label("matches"),
-                func.sum(BookingMatch.matched_revenue).label("revenue"),
-                func.sum(BookingMatch.ads_bookings).label("bookings"),
-            )
-            .group_by(BookingMatch.branch, BookingMatch.ads_channel)
-            .all()
-        )
-        by_channel_agg: dict[str, dict] = {}
-        for r in by_channel_raw:
-            key = r.ads_channel or "unknown"
-            cur = by_channel_agg.setdefault(
-                key, {"channel": key, "matches": 0, "revenue": 0.0, "bookings": 0}
-            )
-            cur["matches"] += int(r.matches or 0)
-            cur["bookings"] += int(r.bookings or 0)
-            cur["revenue"] += _convert_revenue(r.branch, float(r.revenue or 0), convert)
-        by_channel = list(by_channel_agg.values())
-
-        # By result
-        by_result_rows = (
-            base.with_entities(
                 BookingMatch.match_result,
-                func.count(BookingMatch.id).label("count"),
-            )
-            .group_by(BookingMatch.match_result)
-            .all()
-        )
-        by_result = [
-            {"result": r.match_result, "count": int(r.count or 0)}
-            for r in by_result_rows
-        ]
-
-        # By confidence — confirmed (revenue summed to ads value) vs inferred
-        # (capacity/count only). Counts match rows AND bookings AND PMS revenue
-        # per tier so the dashboard can show how much of the match is trustworthy.
-        by_confidence_rows = (
-            base.with_entities(
-                BookingMatch.branch,
                 BookingMatch.confidence,
                 func.count(BookingMatch.id).label("matches"),
-                func.sum(BookingMatch.ads_bookings).label("bookings"),
                 func.sum(BookingMatch.matched_revenue).label("revenue"),
+                func.sum(BookingMatch.ads_bookings).label("bookings"),
             )
-            .group_by(BookingMatch.branch, BookingMatch.confidence)
+            .group_by(
+                BookingMatch.branch,
+                BookingMatch.ads_channel,
+                BookingMatch.match_result,
+                BookingMatch.confidence,
+            )
             .all()
         )
+
+        total_matches = 0
+        total_bookings = 0
+        total_revenue = 0.0
+        by_branch_agg: dict[str, dict] = {}
+        by_channel_agg: dict[str, dict] = {}
+        by_result_agg: dict[str, dict] = {}
         by_confidence_agg: dict[str, dict] = {}
-        for r in by_confidence_rows:
-            key = r.confidence or "inferred"
-            cur = by_confidence_agg.setdefault(
-                key, {"confidence": key, "matches": 0, "bookings": 0, "revenue": 0.0}
+
+        for r in rows:
+            matches = int(r.matches or 0)
+            bookings = int(r.bookings or 0)
+            revenue = _convert_revenue(r.branch, float(r.revenue or 0), convert)
+
+            total_matches += matches
+            total_bookings += bookings
+            total_revenue += revenue
+
+            b = by_branch_agg.setdefault(
+                r.branch or "unknown",
+                {"branch": r.branch or "unknown", "matches": 0, "revenue": 0.0, "bookings": 0},
             )
-            cur["matches"] += int(r.matches or 0)
-            cur["bookings"] += int(r.bookings or 0)
-            cur["revenue"] += _convert_revenue(r.branch, float(r.revenue or 0), convert)
+            b["matches"] += matches
+            b["bookings"] += bookings
+            b["revenue"] += revenue
+
+            ch = by_channel_agg.setdefault(
+                r.ads_channel or "unknown",
+                {"channel": r.ads_channel or "unknown", "matches": 0, "revenue": 0.0, "bookings": 0},
+            )
+            ch["matches"] += matches
+            ch["bookings"] += bookings
+            ch["revenue"] += revenue
+
+            res = by_result_agg.setdefault(
+                r.match_result, {"result": r.match_result, "count": 0}
+            )
+            res["count"] += matches
+
+            cf = by_confidence_agg.setdefault(
+                r.confidence or "inferred",
+                {"confidence": r.confidence or "inferred", "matches": 0, "bookings": 0, "revenue": 0.0},
+            )
+            cf["matches"] += matches
+            cf["bookings"] += bookings
+            cf["revenue"] += revenue
+
+        by_branch = list(by_branch_agg.values())
+        by_channel = list(by_channel_agg.values())
+        by_result = list(by_result_agg.values())
         by_confidence = list(by_confidence_agg.values())
 
         return _api_response(data={
@@ -433,7 +498,7 @@ def booking_matches_insights(
         branches_list = _parse_branches_param(branches, branch)
         display_currency, convert = _resolve_currency(branches_list)
 
-        q = db.query(BookingMatch).filter(
+        q = db.query(BookingMatch.reservation_numbers).filter(
             BookingMatch.match_date >= df,
             BookingMatch.match_date <= dt,
         )
@@ -447,19 +512,9 @@ def booking_matches_insights(
         if purchase_kind:
             q = q.filter(BookingMatch.purchase_kind == purchase_kind)
 
-        match_rows = q.all()
-
         res_numbers: set[str] = set()
-        for m in match_rows:
-            if not m.reservation_numbers:
-                continue
-            for n in m.reservation_numbers.split(","):
-                n = n.strip()
-                if n:
-                    res_numbers.add(n)
-
-        def _empty_stats() -> dict:
-            return {"count": 0, "avg": 0, "median": 0, "min": 0, "max": 0}
+        for (joined,) in q.all():
+            res_numbers.update(_split_res_numbers(joined))
 
         if not res_numbers:
             return _api_response(data={
@@ -473,11 +528,7 @@ def booking_matches_insights(
                 "period": {"from": date_from, "to": date_to},
             })
 
-        reservations = (
-            db.query(Reservation)
-            .filter(Reservation.reservation_number.in_(list(res_numbers)))
-            .all()
-        )
+        reservations = list(_load_reservations(db, res_numbers).values())
 
         lead_times: list[int] = []
         adults_list: list[int] = []
@@ -511,23 +562,6 @@ def booking_matches_insights(
             bucket["revenue"] += gt_disp
             if r.nights:
                 bucket["nights"] += int(r.nights)
-
-        def _stats(vals: list[float]) -> dict:
-            if not vals:
-                return _empty_stats()
-            sorted_v = sorted(vals)
-            n = len(sorted_v)
-            if n % 2 == 1:
-                median = sorted_v[n // 2]
-            else:
-                median = (sorted_v[n // 2 - 1] + sorted_v[n // 2]) / 2
-            return {
-                "count": n,
-                "avg": sum(sorted_v) / n,
-                "median": median,
-                "min": sorted_v[0],
-                "max": sorted_v[-1],
-            }
 
         room_types = sorted(
             room_counter.values(),
@@ -613,7 +647,7 @@ def booking_matches_campaign_insights(
         branches_list = _parse_branches_param(branches, branch)
         display_currency, convert = _resolve_currency(branches_list)
 
-        q = db.query(BookingMatch).filter(
+        q = db.query(*_MATCH_COLS).filter(
             BookingMatch.match_date >= df,
             BookingMatch.match_date <= dt,
         )
@@ -633,31 +667,19 @@ def booking_matches_campaign_insights(
 
         # Map each matched reservation_number -> its owning match (1:1: the
         # matcher assigns every reservation to at most one ads row).
-        res_to_match: dict[str, BookingMatch] = {}
+        res_to_match: dict = {}
         res_numbers: set[str] = set()
         for m in matches:
-            if not m.reservation_numbers:
-                continue
-            for n in m.reservation_numbers.split(","):
-                n = n.strip()
-                if n:
-                    res_to_match[n] = m
-                    res_numbers.add(n)
+            for n in _split_res_numbers(m.reservation_numbers):
+                res_to_match[n] = m
+                res_numbers.add(n)
 
-        res_by_num: dict[str, Reservation] = {}
-        if res_numbers:
-            for r in (
-                db.query(Reservation)
-                .filter(Reservation.reservation_number.in_(list(res_numbers)))
-                .all()
-            ):
-                if r.reservation_number:
-                    res_by_num[r.reservation_number] = r
+        res_by_num = _load_reservations(db, res_numbers) if res_numbers else {}
 
-        def _camp_key(m: BookingMatch) -> str:
+        def _camp_key(m) -> str:
             return str(m.campaign_id) if m.campaign_id else (m.campaign_name or "(unknown)")
 
-        def _new_campaign(m: BookingMatch) -> dict:
+        def _new_campaign(m) -> dict:
             return {
                 "campaign_id": str(m.campaign_id) if m.campaign_id else None,
                 "campaign_name": m.campaign_name or "(unknown)",
@@ -697,7 +719,15 @@ def booking_matches_campaign_insights(
             c["_target_counter"][tgt] = c["_target_counter"].get(tgt, 0) + 1
 
         # Pass 2 — reservation-level: cancel, lead time, rooms, actual country.
+        # The same walk also accumulates the window-wide reservation stats that
+        # /booking-matches/insights returns, so the dashboard gets both panels
+        # from a single scan instead of two endpoints repeating the work.
         country_flow: dict[tuple, dict] = {}
+        all_leads: list[int] = []
+        all_nights: list[int] = []
+        all_adults: list[int] = []
+        all_adr: list[float] = []
+        all_rooms: dict[str, dict] = {}
         for num, m in res_to_match.items():
             r = res_by_num.get(num)
             if not r:
@@ -714,10 +744,15 @@ def booking_matches_campaign_insights(
                 if d >= 0:
                     c["_lead_times"].append(d)
                     c["lead_buckets"][_lead_bucket(d)] += 1
+                    all_leads.append(d)
+            if r.adults is not None and r.adults > 0:
+                all_adults.append(int(r.adults))
             if r.nights and r.nights > 0:
                 c["_nights"].append(int(r.nights))
+                all_nights.append(int(r.nights))
                 if gt > 0:
                     c["_adr"].append(gt_disp / r.nights)
+                    all_adr.append(gt_disp / r.nights)
             if _res_is_website(r.source):
                 c["website_bookings"] += 1
             else:
@@ -727,6 +762,12 @@ def booking_matches_campaign_insights(
             rb = c["_rooms"].setdefault(rt, {"room_type": rt, "bookings": 0, "revenue": 0.0})
             rb["bookings"] += 1
             rb["revenue"] += gt_disp
+
+            gb = all_rooms.setdefault(rt, {"room_type": rt, "count": 0, "revenue": 0.0, "nights": 0})
+            gb["count"] += 1
+            gb["revenue"] += gt_disp
+            if r.nights:
+                gb["nights"] += int(r.nights)
 
             actual = (r.country_iso or "").upper() or "Unknown"
             c["_actual_counter"][actual] = c["_actual_counter"].get(actual, 0) + 1
@@ -809,6 +850,18 @@ def booking_matches_campaign_insights(
             "currency": display_currency,
             "campaigns": out_campaigns,
             "country_flow": flow_rows,
+            # Window-wide reservation stats — identical shape to the /insights
+            # payload so the dashboard can render its stat cards from here.
+            "overall": {
+                "lead_time_days": _stats(all_leads),
+                "nights": _stats(all_nights),
+                "adults": _stats(all_adults),
+                "adr": _stats(all_adr),
+                "room_types": sorted(
+                    all_rooms.values(), key=lambda x: (-x["revenue"], -x["count"])
+                ),
+                "total_reservations": sum(1 for n in res_to_match if n in res_by_num),
+            },
             "totals": {
                 "bookings": tot_bookings,
                 "cancel_count": tot_cancel,
