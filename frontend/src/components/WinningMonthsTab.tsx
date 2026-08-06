@@ -1,7 +1,7 @@
 'use client'
 
-import { Fragment, useEffect, useMemo, useState } from 'react'
-import { Trophy, RefreshCw, Film, Image as ImageIcon, LayoutGrid, Lock, ChevronRight, ChevronDown } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Trophy, RefreshCw, Film, Image as ImageIcon, LayoutGrid, Lock } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -61,47 +61,6 @@ const MONTH_LABEL = (m: string) => {
   return `${names[Number(mm) - 1] || mm} ${y}`
 }
 
-// One row per (target_audience, country) pair, summed across its ads.
-// Blended ROAS = sum(revenue)/sum(spend), matching how ROAS is blended
-// everywhere else in this codebase (e.g. combo_metrics_sync) — never an
-// average of per-ad ROAS, which would over-weight low-spend ads.
-interface TaCountryGroup {
-  key: string
-  ta: string
-  country: string
-  ads: WinAd[]
-  count: number
-  bookings: number
-  spend: number
-  revenue: number
-  roas: number | null
-}
-
-const groupByTaCountry = (ads: WinAd[]): TaCountryGroup[] => {
-  const map = new Map<string, TaCountryGroup>()
-  for (const a of ads) {
-    const ta = a.target_audience || '—'
-    const country = a.country || '—'
-    const key = `${ta}|||${country}`
-    let g = map.get(key)
-    if (!g) {
-      g = { key, ta, country, ads: [], count: 0, bookings: 0, spend: 0, revenue: 0, roas: null }
-      map.set(key, g)
-    }
-    g.ads.push(a)
-    g.count += 1
-    g.bookings += a.conversions ?? 0
-    g.spend += a.spend ?? 0
-    g.revenue += a.revenue ?? 0
-  }
-  const groups = Array.from(map.values())
-  for (const g of groups) g.roas = g.spend > 0 ? g.revenue / g.spend : null
-  // Highest-spend group first — mirrors the spend-weighted ordering used
-  // elsewhere in the Creative Library (e.g. orphan-combo diagnostics).
-  groups.sort((a, b) => b.spend - a.spend)
-  return groups
-}
-
 export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Account[]; canEdit: boolean }) {
   const [data, setData] = useState<WinData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -110,7 +69,6 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
   const [selected, setSelected] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [msg, setMsg] = useState('')
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   const load = () => {
     setLoading(true); setError('')
@@ -127,7 +85,6 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
       .finally(() => setLoading(false))
   }
   useEffect(load, [fBranch]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => setExpanded(new Set()), [selected])
 
   const recompute = () => {
     setRefreshing(true); setMsg('')
@@ -148,16 +105,6 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
   // Oldest → newest reads like a trend; the API returns newest first.
   const chartMonths = useMemo(() => [...months].reverse(), [months])
   const current = months.find(m => m.month === selected) || null
-  const groups = useMemo(() => groupByTaCountry(current?.ads || []), [current])
-
-  const toggleGroup = (key: string) => {
-    setExpanded(prev => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
 
   return (
     <div>
@@ -254,77 +201,55 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr className="bg-gray-50 border-b">
-                    <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs w-6"></th>
-                    <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">TA</th>
-                    <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Country</th>
-                    <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs"># Ads</th>
+                    <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Ad Name</th>
+                    <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Branch</th>
+                    <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs" title="Sum across every country and TA this ad ran in — the single number that decided WIN vs the month's benchmark.">
+                      Total ROAS @ award
+                    </th>
                     <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs">Bookings</th>
                     <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs">Spend</th>
-                    <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs">Blended ROAS</th>
+                    <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs">Clicks</th>
                   </tr></thead>
-                  <tbody>{groups.map(g => {
-                    const isOpen = expanded.has(g.key)
+                  <tbody>{current.ads.map(a => {
+                    const fmt = FORMAT_META[inferFormat(a.ad_name)]
+                    const Icon = fmt.Icon
                     return (
-                      <Fragment key={g.key}>
-                        <tr
-                          onClick={() => toggleGroup(g.key)}
-                          className="border-b border-gray-50 hover:bg-amber-50/40 cursor-pointer select-none"
-                        >
-                          <td className="py-2 px-2 text-gray-400">
-                            {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                          </td>
-                          <td className="py-2 px-2"><span className="text-xs px-1.5 py-0.5 rounded bg-gray-100">{g.ta}</span></td>
-                          <td className="py-2 px-2 text-xs text-gray-600">{g.country}</td>
-                          <td className="py-2 px-2 text-right text-xs tabular-nums">{g.count}</td>
-                          <td className="py-2 px-2 text-right text-xs tabular-nums">{g.bookings}</td>
-                          <td className="py-2 px-2 text-right text-xs tabular-nums">{g.spend.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                          <td className="py-2 px-2 text-right text-xs">
-                            <span className="font-bold text-green-600">{g.roas != null ? `${g.roas.toFixed(2)}x` : '—'}</span>
-                          </td>
-                        </tr>
-                        {isOpen && (
-                          <tr key={`${g.key}-detail`} className="bg-gray-50/60 border-b border-gray-100">
-                            <td colSpan={7} className="p-0">
-                              <table className="w-full text-sm">
-                                <tbody>{g.ads.map(a => {
-                                  const fmt = FORMAT_META[inferFormat(a.ad_name)]
-                                  const Icon = fmt.Icon
-                                  return (
-                                    <tr key={a.id} className="border-b border-gray-100 last:border-b-0 hover:bg-amber-50/40">
-                                      <td className="py-2 pl-8 pr-2 w-6"></td>
-                                      <td className="py-2 px-2" colSpan={2}>
-                                        <p className="text-sm font-medium text-gray-900 max-w-[280px] truncate" title={a.ad_name}>{a.ad_name}</p>
-                                        <div className="flex items-center gap-1.5 mt-0.5">
-                                          <span className="text-[10px] text-gray-500">{a.branch_name}</span>
-                                          <span className="inline-flex items-center gap-1 text-[10px] text-gray-500 bg-gray-100 rounded px-1.5 py-0.5">
-                                            <Icon className="w-3 h-3" /> {fmt.label}
-                                          </span>
-                                          {a.combo_id && (
-                                            <a
-                                              href={`/creative?search=${encodeURIComponent(a.combo_id)}`}
-                                              onClick={e => e.stopPropagation()}
-                                              className="text-[9px] font-mono text-blue-600 bg-blue-50 hover:bg-blue-100 rounded px-1 py-0.5"
-                                              title="Open this creative in the Library"
-                                            >
-                                              {a.combo_id}
-                                            </a>
-                                          )}
-                                        </div>
-                                      </td>
-                                      <td className="py-2 px-2 text-right text-xs tabular-nums">{a.conversions ?? '—'}</td>
-                                      <td className="py-2 px-2 text-right text-xs tabular-nums">{a.spend != null ? a.spend.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'}</td>
-                                      <td className="py-2 px-2 text-right text-xs">
-                                        <span className="font-bold text-green-600">{a.roas != null ? `${a.roas.toFixed(2)}x` : '—'}</span>
-                                        {a.benchmark_roas != null && <p className="text-[9px] text-gray-400">BM: {a.benchmark_roas.toFixed(2)}x</p>}
-                                      </td>
-                                    </tr>
-                                  )
-                                })}</tbody>
-                              </table>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
+                      <tr key={a.id} className="border-b border-gray-50 hover:bg-amber-50/40">
+                        <td className="py-2 px-2">
+                          <p className="text-sm font-medium text-gray-900 max-w-[280px] truncate" title={a.ad_name}>{a.ad_name}</p>
+                          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            <span className="inline-flex items-center gap-1 text-[10px] text-gray-500 bg-gray-100 rounded px-1.5 py-0.5">
+                              <Icon className="w-3 h-3" /> {fmt.label}
+                            </span>
+                            {/* TA/Country are secondary here — the ROAS column already
+                                reflects the total summed across all of them; these are
+                                just the dominant values for context, not a breakdown. */}
+                            {a.target_audience && (
+                              <span className="text-[9px] text-gray-400 bg-gray-50 border border-gray-100 rounded px-1 py-0.5">{a.target_audience}</span>
+                            )}
+                            {a.country && (
+                              <span className="text-[9px] text-gray-400 bg-gray-50 border border-gray-100 rounded px-1 py-0.5">{a.country}</span>
+                            )}
+                            {a.combo_id && (
+                              <a
+                                href={`/creative?search=${encodeURIComponent(a.combo_id)}`}
+                                className="text-[9px] font-mono text-blue-600 bg-blue-50 hover:bg-blue-100 rounded px-1 py-0.5"
+                                title="Open this creative in the Library"
+                              >
+                                {a.combo_id}
+                              </a>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2 px-2 text-xs text-gray-600">{a.branch_name}</td>
+                        <td className="py-2 px-2 text-right text-xs">
+                          <span className="font-bold text-green-600">{a.roas != null ? `${a.roas.toFixed(2)}x` : '—'}</span>
+                          {a.benchmark_roas != null && <p className="text-[9px] text-gray-400">BM: {a.benchmark_roas.toFixed(2)}x</p>}
+                        </td>
+                        <td className="py-2 px-2 text-right text-xs tabular-nums">{a.conversions ?? '—'}</td>
+                        <td className="py-2 px-2 text-right text-xs tabular-nums">{a.spend != null ? a.spend.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'}</td>
+                        <td className="py-2 px-2 text-right text-xs tabular-nums">{a.clicks != null ? a.clicks.toLocaleString() : '—'}</td>
+                      </tr>
                     )
                   })}</tbody>
                 </table>
