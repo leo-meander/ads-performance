@@ -1,10 +1,13 @@
-"""Monthly winning-creative awards — CRTV scope, the monthly bar, and the freeze.
+"""Monthly winning-creative awards — CRTV scope, the lifetime bar, and the freeze.
 
 Things that must hold:
   1. Only ads whose name contains "CRTV" are in play — as candidates AND when
-     computing the month's benchmark, so a KOL ad's outlier ROAS can't raise
-     the bar and hide a real winner.
-  2. The bar is that MONTH's blended CRTV ROAS, not lifetime.
+     computing the benchmark, so a KOL ad's outlier ROAS can't raise the bar
+     and hide a real winner.
+  2. The bar is the account's LIFETIME-to-date blended CRTV ROAS — "hiện tại"
+     per Mason's spec means lifetime, not a single month's isolated cohort.
+     Only the CANDIDATE's own roas is month-scoped (that's what "winning BY
+     MONTH" means); the benchmark it's measured against is not.
   3. Once awarded, a row is frozen: later data can add new winners to a month
      but must never rewrite or remove an existing award.
   4. An ad's verdict (WIN or LOSE) is decided ONCE, ever, per account — once
@@ -32,6 +35,7 @@ from app.models.user import User
 from app.models.winning_ad_month import WinningAdMonth
 from app.services.auth_service import create_access_token, hash_password
 from app.services.winning_months_service import (
+    compute_lifetime_benchmark,
     compute_month_verdicts,
     freeze_winning_months,
     is_crtv,
@@ -120,7 +124,8 @@ def test_non_crtv_ads_are_ignored_and_never_move_the_benchmark():
     # would lose its award.
     _metric(db, acc, ad_name="KOL_runawaygirl", on=MAY, spend=100, revenue=10_000)
 
-    decided, benchmark = compute_month_verdicts(db, acc.id, MAY)
+    benchmark = compute_lifetime_benchmark(db, acc.id)
+    decided = compute_month_verdicts(db, acc.id, MAY, benchmark)
     db.close()
 
     assert benchmark == 3.0
@@ -138,33 +143,35 @@ def test_low_volume_ad_is_test_not_a_winner():
     _metric(db, acc, ad_name="CRTV_tiny", on=MAY, spend=10, revenue=900, clicks=50, conversions=2)
     _metric(db, acc, ad_name="CRTV_big", on=MAY, spend=1000, revenue=1000, clicks=9000, conversions=40)
 
-    decided, _ = compute_month_verdicts(db, acc.id, MAY)
+    benchmark = compute_lifetime_benchmark(db, acc.id)
+    decided = compute_month_verdicts(db, acc.id, MAY, benchmark)
     db.close()
 
     assert "CRTV_tiny" not in [d["ad_name"] for d in decided]
 
 
-def test_benchmark_is_per_month_not_lifetime():
+def test_benchmark_is_lifetime_to_date_not_a_per_month_cohort():
     db = TestSession()
     acc = _account(db)
-    # May: the account is weak (1.0x blended) — a 2x ad wins.
+    # May alone would blend to 1.0x (400 revenue / 400 spend) — CRTV_A's 2x
+    # roas would clear that isolated-month bar...
     _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=200)
     _metric(db, acc, ad_name="CRTV_C", on=MAY, spend=300, revenue=200)
-    # June: the account is strong (10x blended) — the same 2x ad would lose.
-    # Direct compute_month_verdicts calls apply no cross-call exclusion
-    # (that bookkeeping lives in freeze_winning_months), so reusing CRTV_A
-    # here still isolates "the bar moves" as the only variable.
-    _metric(db, acc, ad_name="CRTV_A", on=JUN, spend=100, revenue=200)
+    # ...but June brings in a much stronger cohort. "hiện tại" (current) per
+    # Mason's spec means the LIFETIME blend of both months (700 spend, 4200
+    # revenue = 6.0x) — not May alone (1.0x), and not June alone (12.67x)
+    # either.
     _metric(db, acc, ad_name="CRTV_D", on=JUN, spend=300, revenue=3800)
 
-    may_decided, may_bm = compute_month_verdicts(db, acc.id, MAY)
-    jun_decided, jun_bm = compute_month_verdicts(db, acc.id, JUN)
+    benchmark = compute_lifetime_benchmark(db, acc.id)
+    may_decided = compute_month_verdicts(db, acc.id, MAY, benchmark)
     db.close()
 
-    may_winners = [d["ad_name"] for d in may_decided if d["verdict"] == "WIN"]
-    jun_losers = [d["ad_name"] for d in jun_decided if d["verdict"] == "LOSE"]
-    assert may_bm == 1.0 and "CRTV_A" in may_winners
-    assert jun_bm == 10.0 and "CRTV_A" in jun_losers  # same 2x ROAS, different bar
+    assert benchmark == 6.0
+    may_losers = [d["ad_name"] for d in may_decided if d["verdict"] == "LOSE"]
+    # CRTV_A's 2x monthly roas cleared May's isolated 1.0x bar but not the
+    # account's lifetime 6.0x bar.
+    assert "CRTV_A" in may_losers
 
 
 # ── freeze semantics ──────────────────────────────────────
@@ -188,7 +195,8 @@ def test_award_is_frozen_even_after_the_benchmark_moves():
     _metric(db, acc, ad_name="CRTV_A", on=date(2026, 5, 28), spend=900, revenue=0)
     _metric(db, acc, ad_name="CRTV_B", on=date(2026, 5, 28), spend=100, revenue=5000)
 
-    live, _ = compute_month_verdicts(db, acc.id, MAY)
+    live_bm = compute_lifetime_benchmark(db, acc.id)
+    live = compute_month_verdicts(db, acc.id, MAY, live_bm)
     live_winners = [d["ad_name"] for d in live if d["verdict"] == "WIN"]
     assert "CRTV_A" not in live_winners  # dynamic view demotes it
 
