@@ -8,12 +8,15 @@ WIN becomes today's LOSE, so "how many winners did we ship in May?" has no
 stable answer.
 
 This module answers it. For every (account, calendar month) it aggregates
-ad_daily_metrics per ad_name, computes that month's benchmark, applies the
-same verdict rules the Library uses, and INSERTs the decided ads (WIN or
-LOSE) into winning_ad_months. Rows are append-only: re-running can award NEW
-verdicts to a past month, but never rewrites or removes one that was already
-frozen — the roas / benchmark / bookings stored on the row are the numbers as
-of the award.
+that month's ad_daily_metrics per ad_name, compares each candidate's MONTHLY
+roas against the account's LIFETIME (all-time-to-date) blended CRTV roas —
+same "current benchmark" the Library compares combos against, per Mason:
+"hiện tại" means lifetime, not that month's isolated cohort — applies the
+same WIN/LOSE/TEST rule the Library uses, and INSERTs the decided ads into
+winning_ad_months. Rows are append-only: re-running can award NEW verdicts to
+a past month, but never rewrites or removes one that was already frozen —
+the roas / benchmark / bookings stored on the row are the numbers as of the
+award.
 
 Two rules that make the win-rate % meaningful instead of misleading:
 
@@ -37,8 +40,8 @@ so its win_rate looks artificially high (or is None) until the month
 closes and its stragglers get their final LOSE.
 
 Scope: only ads whose name contains "CRTV" (the creative-team naming
-convention). The filter applies to candidates AND to the benchmark, so KOL and
-other non-creative traffic never moves the bar.
+convention). The filter applies to candidates AND to the lifetime benchmark,
+so KOL and other non-creative traffic never moves the bar.
 """
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -85,23 +88,53 @@ def months_between(first: date, last: date) -> list[date]:
     return out
 
 
+def compute_lifetime_benchmark(db: Session, account_id: str) -> float:
+    """The account's all-time blended CRTV ROAS — the "current" benchmark.
+
+    Per Mason: "hiện tại" (current) means lifetime-to-date, not that one
+    month's isolated cohort. This mirrors the Creative Library's own bar —
+    "each combo's LIFETIME ROAS vs the account's CURRENT blended ROAS" — just
+    scoped to CRTV ads only, same as everywhere else in this module, so KOL
+    and other non-creative traffic never moves it. No date filter: every day
+    ever synced for this account counts.
+    """
+    total_spend, total_revenue = (
+        db.query(sf.sum(AdDailyMetric.spend), sf.sum(AdDailyMetric.revenue))
+        .filter(
+            AdDailyMetric.account_id == account_id,
+            AdDailyMetric.ad_name.isnot(None),
+            AdDailyMetric.ad_name.ilike(_CRTV_LIKE),
+        )
+        .first()
+    )
+    total_spend = float(total_spend or 0)
+    total_revenue = float(total_revenue or 0)
+    return total_revenue / total_spend if total_spend > 0 else 0.0
+
+
 def compute_month_verdicts(
-    db: Session, account_id: str, month: date, already_decided: set[str] | None = None
-) -> tuple[list[dict], float]:
+    db: Session,
+    account_id: str,
+    month: date,
+    benchmark: float,
+    already_decided: set[str] | None = None,
+) -> list[dict]:
     """Aggregate one account-month and decide every candidate that qualifies.
+
+    `benchmark` is the bar every candidate is measured against — the
+    account's CURRENT (lifetime-to-date) blended CRTV ROAS, from
+    compute_lifetime_benchmark, NOT recomputed from this month's cohort
+    alone. Only the candidate's own roas is month-scoped: that's the whole
+    point of "winning BY MONTH" — did this ad's performance THIS MONTH clear
+    the account's current bar.
 
     `already_decided` is the set of ad_names that already have a frozen
     verdict from an earlier month for this account — they're skipped as
     candidates entirely (not counted as WIN, LOSE, or TEST) so an ad already
-    judged doesn't get re-judged. They're still included in the month's
-    aggregate spend/revenue for the benchmark, though: the benchmark is the
-    account's blended CRTV performance that month, not just the performance
-    of ads still eligible for testing.
+    judged doesn't get re-judged.
 
-    Returns (decided, benchmark_roas). `decided` holds one dict per ad that
-    crossed the test threshold this month (verdict WIN or LOSE — ads still
-    in TEST are omitted); `benchmark_roas` is the account's blended CRTV
-    ROAS for that month, the bar every candidate was measured against.
+    Returns one dict per ad that crossed the test threshold this month
+    (verdict WIN or LOSE — ads still in TEST are omitted).
     """
     already_decided = already_decided or set()
     start = month_start(month)
@@ -127,11 +160,7 @@ def compute_month_verdicts(
         .all()
     )
     if not rows:
-        return [], 0.0
-
-    total_spend = sum(float(r.spend or 0) for r in rows)
-    total_revenue = sum(float(r.revenue or 0) for r in rows)
-    benchmark = total_revenue / total_spend if total_spend > 0 else 0.0
+        return []
 
     decided: list[dict] = []
     for r in rows:
@@ -155,7 +184,7 @@ def compute_month_verdicts(
             "conversions": conversions,
             "roas": roas,
         })
-    return decided, benchmark
+    return decided
 
 
 def freeze_winning_months(
@@ -168,6 +197,11 @@ def freeze_winning_months(
     written. Months are processed oldest → newest per account so that an ad
     decided in an earlier month is excluded from candidacy before a later
     month is computed — see compute_month_verdicts. Commits once at the end.
+
+    The benchmark is computed ONCE per account per call — the account's
+    current (lifetime-to-date) blended CRTV ROAS, via compute_lifetime_benchmark
+    — and reused as the bar for every month processed this run, rather than
+    recomputed from each month's own isolated cohort.
 
     LOSE verdicts are only frozen for a CLOSED month — one strictly before
     the account's most-recent synced month. The most-recent month is still
@@ -222,10 +256,15 @@ def freeze_winning_months(
             .all()
         }
 
+        # One "current" bar for every month processed this run — the
+        # account's lifetime-to-date blended CRTV ROAS, not a per-month
+        # recomputation. See compute_lifetime_benchmark.
+        benchmark = compute_lifetime_benchmark(db, acc.id)
+
         open_month = month_start(last)  # data can still change this month's outcome
 
         for m in months_between(first, last):
-            decided, benchmark = compute_month_verdicts(db, acc.id, m, decided_ad_names)
+            decided = compute_month_verdicts(db, acc.id, m, benchmark, decided_ad_names)
             if m == open_month:
                 # Don't lock in a LOSE the month could still climb out of.
                 decided = [d for d in decided if d["verdict"] == "WIN"]
