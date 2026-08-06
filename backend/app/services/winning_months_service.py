@@ -9,10 +9,32 @@ stable answer.
 
 This module answers it. For every (account, calendar month) it aggregates
 ad_daily_metrics per ad_name, computes that month's benchmark, applies the
-same verdict rules the Library uses, and INSERTs the winners into
-winning_ad_months. Rows are append-only: re-running can award NEW winners to a
-past month, but never rewrites or removes one that was already awarded — the
-roas / benchmark / bookings stored on the row are the numbers as of the award.
+same verdict rules the Library uses, and INSERTs the decided ads (WIN or
+LOSE) into winning_ad_months. Rows are append-only: re-running can award NEW
+verdicts to a past month, but never rewrites or removes one that was already
+frozen — the roas / benchmark / bookings stored on the row are the numbers as
+of the award.
+
+Two rules that make the win-rate % meaningful instead of misleading:
+
+1. Only ads that cleared the TEST threshold that month (enough clicks or
+   bookings — see classify_verdict) are counted at all. An ad still in TEST
+   is not a candidate yet and isn't counted in either the numerator or the
+   denominator.
+2. Once an ad_name has a decided verdict (WIN or LOSE) for an account — in
+   ANY month — it is never re-evaluated in a later month. Without this, a
+   perpetually-running winning ad would re-win every month forever and
+   inflate both the win count and the tested count month after month for
+   what is really the same one decision.
+
+win_rate for a month = WIN count / (WIN count + LOSE count) among ads
+decided that month — i.e. wins divided by everything that crossed the test
+threshold, per Mason's spec.
+
+Caveat: LOSE only freezes for a CLOSED month (see freeze_winning_months) —
+the account's current/most-recent synced month is still accumulating data,
+so its win_rate looks artificially high (or is None) until the month
+closes and its stragglers get their final LOSE.
 
 Scope: only ads whose name contains "CRTV" (the creative-team naming
 convention). The filter applies to candidates AND to the benchmark, so KOL and
@@ -63,13 +85,25 @@ def months_between(first: date, last: date) -> list[date]:
     return out
 
 
-def compute_month_winners(db: Session, account_id: str, month: date) -> tuple[list[dict], float]:
-    """Aggregate one account-month and pick the winners.
+def compute_month_verdicts(
+    db: Session, account_id: str, month: date, already_decided: set[str] | None = None
+) -> tuple[list[dict], float]:
+    """Aggregate one account-month and decide every candidate that qualifies.
 
-    Returns (winners, benchmark_roas). `winners` carries the frozen numbers;
-    `benchmark_roas` is the account's blended CRTV ROAS for that month — the
-    bar every candidate was measured against.
+    `already_decided` is the set of ad_names that already have a frozen
+    verdict from an earlier month for this account — they're skipped as
+    candidates entirely (not counted as WIN, LOSE, or TEST) so an ad already
+    judged doesn't get re-judged. They're still included in the month's
+    aggregate spend/revenue for the benchmark, though: the benchmark is the
+    account's blended CRTV performance that month, not just the performance
+    of ads still eligible for testing.
+
+    Returns (decided, benchmark_roas). `decided` holds one dict per ad that
+    crossed the test threshold this month (verdict WIN or LOSE — ads still
+    in TEST are omitted); `benchmark_roas` is the account's blended CRTV
+    ROAS for that month, the bar every candidate was measured against.
     """
+    already_decided = already_decided or set()
     start = month_start(month)
     end = month_end(start)
 
@@ -99,17 +133,21 @@ def compute_month_winners(db: Session, account_id: str, month: date) -> tuple[li
     total_revenue = sum(float(r.revenue or 0) for r in rows)
     benchmark = total_revenue / total_spend if total_spend > 0 else 0.0
 
-    winners: list[dict] = []
+    decided: list[dict] = []
     for r in rows:
+        if r.ad_name in already_decided:
+            continue
         spend = float(r.spend or 0)
         revenue = float(r.revenue or 0)
         clicks = int(r.clicks or 0)
         conversions = int(r.conversions or 0)
         roas = revenue / spend if spend > 0 else 0.0
-        if classify_verdict(clicks, conversions, roas, benchmark) != "WIN":
-            continue
-        winners.append({
+        verdict = classify_verdict(clicks, conversions, roas, benchmark)
+        if verdict not in ("WIN", "LOSE"):
+            continue  # still TEST — insufficient data, stays eligible next month
+        decided.append({
             "ad_name": r.ad_name,
+            "verdict": verdict,
             "spend": spend,
             "revenue": revenue,
             "impressions": int(r.impressions or 0),
@@ -117,17 +155,30 @@ def compute_month_winners(db: Session, account_id: str, month: date) -> tuple[li
             "conversions": conversions,
             "roas": roas,
         })
-    return winners, benchmark
+    return decided, benchmark
 
 
 def freeze_winning_months(
     db: Session, account_ids: list[str] | None = None, since: date | None = None
 ) -> dict:
-    """Award (and permanently freeze) monthly winners across every Meta account.
+    """Decide (and permanently freeze) monthly verdicts across every Meta account.
 
     Idempotent and append-only: an (account, month, ad_name) that already has a
-    row is left untouched — its frozen roas/benchmark stay as first written.
-    Commits once at the end.
+    row is left untouched — its frozen roas/benchmark/verdict stay as first
+    written. Months are processed oldest → newest per account so that an ad
+    decided in an earlier month is excluded from candidacy before a later
+    month is computed — see compute_month_verdicts. Commits once at the end.
+
+    LOSE verdicts are only frozen for a CLOSED month — one strictly before
+    the account's most-recent synced month. The most-recent month is still
+    "open": data keeps arriving for it, so an ad sitting at LOSE today could
+    still climb to WIN before the month ends. Freezing that LOSE now would
+    permanently lock it out (rows are insert-only, and the unique
+    (account, month, ad_name) constraint means it could never be replaced
+    with a WIN later). WIN verdicts for the open month freeze immediately,
+    same as before this change — only the LOSE side waits for the month to
+    close. Once a later month's data shows up, this month is closed on the
+    next freeze pass and its still-undecided ads get their final verdict.
     """
     accounts = db.query(AdAccount).filter(
         AdAccount.platform == "meta", AdAccount.is_active.is_(True)
@@ -137,7 +188,7 @@ def freeze_winning_months(
     accounts = accounts.all()
 
     now = datetime.now(timezone.utc)
-    summary = {"accounts": 0, "months": 0, "awarded": 0, "already_frozen": 0}
+    summary = {"accounts": 0, "months": 0, "awarded": 0, "lost": 0, "already_frozen": 0}
 
     for acc in accounts:
         bounds = (
@@ -161,9 +212,24 @@ def freeze_winning_months(
             if c.ad_name
         }
 
+        # An ad already decided (WIN or LOSE) in ANY past month — including
+        # months before `first`/`since` — is never a candidate again.
+        decided_ad_names = {
+            r[0]
+            for r in db.query(WinningAdMonth.ad_name)
+            .filter(WinningAdMonth.account_id == acc.id)
+            .distinct()
+            .all()
+        }
+
+        open_month = month_start(last)  # data can still change this month's outcome
+
         for m in months_between(first, last):
-            winners, benchmark = compute_month_winners(db, acc.id, m)
-            if not winners:
+            decided, benchmark = compute_month_verdicts(db, acc.id, m, decided_ad_names)
+            if m == open_month:
+                # Don't lock in a LOSE the month could still climb out of.
+                decided = [d for d in decided if d["verdict"] == "WIN"]
+            if not decided:
                 continue
             summary["months"] += 1
 
@@ -173,33 +239,38 @@ def freeze_winning_months(
                 .filter(WinningAdMonth.account_id == acc.id, WinningAdMonth.month == m)
                 .all()
             }
-            for w in winners:
-                if w["ad_name"] in existing:
+            for d in decided:
+                if d["ad_name"] in existing:
                     summary["already_frozen"] += 1
                     continue
-                combo = combo_map.get(w["ad_name"])
+                combo = combo_map.get(d["ad_name"])
                 db.add(WinningAdMonth(
                     account_id=acc.id,
                     month=m,
-                    ad_name=w["ad_name"],
+                    ad_name=d["ad_name"],
+                    verdict=d["verdict"],
                     combo_id=combo.combo_id if combo else None,
                     target_audience=combo.target_audience if combo else None,
                     country=combo.country if combo else None,
-                    spend=w["spend"],
-                    revenue=w["revenue"],
-                    impressions=w["impressions"],
-                    clicks=w["clicks"],
-                    conversions=w["conversions"],
-                    roas=w["roas"],
+                    spend=d["spend"],
+                    revenue=d["revenue"],
+                    impressions=d["impressions"],
+                    clicks=d["clicks"],
+                    conversions=d["conversions"],
+                    roas=d["roas"],
                     benchmark_roas=benchmark,
                     frozen_at=now,
                 ))
-                summary["awarded"] += 1
+                decided_ad_names.add(d["ad_name"])
+                if d["verdict"] == "WIN":
+                    summary["awarded"] += 1
+                else:
+                    summary["lost"] += 1
 
     db.commit()
     logger.info(
-        "[winning-months] %d newly awarded, %d already frozen across %d accounts",
-        summary["awarded"], summary["already_frozen"], summary["accounts"],
+        "[winning-months] %d newly awarded, %d newly lost, %d already frozen across %d accounts",
+        summary["awarded"], summary["lost"], summary["already_frozen"], summary["accounts"],
     )
     return summary
 
@@ -210,7 +281,7 @@ def diagnose_winning_by_month(db: Session) -> dict:
 
     freeze_winning_months() silently skips an account with zero ad_daily_metrics
     rows (bounds[0] is None) and silently skips a month with zero CRTV-matching
-    rows (compute_month_winners returns no winners) — neither is an error, so
+    rows (compute_month_verdicts returns no decided ads) — neither is an error, so
     there's nothing in the logs to point at. This makes both conditions visible
     at once, plus a naming sample so a naming-convention mismatch (the account
     just doesn't use "CRTV") is obvious rather than guessed at. Read-only.
@@ -262,7 +333,10 @@ def diagnose_winning_by_month(db: Session) -> dict:
         if e["ad_daily_metrics_rows"] > 0 and e["distinct_crtv_ad_names"] == 0
     ]
 
-    frozen_awards = db.query(sf.count()).select_from(WinningAdMonth).scalar() or 0
+    frozen_awards = (
+        db.query(sf.count()).select_from(WinningAdMonth)
+        .filter(WinningAdMonth.verdict == "WIN").scalar()
+    ) or 0
 
     return {
         "frozen_awards_so_far": frozen_awards,
@@ -288,11 +362,29 @@ def list_winning_months(
     branch_id: str | None = None,
     month: str | None = None,
 ) -> dict:
-    """Frozen awards grouped by month, newest month first.
+    """Frozen verdicts grouped by month, newest month first.
 
     `account_ids=None` means "no scoping" (admin). `month` (YYYY-MM) narrows
     the ad list to one month; the per-month counts always cover every month so
     the trend never collapses to a single bar.
+
+    Every row (WIN or LOSE) counts toward `tested` and `win_rate`; only WIN
+    rows populate `count`, the `ads` detail list, and the win-only totals —
+    those keep meaning "winning ads," same as before this table also started
+    recording LOSEs. `win_rate` = WIN / (WIN + LOSE) among ads that crossed
+    the test threshold that month, per Mason's spec — an ad still in TEST
+    (insufficient clicks/bookings) never has a row here at all, so it's
+    already excluded from both sides of the ratio.
+
+    `in_progress` flags a calendar month bucket that still contains at least
+    one account for which this is the most-recently-synced month —
+    freeze_winning_months only freezes LOSE once a month is CLOSED for that
+    account (see its docstring), so such a bucket's win_rate is provisional
+    (usually inflated, since its stragglers haven't taken their final LOSE
+    yet). This mirrors the freeze algorithm exactly rather than guessing
+    from wall-clock "today," which would be wrong for a branch whose sync
+    has silently stalled (its "open" month never closes until fresh data
+    arrives, no matter how much wall-clock time passes).
     """
     q = db.query(WinningAdMonth)
     if branch_id:
@@ -306,41 +398,63 @@ def list_winning_months(
         for a in db.query(AdAccount.id, AdAccount.account_name).all()
     }
 
+    account_open_month: dict[str, date] = {}
+    if rows:
+        involved = {r.account_id for r in rows}
+        account_open_month = {
+            r[0]: month_start(r[1])
+            for r in db.query(AdDailyMetric.account_id, sf.max(AdDailyMetric.date))
+            .filter(AdDailyMetric.account_id.in_(involved))
+            .group_by(AdDailyMetric.account_id)
+            .all()
+            if r[1] is not None
+        }
+
     buckets: dict[str, dict] = {}
+    in_progress_keys: set[str] = set()
     for r in rows:
         key = r.month.isoformat()[:7]
         b = buckets.setdefault(key, {
-            "month": key, "count": 0, "spend": 0.0, "revenue": 0.0,
+            "month": key, "count": 0, "lose_count": 0, "spend": 0.0, "revenue": 0.0,
             "conversions": 0, "by_branch": {}, "ads": [],
         })
-        b["count"] += 1
-        b["spend"] += float(r.spend or 0)
-        b["revenue"] += float(r.revenue or 0)
-        b["conversions"] += int(r.conversions or 0)
-        name = acc_names.get(r.account_id, "—")
-        b["by_branch"][name] = b["by_branch"].get(name, 0) + 1
-        b["ads"].append({
-            "id": r.id,
-            "ad_name": r.ad_name,
-            "account_id": r.account_id,
-            "branch_name": name,
-            "combo_id": r.combo_id,
-            "target_audience": r.target_audience,
-            "country": r.country,
-            "spend": float(r.spend) if r.spend is not None else None,
-            "revenue": float(r.revenue) if r.revenue is not None else None,
-            "impressions": r.impressions,
-            "clicks": r.clicks,
-            "conversions": r.conversions,
-            "roas": float(r.roas) if r.roas is not None else None,
-            "benchmark_roas": float(r.benchmark_roas) if r.benchmark_roas is not None else None,
-            "frozen_at": r.frozen_at.isoformat() if r.frozen_at else None,
-        })
+        if account_open_month.get(r.account_id) == r.month:
+            in_progress_keys.add(key)
+        is_win = r.verdict == "WIN"
+        if is_win:
+            b["count"] += 1
+            b["spend"] += float(r.spend or 0)
+            b["revenue"] += float(r.revenue or 0)
+            b["conversions"] += int(r.conversions or 0)
+            name = acc_names.get(r.account_id, "—")
+            b["by_branch"][name] = b["by_branch"].get(name, 0) + 1
+            b["ads"].append({
+                "id": r.id,
+                "ad_name": r.ad_name,
+                "account_id": r.account_id,
+                "branch_name": name,
+                "combo_id": r.combo_id,
+                "target_audience": r.target_audience,
+                "country": r.country,
+                "spend": float(r.spend) if r.spend is not None else None,
+                "revenue": float(r.revenue) if r.revenue is not None else None,
+                "impressions": r.impressions,
+                "clicks": r.clicks,
+                "conversions": r.conversions,
+                "roas": float(r.roas) if r.roas is not None else None,
+                "benchmark_roas": float(r.benchmark_roas) if r.benchmark_roas is not None else None,
+                "frozen_at": r.frozen_at.isoformat() if r.frozen_at else None,
+            })
+        else:
+            b["lose_count"] += 1
 
     months = []
     for key in sorted(buckets, reverse=True):
         b = buckets[key]
         b["roas"] = b["revenue"] / b["spend"] if b["spend"] > 0 else None
+        b["tested"] = b["count"] + b["lose_count"]
+        b["win_rate"] = (b["count"] / b["tested"]) if b["tested"] > 0 else None
+        b["in_progress"] = key in in_progress_keys
         b["by_branch"] = [
             {"branch_name": n, "count": c}
             for n, c in sorted(b["by_branch"].items(), key=lambda kv: -kv[1])
@@ -349,10 +463,22 @@ def list_winning_months(
             b["ads"] = []
         months.append(b)
 
+    win_rows = [r for r in rows if r.verdict == "WIN"]
+    lose_count = len(rows) - len(win_rows)
+    tested_count = len(rows)
+
     return {
         "months": months,
-        "total_wins": len(rows),
-        # Distinct creatives — one ad can win in several months.
-        "distinct_ads": len({(r.account_id, r.ad_name) for r in rows}),
-        "scope_note": f'Only ads whose name contains "{CRTV_TOKEN}" are counted.',
+        "total_wins": len(win_rows),
+        "total_lost": lose_count,
+        "total_tested": tested_count,
+        "overall_win_rate": (len(win_rows) / tested_count) if tested_count > 0 else None,
+        # Distinct creatives — one ad can only win once now (see module docstring).
+        "distinct_ads": len({(r.account_id, r.ad_name) for r in win_rows}),
+        "scope_note": (
+            f'Only ads whose name contains "{CRTV_TOKEN}" are counted. '
+            "win_rate = WIN / (WIN + LOSE) among ads that crossed the test "
+            "threshold that month; an ad already decided in an earlier month "
+            "is never re-tested."
+        ),
     }

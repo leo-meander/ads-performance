@@ -1189,16 +1189,19 @@ def winning_months(
     current_user: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
 ):
-    """Monthly winning-creative counts, frozen at award time.
+    """Monthly winning-creative counts + win rate %, frozen at verdict time.
 
     The Library's WIN/LOSE is dynamic (lifetime ROAS vs the account's CURRENT
-    blended ROAS), so it can't answer "how many winners in May?". These rows
-    can: each is written once, when the ad first cleared that month's bar, and
-    is never recomputed.
+    blended ROAS), so it can't answer "how many winners in May, and what
+    fraction of tested ads were winners?". These rows can: each is written
+    once, when the ad first crosses that month's test threshold, and is
+    never recomputed. An ad already decided in an earlier month is excluded
+    from candidacy in every later month, so win_rate = WIN / (WIN + LOSE)
+    for a month never double-counts the same standing winner.
 
     `refresh=True` (default) runs the append-only freeze pass first so a month
     that just crossed the line shows up without anyone clicking a button. It
-    can only ADD awards — never rewrite or remove one.
+    can only ADD verdicts — never rewrite or remove one.
 
     Scope: only ads whose name contains "CRTV".
     """

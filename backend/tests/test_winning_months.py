@@ -1,12 +1,23 @@
 """Monthly winning-creative awards — CRTV scope, the monthly bar, and the freeze.
 
-Three things must hold:
+Things that must hold:
   1. Only ads whose name contains "CRTV" are in play — as candidates AND when
      computing the month's benchmark, so a KOL ad's outlier ROAS can't raise
      the bar and hide a real winner.
   2. The bar is that MONTH's blended CRTV ROAS, not lifetime.
   3. Once awarded, a row is frozen: later data can add new winners to a month
      but must never rewrite or remove an existing award.
+  4. An ad's verdict (WIN or LOSE) is decided ONCE, ever, per account — once
+     it's decided in some month it is never a candidate again in a later
+     month, so win_rate never double-counts a standing winner.
+  5. LOSE only freezes for a month that's CLOSED (strictly before the
+     account's most-recent synced month) — the open month can still add
+     WINs, but never locks in a LOSE it might climb out of before it ends.
+
+MAY and JUN below are both in the past relative to the synced data in most
+tests (JUL/AUG add a third, "still open," month where relevant), so unless a
+test says otherwise, both MAY and JUN close as soon as a later month's data
+exists.
 """
 
 import uuid
@@ -21,7 +32,7 @@ from app.models.user import User
 from app.models.winning_ad_month import WinningAdMonth
 from app.services.auth_service import create_access_token, hash_password
 from app.services.winning_months_service import (
-    compute_month_winners,
+    compute_month_verdicts,
     freeze_winning_months,
     is_crtv,
     month_end,
@@ -33,6 +44,7 @@ client = TestClient(app)
 
 MAY = date(2026, 5, 10)
 JUN = date(2026, 6, 10)
+JUL = date(2026, 7, 10)
 
 
 def _admin_headers():
@@ -108,25 +120,28 @@ def test_non_crtv_ads_are_ignored_and_never_move_the_benchmark():
     # would lose its award.
     _metric(db, acc, ad_name="KOL_runawaygirl", on=MAY, spend=100, revenue=10_000)
 
-    winners, benchmark = compute_month_winners(db, acc.id, MAY)
+    decided, benchmark = compute_month_verdicts(db, acc.id, MAY)
     db.close()
 
     assert benchmark == 3.0
+    winners = [d for d in decided if d["verdict"] == "WIN"]
+    losers = [d for d in decided if d["verdict"] == "LOSE"]
     assert [w["ad_name"] for w in winners] == ["CRTV_A"]
     assert winners[0]["roas"] == 5.0
+    assert [l["ad_name"] for l in losers] == ["CRTV_B"]  # crossed the test bar, just lost it
 
 
 def test_low_volume_ad_is_test_not_a_winner():
     db = TestSession()
     acc = _account(db)
-    # Huge ROAS but only 2 bookings and few clicks → TEST, not WIN.
+    # Huge ROAS but only 2 bookings and few clicks → TEST, not decided at all.
     _metric(db, acc, ad_name="CRTV_tiny", on=MAY, spend=10, revenue=900, clicks=50, conversions=2)
     _metric(db, acc, ad_name="CRTV_big", on=MAY, spend=1000, revenue=1000, clicks=9000, conversions=40)
 
-    winners, _ = compute_month_winners(db, acc.id, MAY)
+    decided, _ = compute_month_verdicts(db, acc.id, MAY)
     db.close()
 
-    assert "CRTV_tiny" not in [w["ad_name"] for w in winners]
+    assert "CRTV_tiny" not in [d["ad_name"] for d in decided]
 
 
 def test_benchmark_is_per_month_not_lifetime():
@@ -136,15 +151,20 @@ def test_benchmark_is_per_month_not_lifetime():
     _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=200)
     _metric(db, acc, ad_name="CRTV_C", on=MAY, spend=300, revenue=200)
     # June: the account is strong (10x blended) — the same 2x ad would lose.
+    # Direct compute_month_verdicts calls apply no cross-call exclusion
+    # (that bookkeeping lives in freeze_winning_months), so reusing CRTV_A
+    # here still isolates "the bar moves" as the only variable.
     _metric(db, acc, ad_name="CRTV_A", on=JUN, spend=100, revenue=200)
     _metric(db, acc, ad_name="CRTV_D", on=JUN, spend=300, revenue=3800)
 
-    may_winners, may_bm = compute_month_winners(db, acc.id, MAY)
-    jun_winners, jun_bm = compute_month_winners(db, acc.id, JUN)
+    may_decided, may_bm = compute_month_verdicts(db, acc.id, MAY)
+    jun_decided, jun_bm = compute_month_verdicts(db, acc.id, JUN)
     db.close()
 
-    assert may_bm == 1.0 and "CRTV_A" in [w["ad_name"] for w in may_winners]
-    assert jun_bm == 10.0 and "CRTV_A" not in [w["ad_name"] for w in jun_winners]
+    may_winners = [d["ad_name"] for d in may_decided if d["verdict"] == "WIN"]
+    jun_losers = [d["ad_name"] for d in jun_decided if d["verdict"] == "LOSE"]
+    assert may_bm == 1.0 and "CRTV_A" in may_winners
+    assert jun_bm == 10.0 and "CRTV_A" in jun_losers  # same 2x ROAS, different bar
 
 
 # ── freeze semantics ──────────────────────────────────────
@@ -168,8 +188,9 @@ def test_award_is_frozen_even_after_the_benchmark_moves():
     _metric(db, acc, ad_name="CRTV_A", on=date(2026, 5, 28), spend=900, revenue=0)
     _metric(db, acc, ad_name="CRTV_B", on=date(2026, 5, 28), spend=100, revenue=5000)
 
-    live, _ = compute_month_winners(db, acc.id, MAY)
-    assert "CRTV_A" not in [w["ad_name"] for w in live]  # dynamic view demotes it
+    live, _ = compute_month_verdicts(db, acc.id, MAY)
+    live_winners = [d["ad_name"] for d in live if d["verdict"] == "WIN"]
+    assert "CRTV_A" not in live_winners  # dynamic view demotes it
 
     freeze_winning_months(db)
     rows = db.query(WinningAdMonth).filter(WinningAdMonth.ad_name == "CRTV_A").all()
@@ -187,11 +208,15 @@ def test_rerun_on_unchanged_data_awards_nothing_new():
     _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=100)
 
     assert freeze_winning_months(db)["awarded"] == 1
+    # CRTV_A is now in `decided_ad_names` from its own frozen row, so the
+    # second pass excludes it as a candidate before ever re-deciding it —
+    # it doesn't even reach the "already_frozen" bookkeeping, it's just
+    # skipped outright. Either way nothing new lands in the table.
     second = freeze_winning_months(db)
     count = db.query(WinningAdMonth).count()
     db.close()
 
-    assert second == {**second, "awarded": 0, "already_frozen": 1}
+    assert second == {**second, "awarded": 0, "lost": 0}
     assert count == 1
 
 
@@ -202,7 +227,9 @@ def test_rerun_can_add_a_new_winner_to_an_already_frozen_month():
     _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=100)
     freeze_winning_months(db)
 
-    # CRTV_B turns around later in the month and clears the bar.
+    # CRTV_B turns around later in the month and clears the bar. May is
+    # still this account's only (= most-recent = open) month, so its
+    # earlier LOSE was never frozen — nothing blocks it from winning now.
     _metric(db, acc, ad_name="CRTV_B", on=date(2026, 5, 25), spend=100, revenue=2000)
     freeze_winning_months(db)
 
@@ -211,28 +238,82 @@ def test_rerun_can_add_a_new_winner_to_an_already_frozen_month():
     assert names == {"CRTV_A", "CRTV_B"}
 
 
-def test_same_ad_wins_in_two_months_as_two_rows():
+def test_lose_verdict_is_not_frozen_for_the_still_open_month():
     db = TestSession()
     acc = _account(db)
-    for on in (MAY, JUN):
-        _metric(db, acc, ad_name="CRTV_A", on=on, spend=100, revenue=500)
-        _metric(db, acc, ad_name="CRTV_B", on=on, spend=100, revenue=100)
+    # Only May data exists — May is this account's most-recent (open) month.
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)  # wins
+    _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=100)  # would LOSE
+
+    freeze_winning_months(db)
+    rows = db.query(WinningAdMonth).all()
+    db.close()
+
+    # CRTV_B crossed the test threshold and would score LOSE today, but the
+    # month isn't over — freezing that now would permanently bar it from
+    # winning if it turns around later in May, so it's left unfrozen.
+    assert {(r.ad_name, r.verdict) for r in rows} == {("CRTV_A", "WIN")}
+
+
+def test_ad_decided_in_a_closed_month_is_never_retested():
+    db = TestSession()
+    acc = _account(db)
+    # Same two ads, same performance, three months running. JUL's data makes
+    # MAY and JUN both CLOSED months as soon as freeze runs.
+    for on in (MAY, JUN, JUL):
+        _metric(db, acc, ad_name="CRTV_A", on=on, spend=100, revenue=500)  # would win every month
+        _metric(db, acc, ad_name="CRTV_B", on=on, spend=100, revenue=100)  # would lose every month
     freeze_winning_months(db)
 
-    rows = db.query(WinningAdMonth).filter(WinningAdMonth.ad_name == "CRTV_A").all()
+    a_rows = db.query(WinningAdMonth).filter(WinningAdMonth.ad_name == "CRTV_A").all()
+    b_rows = db.query(WinningAdMonth).filter(WinningAdMonth.ad_name == "CRTV_B").all()
     db.close()
-    assert sorted(r.month for r in rows) == [date(2026, 5, 1), date(2026, 6, 1)]
+
+    # Decided once, in May — the first month either ad crossed the test
+    # threshold — never re-tested in June or July despite identical
+    # performance repeating every month.
+    assert [r.month for r in a_rows] == [date(2026, 5, 1)]
+    assert a_rows[0].verdict == "WIN"
+    assert [r.month for r in b_rows] == [date(2026, 5, 1)]
+    assert b_rows[0].verdict == "LOSE"
 
 
-# ── endpoint ──────────────────────────────────────────────
+# ── endpoint / win rate ────────────────────────────────────
+
+
+def test_win_rate_is_wins_over_tested_ads_for_a_closed_month():
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    # May: 1 win, 2 losses → win_rate = 1/3. June's data is what closes May.
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)  # wins
+    _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=100)  # loses
+    _metric(db, acc, ad_name="CRTV_C", on=MAY, spend=100, revenue=50)   # loses
+    _metric(db, acc, ad_name="CRTV_D", on=JUN, spend=100, revenue=100)
+    db.close()
+
+    resp = client.get("/api/creative/winning-months", headers=_admin_headers())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"], body["error"]
+    data = body["data"]
+
+    may = next(m for m in data["months"] if m["month"] == "2026-05")
+    assert may["count"] == 1
+    assert may["lose_count"] == 2
+    assert may["tested"] == 3
+    assert may["win_rate"] == 1 / 3
+    assert may["in_progress"] is False  # May closed once June's data arrived
 
 
 def test_winning_months_endpoint_groups_by_month():
     db = TestSession()
     acc = _account(db, name="Meander Saigon")
-    for on in (MAY, JUN):
-        _metric(db, acc, ad_name="CRTV_A", on=on, spend=100, revenue=500)
-        _metric(db, acc, ad_name="CRTV_B", on=on, spend=100, revenue=100)
+    # Different ad names per month: under the "decided once" rule, the same
+    # ad_name winning in May would be excluded from candidacy in June, so
+    # distinct names are needed to see both months populate independently.
+    for on, win_name, lose_name in ((MAY, "CRTV_A", "CRTV_B"), (JUN, "CRTV_C", "CRTV_D")):
+        _metric(db, acc, ad_name=win_name, on=on, spend=100, revenue=500)
+        _metric(db, acc, ad_name=lose_name, on=on, spend=100, revenue=100)
     _metric(db, acc, ad_name="KOL_star", on=MAY, spend=100, revenue=99_999)
     db.close()
 
@@ -245,8 +326,22 @@ def test_winning_months_endpoint_groups_by_month():
     assert [m["month"] for m in data["months"]] == ["2026-06", "2026-05"]
     assert all(m["count"] == 1 for m in data["months"])
     assert data["total_wins"] == 2
-    assert data["distinct_ads"] == 1  # one creative, two monthly awards
+    assert data["distinct_ads"] == 2  # two distinct winning creatives now, one each
     ads = data["months"][0]["ads"]
-    assert [a["ad_name"] for a in ads] == ["CRTV_A"]
+    assert [a["ad_name"] for a in ads] == ["CRTV_C"]
     assert ads[0]["branch_name"] == "Meander Saigon"
     assert data["months"][0]["by_branch"] == [{"branch_name": "Meander Saigon", "count": 1}]
+
+    # June is this account's most-recent synced month — still open, so
+    # CRTV_D's LOSE hasn't frozen yet and June's win_rate is provisional.
+    june = data["months"][0]
+    assert june["in_progress"] is True
+    assert june["lose_count"] == 0
+    assert june["tested"] == 1
+
+    # May is closed (June's data exists): both ads got decided.
+    may = data["months"][1]
+    assert may["in_progress"] is False
+    assert may["lose_count"] == 1
+    assert may["tested"] == 2
+    assert may["win_rate"] == 0.5

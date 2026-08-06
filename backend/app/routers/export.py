@@ -1359,7 +1359,10 @@ def export_winning_ads_monthly(
     An award covers a whole ad_name for that month: `spend` / `revenue` /
     `roas` are the totals summed across every country and TA that ad ran in,
     because that combined figure is what the win was judged on
-    (winning_months_service.compute_month_winners groups by ad_name alone).
+    (winning_months_service.compute_month_verdicts groups by ad_name alone).
+    Only verdict='WIN' rows are included — the table also freezes LOSE
+    verdicts now (for the /winning-ads win-rate %), but this feed's name and
+    the design team's KPI usage are both winners-only.
     `target_audience` / `country` are the combo's dominant values, carried for
     context only — never a breakdown of the row.
 
@@ -1377,7 +1380,7 @@ def export_winning_ads_monthly(
             if canonical is None:
                 return _api_response(error=f"Unknown branch: {branch}")
 
-        q = db.query(WinningAdMonth)
+        q = db.query(WinningAdMonth).filter(WinningAdMonth.verdict == "WIN")
 
         if canonical:
             account_ids = get_account_ids_for_branches(db, [canonical])
