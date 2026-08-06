@@ -45,6 +45,7 @@ from app.models.ad_combo import AdCombo
 from app.models.ad_set import AdSet
 from app.models.ad_copy import AdCopy
 from app.models.ad_country_metric import AdCountryMetric
+from app.models.ad_daily_metric import AdDailyMetric
 from app.models.ad_material import AdMaterial
 from app.models.api_key import ApiKey
 from app.models.booking_match import BookingMatch
@@ -1348,7 +1349,7 @@ def export_winning_ads_monthly(
     api_key: ApiKey = Depends(validate_api_key),
     db: Session = Depends(get_db),
 ):
-    """Frozen monthly creative winners — the design-team KPI feed.
+    """Frozen monthly creative winners + win rate — the design-team KPI feed.
 
     Mirrors the /winning-ads "Winning by Month" tab. Each row is one award,
     written ONCE when an ad first cleared that month's bar and never
@@ -1360,11 +1361,23 @@ def export_winning_ads_monthly(
     `roas` are the totals summed across every country and TA that ad ran in,
     because that combined figure is what the win was judged on
     (winning_months_service.compute_month_verdicts groups by ad_name alone).
-    Only verdict='WIN' rows are included — the table also freezes LOSE
-    verdicts now (for the /winning-ads win-rate %), but this feed's name and
-    the design team's KPI usage are both winners-only.
+    `rows` stays verdict='WIN' only — the feed's name and the design team's
+    original KPI usage are both winners-only. The LOSE verdicts the table
+    also freezes show up in the `by_month` counters instead, which is what
+    makes `win_rate` (the "% Ads win" KPI) computable downstream:
+    `win_rate` = wins / (wins + losses) among ads that crossed the test
+    threshold that month. An ad still in TEST (too few clicks/bookings) has
+    no row at all, so it sits on neither side of the ratio, and an ad already
+    decided in an earlier month is never re-tested.
     `target_audience` / `country` are the combo's dominant values, carried for
     context only — never a breakdown of the row.
+
+    `by_month[].in_progress` marks a month that still has at least one
+    account for which it is the most-recently-synced month. LOSE only
+    freezes once a month is CLOSED for an account, so such a month's
+    win_rate is provisional (usually inflated). Mirrors the freeze
+    algorithm rather than wall-clock "today", which would be wrong for a
+    branch whose sync has silently stalled.
 
     Scope: only ads whose name contains "CRTV" are ever awarded, so this feed
     excludes KOL and other non-creative-team traffic by construction.
@@ -1380,13 +1393,16 @@ def export_winning_ads_monthly(
             if canonical is None:
                 return _api_response(error=f"Unknown branch: {branch}")
 
-        q = db.query(WinningAdMonth).filter(WinningAdMonth.verdict == "WIN")
+        # Every verdict is fetched (not just WIN) so the month counters can
+        # carry the denominator; `rows` is filtered down to winners below.
+        q = db.query(WinningAdMonth)
 
         if canonical:
             account_ids = get_account_ids_for_branches(db, [canonical])
             if not account_ids:
                 return _api_response(data={
                     "rows": [], "by_month": [], "total_wins": 0, "distinct_ads": 0,
+                    "total_losses": 0, "total_tested": 0, "overall_win_rate": None,
                 })
             q = q.filter(WinningAdMonth.account_id.in_(account_ids))
 
@@ -1412,6 +1428,22 @@ def export_winning_ads_monthly(
             for a in db.query(AdAccount.id, AdAccount.account_name).all()
         }
 
+        # Per account, the month its data currently stops at — that month's
+        # LOSEs are not all frozen yet, so its win_rate is provisional.
+        account_open_month: dict[str, date] = {}
+        if rows:
+            involved = {r.account_id for r in rows}
+            account_open_month = {
+                a_id: last.replace(day=1)
+                for a_id, last in db.query(
+                    AdDailyMetric.account_id, func.max(AdDailyMetric.date)
+                )
+                .filter(AdDailyMetric.account_id.in_(involved))
+                .group_by(AdDailyMetric.account_id)
+                .all()
+                if last is not None
+            }
+
         out_rows = []
         by_month: dict[str, dict] = {}
         for r in rows:
@@ -1422,6 +1454,31 @@ def export_winning_ads_monthly(
             spend = float(r.spend or 0)
             revenue = float(r.revenue or 0)
             key = r.month.isoformat()[:7]
+
+            # Every decided ad — WIN and LOSE alike — counts toward the month's
+            # tested denominator; only winners go on to populate `rows` and the
+            # win-only money totals.
+            b = by_month.setdefault(key, {
+                "month": key, "wins": 0, "losses": 0, "spend_vnd": 0.0,
+                "revenue_vnd": 0.0, "conversions": 0, "by_branch": {},
+                "in_progress": False,
+            })
+            if account_open_month.get(r.account_id) == r.month:
+                b["in_progress"] = True
+
+            # Per-branch counters carry both sides too, so a per-branch KPI
+            # doesn't need one call per branch to get its denominator.
+            branch_bucket = None
+            if branch_key:
+                branch_bucket = b["by_branch"].setdefault(
+                    branch_key, {"branch": branch_key, "wins": 0, "losses": 0}
+                )
+
+            if r.verdict != "WIN":
+                b["losses"] += 1
+                if branch_bucket is not None:
+                    branch_bucket["losses"] += 1
+                continue
 
             out_rows.append({
                 "month": key,
@@ -1444,34 +1501,45 @@ def export_winning_ads_monthly(
                 "frozen_at": r.frozen_at.isoformat() if r.frozen_at else None,
             })
 
-            b = by_month.setdefault(key, {
-                "month": key, "wins": 0, "spend_vnd": 0.0, "revenue_vnd": 0.0,
-                "conversions": 0, "by_branch": {},
-            })
             b["wins"] += 1
             b["spend_vnd"] += spend * fx
             b["revenue_vnd"] += revenue * fx
             b["conversions"] += int(r.conversions or 0)
-            if branch_key:
-                b["by_branch"][branch_key] = b["by_branch"].get(branch_key, 0) + 1
+            if branch_bucket is not None:
+                branch_bucket["wins"] += 1
 
         months_out = []
         for key in sorted(by_month, reverse=True):
             b = by_month[key]
             b["roas_vnd"] = (b["revenue_vnd"] / b["spend_vnd"]) if b["spend_vnd"] > 0 else None
-            b["by_branch"] = [
-                {"branch": n, "wins": c}
-                for n, c in sorted(b["by_branch"].items(), key=lambda kv: -kv[1])
-            ]
+            b["tested"] = b["wins"] + b["losses"]
+            b["win_rate"] = (b["wins"] / b["tested"]) if b["tested"] > 0 else None
+            branches = []
+            for bb in b["by_branch"].values():
+                bb["tested"] = bb["wins"] + bb["losses"]
+                bb["win_rate"] = (bb["wins"] / bb["tested"]) if bb["tested"] > 0 else None
+                branches.append(bb)
+            b["by_branch"] = sorted(branches, key=lambda x: -x["wins"])
             months_out.append(b)
+
+        win_rows = [r for r in rows if r.verdict == "WIN"]
+        tested = len(rows)
 
         return _api_response(data={
             "rows": out_rows,
             "by_month": months_out,
             "total_wins": len(out_rows),
+            "total_losses": tested - len(win_rows),
+            "total_tested": tested,
+            "overall_win_rate": (len(win_rows) / tested) if tested > 0 else None,
             # One ad can win in several months — count each creative once.
-            "distinct_ads": len({(r.account_id, r.ad_name) for r in rows}),
-            "scope_note": 'Only ads whose name contains "CRTV" are awarded.',
+            "distinct_ads": len({(r.account_id, r.ad_name) for r in win_rows}),
+            "scope_note": (
+                'Only ads whose name contains "CRTV" are awarded. '
+                "win_rate = wins / (wins + losses) among ads that crossed the "
+                "test threshold that month; an ad already decided in an "
+                "earlier month is never re-tested."
+            ),
         })
     except Exception as e:
         return _api_response(error=str(e))
