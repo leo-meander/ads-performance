@@ -2,10 +2,8 @@
 
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { Plus, ArrowUpDown, X, Search, Sparkles, Film, Image as ImageIcon, LayoutGrid, ExternalLink, LibraryBig, Trophy } from 'lucide-react'
+import { Plus, ArrowUpDown, X, Search, Sparkles, Film, Image as ImageIcon, LayoutGrid, ExternalLink } from 'lucide-react'
 import KeypointDoubleCheckModal from '@/components/KeypointDoubleCheckModal'
-import WinningMonthsTab from '@/components/WinningMonthsTab'
-import { useAuth } from '@/components/AuthContext'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -41,12 +39,8 @@ const FORMAT_META: Record<string, { label: string; Icon: typeof Film }> = {
   carousel: { label: 'Carousel', Icon: LayoutGrid },
 }
 
-type Tab = 'library' | 'winners'
-
 function CreativePageInner() {
   const router = useRouter()
-  const { canEditSection } = useAuth()
-  const [tab, setTab] = useState<Tab>('library')
   // Deep-link inputs from /funnel-recommendations cards. Read once on mount;
   // subsequent URL edits don't fight the user's filter changes.
   const search = useSearchParams()
@@ -54,7 +48,8 @@ function CreativePageInner() {
   const initialTA = search?.get('ta') || ''
   const initialCountry = (search?.get('country') || '').toUpperCase()
   const initialVerdict = (search?.get('verdict') || '').toUpperCase()
-  // ?search=CMB-060 — used by the Winning-by-Month tab to jump to one creative
+  // ?search=CMB-060 — used by the Winning-by-Month tab (now on /winning-ads)
+  // to jump straight to one creative in this Library
   const initialSearch = search?.get('search') || ''
 
   const [combos, setCombos] = useState<Combo[]>([])
@@ -277,49 +272,30 @@ function CreativePageInner() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Creative Library</h1>
           <p className="text-xs text-gray-500 mt-0.5">
-            {tab === 'library'
-              ? `${comboTotal} combos · click any row to see the copy, creative & why it won`
-              : 'Winners locked in month by month — the Library verdict moves, these don’t'}
+            {comboTotal} combos · click any row to see the copy, creative &amp; why it won
           </p>
         </div>
-        {tab === 'library' && (
-          <div className="flex items-center gap-2">
-            {classifyMsg && <span className="text-xs text-gray-500">{classifyMsg}</span>}
-            <button
-              onClick={reparseTA}
-              className="bg-gray-100 text-gray-700 px-3 py-2 rounded-lg text-xs font-medium hover:bg-gray-200"
-              title="Re-parse TA on all rows using Solo/Couple/Friend/Group/Business whitelist"
-            >
-              Re-parse TA
-            </button>
-            <button
-              onClick={() => router.push('/creative/submit')}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-1.5"
-            >
-              <Plus className="w-4 h-4" /> New Combo
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-200 mb-6 overflow-x-auto">
-        {([
-          { key: 'library', label: 'Library', icon: LibraryBig },
-          { key: 'winners', label: 'Winning by Month', icon: Trophy },
-        ] as const).map(({ key, label, icon: Icon }) => (
-          <button key={key} onClick={() => setTab(key)}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${tab === key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-            <Icon className="w-4 h-4" />{label}
+        <div className="flex items-center gap-2">
+          {classifyMsg && <span className="text-xs text-gray-500">{classifyMsg}</span>}
+          <button
+            onClick={reparseTA}
+            className="bg-gray-100 text-gray-700 px-3 py-2 rounded-lg text-xs font-medium hover:bg-gray-200"
+            title="Re-parse TA on all rows using Solo/Couple/Friend/Group/Business whitelist"
+          >
+            Re-parse TA
           </button>
-        ))}
+          <button
+            onClick={() => router.push('/creative/submit')}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 flex items-center gap-1.5"
+          >
+            <Plus className="w-4 h-4" /> New Combo
+          </button>
+        </div>
       </div>
 
-      {tab === 'winners' && (
-        <WinningMonthsTab accounts={accounts} canEdit={canEditSection('meta_ads')} />
-      )}
+      {/* Winning by Month moved to /winning-ads, which now hosts both winning
+          views (monthly awards + the per-ad list). This page is the Library. */}
 
-      {tab === 'library' && (<>
 
       {/* Format Insight bar — which creative format performs best */}
       {formatStats.length > 0 && (
@@ -546,8 +522,6 @@ function CreativePageInner() {
           </div>
         )}
       </div>
-
-      </>)}
 
       {detailId && <ComboDrawer comboId={detailId} onClose={() => setDetailId(null)} />}
 
