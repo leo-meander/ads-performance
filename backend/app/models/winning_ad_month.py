@@ -4,18 +4,26 @@ from app.models.base import Base, TimestampMixin, UUIDType
 
 
 class WinningAdMonth(TimestampMixin, Base):
-    """A creative that WON in a given calendar month — frozen at award time.
+    """A creative that got a frozen WIN or LOSE verdict in a calendar month.
 
     The Creative Library verdict is DYNAMIC: it re-compares each combo's
     lifetime ROAS against the account's current blended ROAS, so an ad that
     won in May can silently flip to LOSE in August when the benchmark moves.
-    That makes "how many winners did we ship in May?" unanswerable.
+    That makes "how many winners did we ship in May, and what was the win
+    rate?" unanswerable.
 
     This table is the answer. One row per (account, month, ad_name), written
-    ONCE when the ad first clears that month's bar and never recomputed —
-    roas / benchmark_roas / conversions are the numbers AS OF the award, kept
-    verbatim for the record. Rows are INSERT-only: a later benchmark shift
-    can add new winners to a month, never demote existing ones.
+    ONCE when the ad first crosses that month's test threshold (enough
+    clicks/bookings to be judged at all) and never recomputed — roas /
+    benchmark_roas / conversions / verdict are the numbers AS OF that award,
+    kept verbatim for the record. Rows are INSERT-only.
+
+    An ad_name only ever gets ONE row across all of history for a given
+    account: once it has a decided verdict (WIN or LOSE) in some month, it
+    is excluded from candidacy in every later month — see
+    winning_months_service.freeze_winning_months. This is what makes
+    win_rate = WIN count / (WIN + LOSE count) for a month meaningful instead
+    of double-counting an ad that keeps clearing the bar every month.
 
     Scope: only ads whose name contains "CRTV" (the creative-team naming
     convention) are considered — both as candidates AND when computing the
@@ -32,6 +40,12 @@ class WinningAdMonth(TimestampMixin, Base):
     )
     month = Column(Date, nullable=False, index=True)  # first day of the month
     ad_name = Column(String(500), nullable=False, index=True)
+
+    # WIN or LOSE — the decision this ad received once it crossed the test
+    # threshold that month. Every decided ad gets a row now (not just
+    # winners), because win-rate % and the "never re-test a decided ad"
+    # rule both need to know about LOSEs, not just WINs.
+    verdict = Column(String(10), nullable=False, default="WIN", server_default="WIN", index=True)
 
     # Best-effort link back to the Creative Library. NULL when the ad has no
     # combo row yet (combos are created manually / by the creative sync).

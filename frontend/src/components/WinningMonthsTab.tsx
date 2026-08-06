@@ -25,6 +25,10 @@ interface WinAd {
 interface WinMonth {
   month: string
   count: number
+  lose_count: number
+  tested: number
+  win_rate: number | null
+  in_progress: boolean
   spend: number
   revenue: number
   conversions: number
@@ -35,6 +39,9 @@ interface WinMonth {
 interface WinData {
   months: WinMonth[]
   total_wins: number
+  total_lost: number
+  total_tested: number
+  overall_win_rate: number | null
   distinct_ads: number
   scope_note: string
 }
@@ -127,9 +134,10 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
       </div>
 
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-900 flex flex-wrap items-start gap-x-4 gap-y-1">
-        <span className="font-semibold inline-flex items-center gap-1"><Lock className="w-3.5 h-3.5" /> Frozen awards</span>
-        <span>An ad wins a month when its ROAS <strong>that month</strong> clears the branch&apos;s blended ROAS for the same month (and it has enough data: &gt; 4,500 clicks or ≥ 5 bookings).</span>
-        <span>Once awarded it stays a winner forever — the Library&apos;s live verdict keeps moving with the benchmark, these rows don&apos;t.</span>
+        <span className="font-semibold inline-flex items-center gap-1"><Lock className="w-3.5 h-3.5" /> Frozen verdicts</span>
+        <span>An ad wins a month when its ROAS <strong>that month</strong> clears the branch&apos;s blended ROAS for the same month (and it has enough data: &gt; 4,500 clicks or ≥ 5 bookings — below that it&apos;s still TEST and isn&apos;t counted at all).</span>
+        <span><strong>Win rate</strong> = winning ads ÷ every ad that cleared the test threshold that month (win + lose), not the whole ad list.</span>
+        <span>An ad is judged <strong>once, ever</strong>: once it has a win/lose verdict in some month, it&apos;s never re-tested in a later month — the Library&apos;s live verdict keeps moving with the benchmark, these rows don&apos;t.</span>
         <span className="font-semibold">Only ads with &ldquo;CRTV&rdquo; in the name are counted.</span>
       </div>
 
@@ -153,18 +161,25 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
             <div className="flex items-baseline justify-between mb-3">
               <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Winning ads per month</h3>
               <p className="text-[11px] text-gray-400">
-                {data.total_wins} awards · {data.distinct_ads} distinct creatives
+                {data.total_wins} wins / {data.total_tested} tested
+                {data.overall_win_rate != null && <> · {(data.overall_win_rate * 100).toFixed(0)}% win rate</>}
+                {' '}· {data.distinct_ads} distinct creatives
               </p>
             </div>
             <div className="flex items-end gap-3 overflow-x-auto pb-1">
               {chartMonths.map(m => {
                 const active = m.month === selected
+                const title = [
+                  ...m.by_branch.map(b => `${b.branch_name}: ${b.count}`),
+                  `${m.count} win / ${m.tested} tested${m.win_rate != null ? ` (${(m.win_rate * 100).toFixed(0)}%)` : ''}`,
+                  m.in_progress ? 'Still open — win rate provisional' : '',
+                ].filter(Boolean).join('\n')
                 return (
                   <button
                     key={m.month}
                     onClick={() => setSelected(m.month)}
                     className="flex flex-col items-center gap-1 min-w-[64px] group"
-                    title={m.by_branch.map(b => `${b.branch_name}: ${b.count}`).join('\n')}
+                    title={title}
                   >
                     <span className={`text-sm font-bold tabular-nums ${active ? 'text-amber-600' : 'text-gray-700'}`}>{m.count}</span>
                     <div
@@ -174,6 +189,11 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
                     <span className={`text-[10px] whitespace-nowrap ${active ? 'text-amber-700 font-semibold' : 'text-gray-400'}`}>
                       {MONTH_LABEL(m.month)}
                     </span>
+                    {m.win_rate != null && (
+                      <span className={`text-[9px] whitespace-nowrap tabular-nums ${active ? 'text-amber-600' : 'text-gray-400'}`}>
+                        {(m.win_rate * 100).toFixed(0)}%{m.in_progress ? '*' : ''}
+                      </span>
+                    )}
                   </button>
                 )
               })}
@@ -188,6 +208,15 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
                   <Trophy className="w-4 h-4 text-amber-500" /> {MONTH_LABEL(current.month)}
                 </h3>
                 <span className="text-xs text-gray-500">{current.count} winning ads</span>
+                <span
+                  className="text-xs text-gray-500"
+                  title={current.in_progress ? "Month still open — win rate will keep changing until it closes" : undefined}
+                >
+                  {current.win_rate != null
+                    ? `${(current.win_rate * 100).toFixed(0)}% win rate (${current.count}/${current.tested} tested)`
+                    : 'no tested ads yet'}
+                  {current.in_progress && <span className="text-amber-600 font-semibold"> · in progress</span>}
+                </span>
                 {current.roas !== null && <span className="text-xs text-gray-500">blended {current.roas.toFixed(2)}x</span>}
                 <span className="text-xs text-gray-500">{current.conversions} bookings</span>
                 <div className="flex flex-wrap gap-1 ml-auto">
