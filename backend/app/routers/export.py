@@ -54,6 +54,7 @@ from app.models.keypoint import BranchKeypoint
 from app.models.metrics import MetricsCache
 from app.models.spy_saved_ad import SpySavedAd
 from app.models.user import User
+from app.models.winning_ad_month import WinningAdMonth
 from app.services.budget_service import (
     get_channel_monthly_vnd,
     get_yearly_plan,
@@ -1331,6 +1332,143 @@ def export_booking_matches_summary(
             "by_channel": list(by_channel_agg.values()),
             "by_branch": list(by_branch_agg.values()),
             "period": {"from": df.isoformat(), "to": dt.isoformat()},
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/export/winning-ads-monthly")
+def export_winning_ads_monthly(
+    year: int = Query(None, description="4-digit year, e.g. 2026. Omit for all years."),
+    month: str = Query(None, description="Single month as YYYY-MM, e.g. 2026-08. Overrides `year`."),
+    branch: str = Query(
+        None,
+        description="Optional canonical branch (case-insensitive): saigon|taipei|1948|oani|osaka|bread. Omit for all branches.",
+    ),
+    api_key: ApiKey = Depends(validate_api_key),
+    db: Session = Depends(get_db),
+):
+    """Frozen monthly creative winners — the design-team KPI feed.
+
+    Mirrors the /winning-ads "Winning by Month" tab. Each row is one award,
+    written ONCE when an ad first cleared that month's bar and never
+    recomputed, so a number pulled today matches what the tab showed then —
+    unlike the Creative Library verdict, which re-compares lifetime ROAS
+    against the account's CURRENT blended ROAS and therefore drifts.
+
+    An award covers a whole ad_name for that month: `spend` / `revenue` /
+    `roas` are the totals summed across every country and TA that ad ran in,
+    because that combined figure is what the win was judged on
+    (winning_months_service.compute_month_winners groups by ad_name alone).
+    `target_audience` / `country` are the combo's dominant values, carried for
+    context only — never a breakdown of the row.
+
+    Scope: only ads whose name contains "CRTV" are ever awarded, so this feed
+    excludes KOL and other non-creative-team traffic by construction.
+
+    Money is stored in each branch's native currency; `*_vnd` applies the same
+    FX map the rest of the export API uses so a cross-branch dashboard can sum
+    a single column. `roas` needs no conversion — FX cancels in the ratio.
+    """
+    try:
+        canonical = None
+        if branch:
+            canonical = canonical_branch(branch)
+            if canonical is None:
+                return _api_response(error=f"Unknown branch: {branch}")
+
+        q = db.query(WinningAdMonth)
+
+        if canonical:
+            account_ids = get_account_ids_for_branches(db, [canonical])
+            if not account_ids:
+                return _api_response(data={
+                    "rows": [], "by_month": [], "total_wins": 0, "distinct_ads": 0,
+                })
+            q = q.filter(WinningAdMonth.account_id.in_(account_ids))
+
+        if month:
+            try:
+                y, m = month.split("-")
+                start = date(int(y), int(m), 1)
+            except (ValueError, IndexError):
+                return _api_response(error=f"Invalid month (expected YYYY-MM): {month}")
+            q = q.filter(WinningAdMonth.month == start)
+        elif year:
+            q = q.filter(
+                WinningAdMonth.month >= date(year, 1, 1),
+                WinningAdMonth.month <= date(year, 12, 31),
+            )
+
+        rows = q.order_by(
+            WinningAdMonth.month.desc(), WinningAdMonth.roas.desc().nullslast()
+        ).all()
+
+        accounts = {
+            a.id: a.account_name
+            for a in db.query(AdAccount.id, AdAccount.account_name).all()
+        }
+
+        out_rows = []
+        by_month: dict[str, dict] = {}
+        for r in rows:
+            account_name = accounts.get(r.account_id)
+            branch_key = resolve_branch_for_account_name(account_name)
+            currency = BRANCH_CURRENCY.get(branch_key or "", "VND")
+            fx = _FX_TO_VND.get(currency, 1)
+            spend = float(r.spend or 0)
+            revenue = float(r.revenue or 0)
+            key = r.month.isoformat()[:7]
+
+            out_rows.append({
+                "month": key,
+                "branch": branch_key,
+                "account_name": account_name,
+                "ad_name": r.ad_name,
+                "combo_id": r.combo_id,
+                "target_audience": r.target_audience,
+                "country": r.country,
+                "currency": currency,
+                "spend": spend,
+                "revenue": revenue,
+                "spend_vnd": spend * fx,
+                "revenue_vnd": revenue * fx,
+                "roas": float(r.roas) if r.roas is not None else None,
+                "benchmark_roas": float(r.benchmark_roas) if r.benchmark_roas is not None else None,
+                "impressions": int(r.impressions or 0),
+                "clicks": int(r.clicks or 0),
+                "conversions": int(r.conversions or 0),
+                "frozen_at": r.frozen_at.isoformat() if r.frozen_at else None,
+            })
+
+            b = by_month.setdefault(key, {
+                "month": key, "wins": 0, "spend_vnd": 0.0, "revenue_vnd": 0.0,
+                "conversions": 0, "by_branch": {},
+            })
+            b["wins"] += 1
+            b["spend_vnd"] += spend * fx
+            b["revenue_vnd"] += revenue * fx
+            b["conversions"] += int(r.conversions or 0)
+            if branch_key:
+                b["by_branch"][branch_key] = b["by_branch"].get(branch_key, 0) + 1
+
+        months_out = []
+        for key in sorted(by_month, reverse=True):
+            b = by_month[key]
+            b["roas_vnd"] = (b["revenue_vnd"] / b["spend_vnd"]) if b["spend_vnd"] > 0 else None
+            b["by_branch"] = [
+                {"branch": n, "wins": c}
+                for n, c in sorted(b["by_branch"].items(), key=lambda kv: -kv[1])
+            ]
+            months_out.append(b)
+
+        return _api_response(data={
+            "rows": out_rows,
+            "by_month": months_out,
+            "total_wins": len(out_rows),
+            # One ad can win in several months — count each creative once.
+            "distinct_ads": len({(r.account_id, r.ad_name) for r in rows}),
+            "scope_note": 'Only ads whose name contains "CRTV" are awarded.',
         })
     except Exception as e:
         return _api_response(error=str(e))
