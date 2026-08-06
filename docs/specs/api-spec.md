@@ -108,6 +108,8 @@ Accessed through campaign hierarchy.
 | GET | /api/export/budget/yearly-plan | Export yearly plan (mirror of /api/budget/yearly-plan) |
 | GET | /api/export/budget/monthly-splits | Export 12-month splits (mirror of /api/budget/monthly-splits) |
 | GET | /api/export/spend/daily | Export spend data |
+| GET | /api/export/kpi/paid-ads-monthly | Per branch × month Spend / Revenue / ROAS — mirror of the /dashboard/country headline (Growth Team KPI sheet) |
+| GET | /api/export/winning-ads-monthly | Frozen monthly creative winners + win rate % (`by_month[].win_rate`) — the design-team KPI feed |
 
 ## Query Parameters (common)
 - `limit` — Pagination limit (default 50, max 200)

@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models.account import AdAccount
+from app.models.ad_daily_metric import AdDailyMetric
 from app.models.api_key import ApiKey
 from app.models.winning_ad_month import WinningAdMonth
 from app.services.export_auth import generate_api_key
@@ -41,10 +42,11 @@ def _account(db, name="Meander Osaka", currency="JPY") -> AdAccount:
     return acc
 
 
-def _award(db, account, *, month, ad_name, spend, revenue, roas, conversions=5, country="JP", ta="Solo"):
+def _award(db, account, *, month, ad_name, spend, revenue, roas, conversions=5,
+           country="JP", ta="Solo", verdict="WIN"):
     db.add(WinningAdMonth(
         id=str(uuid.uuid4()), account_id=account.id, month=month, ad_name=ad_name,
-        combo_id=None, target_audience=ta, country=country,
+        verdict=verdict, combo_id=None, target_audience=ta, country=country,
         spend=spend, revenue=revenue, impressions=1000, clicks=100,
         conversions=conversions, roas=roas, benchmark_roas=3.0,
         frozen_at=datetime.now(timezone.utc),
@@ -169,6 +171,96 @@ def test_invalid_month_is_rejected():
     body = _get(key, month="August").json()
     assert body["success"] is False
     assert "YYYY-MM" in body["error"]
+    db.close()
+
+
+def test_win_rate_counts_losses_in_the_denominator_only():
+    """The "% Ads win" KPI the HiD Dashboard pulls: LOSE verdicts move
+    `tested` / `win_rate` but never leak into `rows` or the money totals."""
+    db = TestSession()
+    key = _api_key(db)
+    acc = _account(db, "Meander Saigon", "VND")
+    _award(db, acc, month=date(2026, 8, 1), ad_name="CRTV_win", spend=100, revenue=500, roas=5.0)
+    _award(db, acc, month=date(2026, 8, 1), ad_name="CRTV_lose1", spend=900, revenue=90,
+           roas=0.1, verdict="LOSE")
+    _award(db, acc, month=date(2026, 8, 1), ad_name="CRTV_lose2", spend=800, revenue=80,
+           roas=0.1, verdict="LOSE")
+
+    data = _get(key).json()["data"]
+
+    assert [r["ad_name"] for r in data["rows"]] == ["CRTV_win"]
+    aug = data["by_month"][0]
+    assert (aug["wins"], aug["losses"], aug["tested"]) == (1, 2, 3)
+    assert aug["win_rate"] == 1 / 3
+    # Losers' spend/revenue stay out of the winners-only money columns.
+    assert aug["spend_vnd"] == 100
+    assert aug["revenue_vnd"] == 500
+
+    assert data["total_wins"] == 1
+    assert data["total_losses"] == 2
+    assert data["total_tested"] == 3
+    assert data["overall_win_rate"] == 1 / 3
+    assert data["distinct_ads"] == 1
+    db.close()
+
+
+def test_by_branch_carries_its_own_denominator():
+    """Per-branch win rate without one HTTP call per branch."""
+    db = TestSession()
+    key = _api_key(db)
+    osaka = _account(db, "Meander Osaka", "JPY")
+    saigon = _account(db, "Meander Saigon", "VND")
+    _award(db, osaka, month=date(2026, 8, 1), ad_name="CRTV_o1", spend=100, revenue=500, roas=5.0)
+    _award(db, osaka, month=date(2026, 8, 1), ad_name="CRTV_o2", spend=100, revenue=10,
+           roas=0.1, verdict="LOSE")
+    _award(db, saigon, month=date(2026, 8, 1), ad_name="CRTV_s1", spend=100, revenue=500, roas=5.0)
+
+    aug = _get(key).json()["data"]["by_month"][0]
+    by_branch = {b["branch"]: b for b in aug["by_branch"]}
+
+    assert by_branch["Osaka"]["wins"] == 1
+    assert by_branch["Osaka"]["tested"] == 2
+    assert by_branch["Osaka"]["win_rate"] == 0.5
+    assert by_branch["Saigon"]["win_rate"] == 1.0
+    db.close()
+
+
+def test_month_with_only_losses_reports_zero_win_rate():
+    """A month where nothing won must still appear — otherwise the KPI reads
+    as "no data" instead of the 0% it actually was."""
+    db = TestSession()
+    key = _api_key(db)
+    acc = _account(db, "Meander Saigon", "VND")
+    _award(db, acc, month=date(2026, 7, 1), ad_name="CRTV_flop", spend=500, revenue=50,
+           roas=0.1, verdict="LOSE")
+
+    data = _get(key).json()["data"]
+
+    assert [m["month"] for m in data["by_month"]] == ["2026-07"]
+    jul = data["by_month"][0]
+    assert (jul["wins"], jul["tested"], jul["win_rate"]) == (0, 1, 0.0)
+    assert data["rows"] == []
+    db.close()
+
+
+def test_in_progress_flags_the_month_a_branch_is_still_syncing():
+    """LOSE only freezes for a CLOSED month, so the newest synced month's
+    win_rate is provisional — the flag says so instead of the consumer
+    guessing from wall-clock today."""
+    db = TestSession()
+    key = _api_key(db)
+    acc = _account(db, "Meander Saigon", "VND")
+    _award(db, acc, month=date(2026, 7, 1), ad_name="CRTV_jul", spend=100, revenue=500, roas=5.0)
+    _award(db, acc, month=date(2026, 8, 1), ad_name="CRTV_aug", spend=100, revenue=500, roas=5.0)
+    db.add(AdDailyMetric(
+        id=str(uuid.uuid4()), account_id=acc.id, ad_id="123", ad_name="CRTV_aug",
+        date=date(2026, 8, 14), spend=100, revenue=500,
+    ))
+    db.commit()
+
+    by_month = {m["month"]: m for m in _get(key).json()["data"]["by_month"]}
+    assert by_month["2026-08"]["in_progress"] is True
+    assert by_month["2026-07"]["in_progress"] is False
     db.close()
 
 
