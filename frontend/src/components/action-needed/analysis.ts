@@ -110,6 +110,21 @@ const STEP_FIX: Record<string, { what: string; fixes: string[] }> = {
       'Check audience: wrong market or no travel intent → ad fatigue or mismatched ICP. Pause lowest-CTR placements/audiences.',
     ],
   },
+  // Engagement funnel (Impression → 3s View → ThruPlay → Click → Booking).
+  video_3s_views: {
+    what: 'the first frame does not stop the scroll — a hook problem, nothing downstream',
+    fixes: [
+      'Rework the opening 3 seconds: lead with motion, a face, or the payoff shot. A title card or slow establishing shot loses the viewer before the ad registers.',
+      'Check placement mix — Reels/TikTok feed reward vertical, sound-on hooks. Recycled 16:9 landscape assets lose the scroll war regardless of the offer.',
+    ],
+  },
+  video_thru_plays: {
+    what: 'they started watching but left before the payoff — the middle of the video loses them',
+    fixes: [
+      'Move the offer/USP earlier. If the reveal sits at 0:15 in a 0:30 cut, most viewers never reach it — front-load the reason to care.',
+      'Cut length and tighten pacing: fewer scenes, faster cuts, captions burned in for sound-off viewing.',
+    ],
+  },
   searches: {
     what: 'they clicked the ad but left before searching for rooms — landing page experience failed',
     fixes: [

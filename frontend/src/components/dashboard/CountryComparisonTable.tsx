@@ -20,6 +20,16 @@ export type CountryKpi = {
   cr: number
   aov: number
   cpc: number
+  // Engagement view (video counters + their rates). Present on every response —
+  // Sale/Lead just ignore them.
+  video_views: number
+  video_3s_views: number
+  thruplays: number
+  video_p100_views: number
+  cpm: number
+  hook_rate: number
+  thruplay_rate: number
+  video_complete_rate: number
   spend_change: number | null
   revenue_change: number | null
   roas_change: number | null
@@ -29,6 +39,11 @@ export type CountryKpi = {
   aov_change: number | null
   cpc_change: number | null
   conversions_change: number | null
+  impressions_change: number | null
+  cpm_change: number | null
+  hook_rate_change: number | null
+  thruplay_rate_change: number | null
+  video_complete_rate_change: number | null
 }
 
 export default function CountryComparisonTable({

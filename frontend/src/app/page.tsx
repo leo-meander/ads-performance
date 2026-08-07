@@ -112,6 +112,10 @@ function ActivityChips({ items }: { items: ChangeLogItem[] }) {
   )
 }
 
+// Sale / Lead / Engagement are mutually exclusive server-side buckets
+// (backend: app/core/campaign_types.py). 'all' skips the filter entirely.
+type CampaignType = 'all' | 'sale' | 'lead' | 'engagement'
+
 function DashboardInner() {
   const search = useSearchParams()
   // Deep-link inputs (read once on mount, then state owns them).
@@ -123,7 +127,7 @@ function DashboardInner() {
   const highlightCampaignId = search.get('campaign') || ''
 
   // -------------------- filter state --------------------
-  const [campaignType, setCampaignType] = useState<'all' | 'sale' | 'lead'>('all')
+  const [campaignType, setCampaignType] = useState<CampaignType>('all')
   const [country, setCountry] = useState(initialCountry)
   const [platform, setPlatform] = useState(initialPlatform)
   const [funnelStage, setFunnelStage] = useState(initialFunnel)
@@ -207,8 +211,7 @@ function DashboardInner() {
     if (platform) params.set('platform', platform)
     if (funnelStage) params.set('funnel_stage', funnelStage)
     if (branchParam) params.set('branches', branchParam)
-    if (campaignType === 'lead') params.set('campaign_type', 'lead')
-    else if (campaignType === 'sale') params.set('campaign_type', 'sale')
+    if (campaignType !== 'all') params.set('campaign_type', campaignType)
     if (extra) {
       for (const [k, v] of Object.entries(extra)) {
         if (v) params.set(k, v)
@@ -365,8 +368,7 @@ function DashboardInner() {
     const params = new URLSearchParams({ date_from: fmt(d90ago), date_to: fmt(today) })
     if (platform) params.set('platform', platform)
     if (branchParam) params.set('branches', branchParam)
-    if (campaignType === 'lead') params.set('campaign_type', 'lead')
-    else if (campaignType === 'sale') params.set('campaign_type', 'sale')
+    if (campaignType !== 'all') params.set('campaign_type', campaignType)
     apiFetch<{ steps: FunnelStep[] }>(`/api/dashboard/funnel?${params}`)
       .then((res) => {
         if (cancelled) return
@@ -652,6 +654,10 @@ function DashboardInner() {
               onClick={() => setCampaignType('lead')}
               className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'lead' ? 'bg-orange-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >Lead</button>
+            <button
+              onClick={() => setCampaignType('engagement')}
+              className={`px-3 py-1.5 font-medium transition-colors ${campaignType === 'engagement' ? 'bg-purple-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            >Engagement</button>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -836,6 +842,43 @@ function DashboardInner() {
           )
         }
 
+        if (campaignType === 'engagement') {
+          // Engagement campaigns are judged on attention, not on CR — but they
+          // still get credited for whatever purchases they drive, so Revenue /
+          // ROAS / Purchases stay on the board underneath.
+          const cpm = selectedKpi.impressions ? (selectedKpi.total_spend / selectedKpi.impressions) * 1000 : 0
+          const engagementHeadline = [
+            { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: kpiForChange?.spend_change ?? null, inverse: true },
+            { label: 'Impressions', value: fmtNum(selectedKpi.impressions), change: kpiForChange?.impressions_change ?? null, inverse: false },
+            { label: 'Hook Rate (3s / Impr)', value: selectedKpi.hook_rate ? selectedKpi.hook_rate.toFixed(2) + '%' : '--', change: kpiForChange?.hook_rate_change ?? null, inverse: false },
+            { label: 'ThruPlay Rate', value: selectedKpi.thruplay_rate ? selectedKpi.thruplay_rate.toFixed(2) + '%' : '--', change: kpiForChange?.thruplay_rate_change ?? null, inverse: false },
+            { label: 'CTR', value: ctr ? ctr.toFixed(2) + '%' : '0%', change: kpiForChange?.ctr_change ?? null, inverse: false },
+            { label: `CPM (${responseCurrency})`, value: cpm ? fmtMoney(Math.round(cpm), responseCurrency) : '--', change: kpiForChange?.cpm_change ?? null, inverse: true },
+          ]
+          const engagementSecondary = [
+            { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: kpiForChange?.revenue_change ?? null, inverse: false },
+            { label: 'ROAS', value: roas ? roas.toFixed(2) + 'x' : '0', change: kpiForChange?.roas_change ?? null, inverse: false },
+            { label: 'Purchases', value: fmtNum(selectedKpi.conversions), change: kpiForChange?.conversions_change ?? null, inverse: false },
+            { label: 'Video Completion', value: selectedKpi.video_complete_rate ? selectedKpi.video_complete_rate.toFixed(2) + '%' : '--', change: kpiForChange?.video_complete_rate_change ?? null, inverse: false },
+          ]
+          return (
+            <div className="space-y-4 mb-6">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                {engagementHeadline.map(k => <Card key={k.label} k={k} />)}
+              </div>
+              <div>
+                <div className="flex items-center gap-2 mb-2 text-[11px] uppercase tracking-wider text-purple-400 font-semibold">
+                  Purchase impact
+                  <span className="text-gray-300 normal-case font-normal tracking-normal">Engagement campaigns still get credited for the bookings they drive</span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {engagementSecondary.map(k => <Card key={k.label} k={k} />)}
+                </div>
+              </div>
+            </div>
+          )
+        }
+
         const headline = [
           { label: `Spend (${responseCurrency})`, value: fmtMoney(selectedKpi.total_spend, responseCurrency), change: kpiForChange?.spend_change ?? null, inverse: true },
           { label: `Revenue (${responseCurrency})`, value: fmtMoney(selectedKpi.total_revenue, responseCurrency), change: kpiForChange?.revenue_change ?? null, inverse: false },
@@ -959,7 +1002,7 @@ function DashboardInner() {
             <div className="flex items-center gap-2">
               <FilterIcon className="w-4 h-4 text-blue-600" />
               <h2 className="text-sm font-semibold text-gray-700">
-                {campaignType === 'lead' ? 'Lead Funnel' : 'Conversion Funnel'}
+                {campaignType === 'lead' ? 'Lead Funnel' : campaignType === 'engagement' ? 'Engagement Funnel' : 'Conversion Funnel'}
                 {country && <span className="text-gray-400 font-normal ml-2">— {countries.find(c => c.code === country)?.name || country}</span>}
                 {campaignSearch.trim() && (
                   <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium ml-2">
@@ -1164,7 +1207,7 @@ function DashboardInner() {
                       )}
                       <div className="flex items-center gap-4">
                         <div
-                          className={`rounded-lg py-3 px-4 flex items-center justify-between transition-all ${isLeak ? 'bg-red-100 ring-2 ring-inset ring-red-300' : campaignType === 'lead' ? 'bg-orange-100' : 'bg-blue-100'}`}
+                          className={`rounded-lg py-3 px-4 flex items-center justify-between transition-all ${isLeak ? 'bg-red-100 ring-2 ring-inset ring-red-300' : campaignType === 'lead' ? 'bg-orange-100' : campaignType === 'engagement' ? 'bg-purple-100' : 'bg-blue-100'}`}
                           style={{ width: `${widthPct}%`, minWidth: '180px' }}
                         >
                           <span className="text-xs text-gray-600">{stage.name}</span>
