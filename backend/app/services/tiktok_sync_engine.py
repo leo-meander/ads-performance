@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta, timezone
 
+from sqlalchemy import distinct
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -328,6 +329,42 @@ def sync_tiktok_account(
                 raw_data=raw["raw_data"],
             ))
         summary["adsets_synced"] += 1
+    db.flush()
+
+    # --- 2b. Roll adgroup country up to Campaign.country ---
+    # TikTok campaign names carry no country token, so Campaign.country stays
+    # NULL after step 1. The country dashboard reads
+    # COALESCE(AdSet.country, Campaign.country) and its metric rows are
+    # campaign-level (ad_set_id IS NULL), so no AdSet joins — without this
+    # rollup every TikTok row fails the `length(country) == 2` filter and the
+    # branch reports zero spend even though metrics_cache is fully populated.
+    # Same step exists in the Meta engine (sync_engine.py step 2b).
+    #
+    # 'Unknown' is excluded from the rollup: one badly-named adgroup shouldn't
+    # collapse an otherwise single-country campaign into 'ALL'.
+    tiktok_campaigns = (
+        db.query(Campaign)
+        .filter(Campaign.account_id == account.id, Campaign.platform == "tiktok")
+        .all()
+    )
+    for c in tiktok_campaigns:
+        adgroup_countries = {
+            r[0] for r in db.query(distinct(AdSet.country))
+            .filter(
+                AdSet.campaign_id == c.id,
+                AdSet.country.isnot(None),
+                AdSet.country != "Unknown",
+            )
+            .all()
+        }
+        if len(adgroup_countries) == 1:
+            new_country = adgroup_countries.pop()
+        elif len(adgroup_countries) > 1:
+            new_country = "ALL"
+        else:
+            continue  # no parseable adgroup country → leave campaign unchanged
+        if c.country != new_country:
+            c.country = new_country
     db.flush()
 
     # --- 3. Ads ---
