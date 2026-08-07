@@ -7,6 +7,7 @@ from sqlalchemy import exists, func, or_
 from sqlalchemy.orm import Session, aliased
 
 from app.core.branches import BRANCH_ACCOUNT_MAP, BRANCH_CURRENCY
+from app.core.campaign_types import apply_campaign_type
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
 from app.dependencies.auth import require_section
@@ -65,6 +66,27 @@ def _api_response(data=None, error=None):
         "error": error,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# Period-over-period tags: response key -> the metric it tracks. Emitted on
+# both the per-country rows and the headline aggregate, so a card can show its
+# delta whichever campaign-type view the dashboard is in.
+_CHANGE_FIELDS = {
+    "spend_change": "total_spend",
+    "revenue_change": "total_revenue",
+    "roas_change": "roas",
+    "ctr_change": "ctr",
+    "cpa_change": "cpa",
+    "cr_change": "cr",
+    "aov_change": "aov",
+    "cpc_change": "cpc",
+    "conversions_change": "conversions",
+    "impressions_change": "impressions",
+    "cpm_change": "cpm",
+    "hook_rate_change": "hook_rate",
+    "thruplay_rate_change": "thruplay_rate",
+    "video_complete_rate_change": "video_complete_rate",
+}
 
 
 def _default_date_range():
@@ -126,11 +148,8 @@ def _apply_common_filters(q, country, platform, date_from, date_to, funnel_stage
     elif account_ids is not None:
         # empty list => return no rows
         q = q.filter(Campaign.account_id.in_(account_ids or ["__no_match__"]))
-    # campaign_type filter: lead = name contains "Lea"; sale = excludes "Lea"; all = no filter
-    if campaign_type == "lead":
-        q = q.filter(Campaign.name.ilike("%Lea%"))
-    elif campaign_type == "sale":
-        q = q.filter(~Campaign.name.ilike("%Lea%"))
+    # sale | lead | engagement — see app/core/campaign_types.py
+    q = apply_campaign_type(q, campaign_type)
     # Valid country codes: 2-letter ISO, or the "ALL" multi-country marker.
     # Excludes NULL and the "Unknown" sentinel from failed parses.
     q = q.filter(
@@ -180,6 +199,13 @@ def _base_metrics_query(db: Session):
             func.sum(MetricsCache.conversions).label("total_conversions"),
             func.sum(MetricsCache.leads).label("total_leads"),
             func.sum(MetricsCache.revenue).label("total_revenue"),
+            # Video counters back the Engagement toggle's KPI cards. Summed
+            # unconditionally — they're cheap, and the Sale/Lead views simply
+            # ignore them.
+            func.sum(MetricsCache.video_views).label("total_video_views"),
+            func.sum(MetricsCache.video_3s_views).label("total_video_3s"),
+            func.sum(MetricsCache.video_thru_plays).label("total_thruplays"),
+            func.sum(MetricsCache.video_p100_views).label("total_video_p100"),
             func.count(func.distinct(Campaign.id)).label("campaign_count"),
         )
         .join(Campaign, Campaign.id == MetricsCache.campaign_id)
@@ -203,6 +229,10 @@ def _aggregate_country_rows(rows, convert_to_vnd: bool) -> dict:
             "conversions": 0,
             "leads": 0,
             "campaign_count": 0,
+            "video_views": 0,
+            "video_3s_views": 0,
+            "thruplays": 0,
+            "video_p100_views": 0,
         })
         fx = _fx(row.currency) if convert_to_vnd else 1
         cur["total_spend"] += float(row.total_spend or 0) * fx
@@ -212,6 +242,10 @@ def _aggregate_country_rows(rows, convert_to_vnd: bool) -> dict:
         cur["conversions"] += int(row.total_conversions or 0)
         cur["leads"] += int(row.total_leads or 0)
         cur["campaign_count"] += int(getattr(row, "campaign_count", 0) or 0)
+        cur["video_views"] += int(getattr(row, "total_video_views", 0) or 0)
+        cur["video_3s_views"] += int(getattr(row, "total_video_3s", 0) or 0)
+        cur["thruplays"] += int(getattr(row, "total_thruplays", 0) or 0)
+        cur["video_p100_views"] += int(getattr(row, "total_video_p100", 0) or 0)
 
     for cur in agg.values():
         spend = cur["total_spend"]
@@ -227,6 +261,15 @@ def _aggregate_country_rows(rows, convert_to_vnd: bool) -> dict:
         cur["cr"] = round((conv / clicks) * 100, 2) if clicks > 0 else 0
         cur["aov"] = round(revenue / conv, 2) if conv > 0 else 0
         cur["cpc"] = round(spend / clicks, 2) if clicks > 0 else 0
+        # Engagement rates. Denominators follow ad_performance.py: hook rate is
+        # measured against impressions, watch-depth against video plays.
+        plays = cur["video_views"]
+        cur["cpm"] = round((spend / imp) * 1000, 2) if imp > 0 else 0
+        cur["hook_rate"] = round((cur["video_3s_views"] / imp) * 100, 2) if imp > 0 else 0
+        cur["thruplay_rate"] = round((cur["thruplays"] / plays) * 100, 2) if plays > 0 else 0
+        cur["video_complete_rate"] = (
+            round((cur["video_p100_views"] / plays) * 100, 2) if plays > 0 else 0
+        )
     return agg
 
 
@@ -239,7 +282,7 @@ def country_kpi_summary(
     funnel_stage: str = Query(None),
     account_id: str = Query(None, description="Branch filter — ad_accounts.id"),
     branches: str = Query(None, description="Comma-separated branch names"),
-    campaign_type: str = Query(None, description="'lead' to scope to Lead campaigns (name contains Lea)"),
+    campaign_type: str = Query(None, description="sale | lead | engagement — mutually exclusive buckets, see app/core/campaign_types.py"),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -281,66 +324,52 @@ def country_kpi_summary(
             if not is_valid_country(code):
                 continue
             prev_kpi = prev_by_country.get(code)
-            if prev_kpi:
-                kpi["spend_change"] = calc_change(kpi["total_spend"], prev_kpi["total_spend"])
-                kpi["revenue_change"] = calc_change(kpi["total_revenue"], prev_kpi["total_revenue"])
-                kpi["roas_change"] = calc_change(kpi["roas"], prev_kpi["roas"])
-                kpi["ctr_change"] = calc_change(kpi["ctr"], prev_kpi["ctr"])
-                kpi["cpa_change"] = calc_change(kpi["cpa"], prev_kpi["cpa"])
-                kpi["cr_change"] = calc_change(kpi["cr"], prev_kpi["cr"])
-                kpi["aov_change"] = calc_change(kpi["aov"], prev_kpi["aov"])
-                kpi["cpc_change"] = calc_change(kpi["cpc"], prev_kpi["cpc"])
-                kpi["conversions_change"] = calc_change(kpi["conversions"], prev_kpi["conversions"])
-            else:
-                kpi["spend_change"] = None
-                kpi["revenue_change"] = None
-                kpi["roas_change"] = None
-                kpi["ctr_change"] = None
-                kpi["cpa_change"] = None
-                kpi["cr_change"] = None
-                kpi["aov_change"] = None
-                kpi["cpc_change"] = None
-                kpi["conversions_change"] = None
+            for change_key, metric_key in _CHANGE_FIELDS.items():
+                kpi[change_key] = (
+                    calc_change(kpi[metric_key], prev_kpi[metric_key]) if prev_kpi else None
+                )
             items.append(kpi)
 
         # Aggregate across countries so the dashboard headline can render
         # period-over-period change even when no country is selected. Sums
         # raw counters then derives ratios — derived metrics don't average
         # cleanly, so we recompute them from the summed totals.
+        _SUMMABLE = ("total_spend", "total_revenue", "impressions", "clicks",
+                     "conversions", "leads", "campaign_count", "video_views",
+                     "video_3s_views", "thruplays", "video_p100_views")
+
         def _sum_items(by_country: dict) -> dict:
-            tot = {"total_spend": 0.0, "total_revenue": 0.0, "impressions": 0,
-                   "clicks": 0, "conversions": 0, "leads": 0, "campaign_count": 0}
+            tot = {key: 0 for key in _SUMMABLE}
+            tot["total_spend"] = 0.0
+            tot["total_revenue"] = 0.0
             for code, k in by_country.items():
-                tot["total_spend"] += k["total_spend"]
-                tot["total_revenue"] += k["total_revenue"]
-                tot["impressions"] += k["impressions"]
-                tot["clicks"] += k["clicks"]
-                tot["conversions"] += k["conversions"]
-                tot["leads"] += k["leads"]
-                tot["campaign_count"] += k["campaign_count"]
+                for key in _SUMMABLE:
+                    tot[key] += k[key]
             spend, rev = tot["total_spend"], tot["total_revenue"]
             imp, clk, conv = tot["impressions"], tot["clicks"], tot["conversions"]
+            plays = tot["video_views"]
             tot["roas"] = round(rev / spend, 4) if spend > 0 else 0
             tot["ctr"] = round((clk / imp) * 100, 4) if imp > 0 else 0
             tot["cpa"] = round(spend / conv, 2) if conv > 0 else 0
             tot["cr"] = round((conv / clk) * 100, 4) if clk > 0 else 0
             tot["aov"] = round(rev / conv, 2) if conv > 0 else 0
             tot["cpc"] = round(spend / clk, 2) if clk > 0 else 0
+            tot["cpm"] = round((spend / imp) * 1000, 2) if imp > 0 else 0
+            tot["hook_rate"] = round((tot["video_3s_views"] / imp) * 100, 4) if imp > 0 else 0
+            tot["thruplay_rate"] = round((tot["thruplays"] / plays) * 100, 4) if plays > 0 else 0
+            tot["video_complete_rate"] = (
+                round((tot["video_p100_views"] / plays) * 100, 4) if plays > 0 else 0
+            )
             return tot
 
         curr_total = _sum_items(curr_by_country)
         prev_total = _sum_items(prev_by_country)
         aggregate = {
             **curr_total,
-            "spend_change": calc_change(curr_total["total_spend"], prev_total["total_spend"]),
-            "revenue_change": calc_change(curr_total["total_revenue"], prev_total["total_revenue"]),
-            "roas_change": calc_change(curr_total["roas"], prev_total["roas"]),
-            "ctr_change": calc_change(curr_total["ctr"], prev_total["ctr"]),
-            "cpa_change": calc_change(curr_total["cpa"], prev_total["cpa"]),
-            "cr_change": calc_change(curr_total["cr"], prev_total["cr"]),
-            "aov_change": calc_change(curr_total["aov"], prev_total["aov"]),
-            "cpc_change": calc_change(curr_total["cpc"], prev_total["cpc"]),
-            "conversions_change": calc_change(curr_total["conversions"], prev_total["conversions"]),
+            **{
+                change_key: calc_change(curr_total[metric_key], prev_total[metric_key])
+                for change_key, metric_key in _CHANGE_FIELDS.items()
+            },
         }
 
         return _api_response(data={
@@ -621,6 +650,29 @@ def ta_breakdown(
         return _api_response(error=str(e))
 
 
+def _funnel_shape(campaign_type: str | None) -> tuple[list[str], list[str]]:
+    """Stage keys + labels for one campaign-type view.
+
+    Engagement campaigns never reach Search/Add-to-Cart, so their funnel walks
+    watch depth instead and keeps Purchase as the last stage — an engagement
+    campaign can still drive bookings and we don't want that hidden.
+    """
+    if campaign_type == "lead":
+        return (
+            ["impressions", "clicks", "landing_page_views", "leads", "bookings"],
+            ["Impression", "Click", "Landing Page", "Form Fill", "Purchase"],
+        )
+    if campaign_type == "engagement":
+        return (
+            ["impressions", "video_3s_views", "video_thru_plays", "clicks", "bookings"],
+            ["Impression", "3s View", "ThruPlay", "Click", "Purchase"],
+        )
+    return (
+        ["impressions", "clicks", "searches", "add_to_cart", "checkouts", "bookings"],
+        ["Impression", "Click", "Search", "Add to Cart", "Checkout", "Booking"],
+    )
+
+
 @router.get("/dashboard/country/funnel")
 def country_funnel(
     country: str = Query(...),
@@ -662,6 +714,8 @@ def country_funnel(
                     func.sum(MetricsCache.conversions).label("bookings"),
                     func.sum(MetricsCache.landing_page_views).label("landing_page_views"),
                     func.sum(MetricsCache.leads).label("leads"),
+                    func.sum(MetricsCache.video_3s_views).label("video_3s_views"),
+                    func.sum(MetricsCache.video_thru_plays).label("video_thru_plays"),
                 )
                 .join(Campaign, Campaign.id == MetricsCache.campaign_id)
                 .outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
@@ -675,10 +729,7 @@ def country_funnel(
                 q = q.filter(Campaign.funnel_stage == funnel_stage.upper())
             if platform:
                 q = q.filter(MetricsCache.platform == platform)
-            if campaign_type == "lead":
-                q = q.filter(Campaign.name.ilike("%Lea%"))
-            elif campaign_type == "sale":
-                q = q.filter(~Campaign.name.ilike("%Lea%"))
+            q = apply_campaign_type(q, campaign_type)
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:
@@ -691,12 +742,7 @@ def country_funnel(
         if not row or not row.impressions:
             return _api_response(data={"stages": [], "country": country, "country_name": country_name(country) or country})
 
-        if campaign_type == "lead":
-            fields = ["impressions", "clicks", "landing_page_views", "leads", "bookings"]
-            labels = ["Impression", "Click", "Landing Page", "Form Fill", "Purchase"]
-        else:
-            fields = ["impressions", "clicks", "searches", "add_to_cart", "checkouts", "bookings"]
-            labels = ["Impression", "Click", "Search", "Add to Cart", "Checkout", "Booking"]
+        fields, labels = _funnel_shape(campaign_type)
 
         stages = []
         for i, field in enumerate(fields):
@@ -784,10 +830,7 @@ def country_comparison(
                 q = q.filter(MetricsCache.platform == platform)
             if ta:
                 q = q.filter(Campaign.ta == ta)
-            if campaign_type == "lead":
-                q = q.filter(Campaign.name.ilike("%Lea%"))
-            elif campaign_type == "sale":
-                q = q.filter(~Campaign.name.ilike("%Lea%"))
+            q = apply_campaign_type(q, campaign_type)
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:
@@ -909,10 +952,7 @@ def country_campaign_breakdown(
                 q = q.filter(MetricsCache.platform == platform)
             if funnel_stage:
                 q = q.filter(Campaign.funnel_stage == funnel_stage.upper())
-            if campaign_type == "lead":
-                q = q.filter(Campaign.name.ilike("%Lea%"))
-            elif campaign_type == "sale":
-                q = q.filter(~Campaign.name.ilike("%Lea%"))
+            q = apply_campaign_type(q, campaign_type)
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
             elif scoped_ids is not None:

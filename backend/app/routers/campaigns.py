@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.campaign_types import apply_campaign_type
 from app.core.permissions import scoped_account_ids
 from app.database import get_db
 from app.dependencies.auth import require_section
@@ -525,11 +526,33 @@ def get_dashboard_by_account(
         return _api_response(error=str(e))
 
 
+def _funnel_shape(campaign_type: str | None) -> tuple[list[str], list[str]]:
+    """Stage keys + labels for one campaign-type view.
+
+    Engagement campaigns never reach Search/Add-to-cart, so their funnel walks
+    watch depth instead and keeps Booking as the last stage — an engagement
+    campaign can still drive bookings and we don't want that hidden.
+    """
+    if campaign_type == "lead":
+        return (
+            ["impressions", "clicks", "landing_page_views", "leads", "bookings"],
+            ["Impression", "Click", "Landing Page", "Form Fill", "Purchase"],
+        )
+    if campaign_type == "engagement":
+        return (
+            ["impressions", "video_3s_views", "video_thru_plays", "clicks", "bookings"],
+            ["Impression", "3s View", "ThruPlay", "Click", "Booking"],
+        )
+    return (
+        ["impressions", "clicks", "searches", "add_to_cart", "checkouts", "bookings"],
+        ["Impression", "Clicks", "Search", "Add to cart", "Checkout", "Booking"],
+    )
+
+
 def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | None,
                       account_id: str | None = None, account_ids: list[str] | None = None,
                       campaign_type: str | None = None, campaign_ids: list[str] | None = None):
     """Aggregate funnel metrics for a date range."""
-    is_lead = campaign_type == "lead"
     q = db.query(
         func.sum(MetricsCache.impressions).label("impressions"),
         func.sum(MetricsCache.clicks).label("clicks"),
@@ -539,6 +562,8 @@ def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | Non
         func.sum(MetricsCache.conversions).label("bookings"),
         func.sum(MetricsCache.landing_page_views).label("landing_page_views"),
         func.sum(MetricsCache.leads).label("leads"),
+        func.sum(MetricsCache.video_3s_views).label("video_3s_views"),
+        func.sum(MetricsCache.video_thru_plays).label("video_thru_plays"),
     ).join(Campaign, MetricsCache.campaign_id == Campaign.id)
 
     # Campaign-level only — exclude adset/ad rows to prevent triple counting
@@ -552,28 +577,11 @@ def _aggregate_funnel(db: Session, d_from: date, d_to: date, platform: str | Non
         q = q.filter(Campaign.account_id == account_id)
     elif account_ids:
         q = q.filter(Campaign.account_id.in_(account_ids))
-    if campaign_type == "lead":
-        q = q.filter(Campaign.name.ilike("%Lea%"))
-    elif campaign_type == "sale":
-        q = q.filter(~Campaign.name.ilike("%Lea%"))
+    q = apply_campaign_type(q, campaign_type)
 
     row = q.one()
-    if is_lead:
-        return {
-            "impressions": int(row.impressions or 0),
-            "clicks": int(row.clicks or 0),
-            "landing_page_views": int(row.landing_page_views or 0),
-            "leads": int(row.leads or 0),
-            "bookings": int(row.bookings or 0),
-        }
-    return {
-        "impressions": int(row.impressions or 0),
-        "clicks": int(row.clicks or 0),
-        "searches": int(row.searches or 0),
-        "add_to_cart": int(row.add_to_cart or 0),
-        "checkouts": int(row.checkouts or 0),
-        "bookings": int(row.bookings or 0),
-    }
+    keys, _labels = _funnel_shape(campaign_type)
+    return {key: int(getattr(row, key) or 0) for key in keys}
 
 
 @router.get("/dashboard/funnel")
@@ -590,6 +598,7 @@ def get_dashboard_funnel(
 ):
     """Funnel metrics. Sale: Impression→Click→Search→Add to cart→Checkout→Booking.
     Lead: Impression→Click→Landing Page→Form Fill→Purchase.
+    Engagement: Impression→3s View→ThruPlay→Click→Booking.
     Pass campaign_ids (comma-separated UUIDs) to scope the funnel to specific campaigns."""
     try:
         branch_list = [b.strip() for b in branches.split(",") if b.strip()] if branches else None
@@ -620,12 +629,7 @@ def get_dashboard_funnel(
         previous = _aggregate_funnel(db, prev_from, prev_to, platform, account_id, branch_account_ids, campaign_type, parsed_campaign_ids)
 
         # Build funnel steps with drop-off
-        if campaign_type == "lead":
-            step_keys = ["impressions", "clicks", "landing_page_views", "leads", "bookings"]
-            step_labels = ["Impression", "Click", "Landing Page", "Form Fill", "Purchase"]
-        else:
-            step_keys = ["impressions", "clicks", "searches", "add_to_cart", "checkouts", "bookings"]
-            step_labels = ["Impression", "Clicks", "Search", "Add to cart", "Checkout", "Booking"]
+        step_keys, step_labels = _funnel_shape(campaign_type)
 
         steps = []
         for i, key in enumerate(step_keys):
