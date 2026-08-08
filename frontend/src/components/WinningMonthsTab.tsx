@@ -44,6 +44,7 @@ interface WinData {
   overall_win_rate: number | null
   distinct_ads: number
   scope_note: string
+  year: number | null
 }
 interface Account { id: string; account_name: string }
 
@@ -138,7 +139,8 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
         <span>An ad wins a month when its ROAS <strong>that month</strong> clears the branch&apos;s <strong>current</strong> (lifetime-to-date) blended ROAS — not that month&apos;s isolated cohort — and it has enough data: &gt; 4,500 clicks or ≥ 5 bookings. Below that it&apos;s still TEST and isn&apos;t counted at all.</span>
         <span><strong>Win rate</strong> = winning ads ÷ every ad that cleared the test threshold that month (win + lose), not the whole ad list.</span>
         <span>An ad is judged <strong>once, ever</strong>: once it has a win/lose verdict in some month, it&apos;s never re-tested in a later month — the Library&apos;s live verdict keeps moving with the benchmark, these rows don&apos;t.</span>
-        <span className="font-semibold">Only ads with &ldquo;CRTV&rdquo; in the name are counted.</span>
+        <span className="font-semibold">All ads count except ones with &ldquo;KOL&rdquo; in the name (paid amplification of KOL content).</span>
+        <span className="font-semibold">Totals below cover {data?.year ?? 'this year'} only — the year-to-date view resets every January. The benchmark itself stays lifetime, so narrowing the year never re-judges an ad.</span>
       </div>
 
       {loading && <p className="text-sm text-gray-400">Loading…</p>}
@@ -149,7 +151,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
           <Trophy className="w-8 h-8 text-gray-200 mx-auto mb-2" />
           <p className="text-sm text-gray-400">No winning months yet.</p>
           <p className="text-xs text-gray-400 mt-1">
-            Needs daily ad metrics (synced from 2026-05-01) and at least one CRTV ad clearing its month&apos;s benchmark.
+            Needs daily ad metrics (synced from 2026-05-01) and at least one non-KOL ad clearing its month&apos;s benchmark this year.
           </p>
         </div>
       )}

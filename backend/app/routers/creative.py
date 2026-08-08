@@ -1,6 +1,6 @@
 """Creative Library CRUD: keypoints, angles, copies, materials, combos."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -1185,6 +1185,7 @@ def analytics_by_angle(
 def winning_months(
     branch_id: str | None = None,
     month: str | None = None,
+    year: int | None = Query(None, description="4-digit year. Defaults to the current year (YTD). Pass year=0 for the untruncated all-time view."),
     refresh: bool = True,
     current_user: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
@@ -1203,7 +1204,12 @@ def winning_months(
     that just crossed the line shows up without anyone clicking a button. It
     can only ADD verdicts — never rewrite or remove one.
 
-    Scope: only ads whose name contains "CRTV".
+    Scope: all ads except ones whose name contains "KOL". The "% win rate"
+    totals are YEAR-TO-DATE by default (current calendar year only) — pass
+    `year=0` for the all-time view, or an explicit `year=YYYY` for a past
+    year. This windowing is REPORTING only: each verdict was decided against
+    the account's lifetime-to-date blended ROAS and is frozen, so narrowing
+    the year never re-judges anything.
     """
     try:
         ok, scoped_ids, err = scoped_account_ids(
@@ -1216,8 +1222,9 @@ def winning_months(
         if refresh:
             frozen = freeze_winning_months(db, account_ids=scoped_ids)
 
+        effective_year = date.today().year if year is None else (year or None)
         data = list_winning_months(
-            db, account_ids=scoped_ids, branch_id=branch_id, month=month
+            db, account_ids=scoped_ids, branch_id=branch_id, month=month, year=effective_year
         )
         data["refreshed"] = frozen
         return _api_response(data=data)

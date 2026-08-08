@@ -1379,8 +1379,10 @@ def export_winning_ads_monthly(
     algorithm rather than wall-clock "today", which would be wrong for a
     branch whose sync has silently stalled.
 
-    Scope: only ads whose name contains "CRTV" are ever awarded, so this feed
-    excludes KOL and other non-creative-team traffic by construction.
+    Scope: every ad is eligible EXCEPT ones whose name contains "KOL" (paid
+    amplification of KOL-sourced content), so this feed excludes that one
+    category by construction. Each award was judged against the account's
+    lifetime-to-date blended ROAS — see winning_months_service.
 
     Money is stored in each branch's native currency; `*_vnd` applies the same
     FX map the rest of the export API uses so a cross-branch dashboard can sum

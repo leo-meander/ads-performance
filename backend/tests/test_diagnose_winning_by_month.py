@@ -2,11 +2,11 @@
 empty Winning-by-Month tab.
 
 freeze_winning_months() has two silent skip conditions (zero ad_daily_metrics
-rows for an account; rows present but none match the "CRTV" name filter) and
-neither logs anything. Coverage: each condition is surfaced distinctly, a
-populated-and-matching account shows up in neither bucket, and the naming
-sample only appears for the "populated but no CRTV" case (not when there's
-simply no data at all — nothing to sample).
+rows for an account; rows present but every one is "KOL"-tagged, the one
+excluded category) and neither logs anything. Coverage: each condition is
+surfaced distinctly, a populated-and-eligible account shows up in neither
+bucket, and the naming sample only appears for the "populated but all KOL"
+case (not when there's simply no data at all — nothing to sample).
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def test_account_never_synced_is_flagged():
     result = diagnose_winning_by_month(db)
 
     assert "Meander Never Synced" in result["accounts_never_synced_daily_metrics"]
-    assert "Meander Never Synced" not in result["accounts_synced_but_no_crtv_ads"]
+    assert "Meander Never Synced" not in result["accounts_synced_but_all_kol"]
     entry = next(e for e in result["accounts"] if e["account_name"] == "Meander Never Synced")
     assert entry["ad_daily_metrics_rows"] == 0
     assert entry["date_range"] is None
@@ -54,36 +54,36 @@ def test_account_never_synced_is_flagged():
     db.close()
 
 
-def test_account_synced_without_crtv_is_flagged_with_sample():
+def test_account_synced_but_all_kol_is_flagged_with_sample():
     db = TestSession()
-    acc = _account(db, "Meander No CRTV")
+    acc = _account(db, "Meander All KOL")
     _metric(db, acc, "KOL_dnvrchoi_locationtips")
-    _metric(db, acc, "[Video] AI_Text Overlay Solo F")
+    _metric(db, acc, "[Video] KOL_someone_else")
 
     result = diagnose_winning_by_month(db)
 
-    assert "Meander No CRTV" in result["accounts_synced_but_no_crtv_ads"]
-    assert "Meander No CRTV" not in result["accounts_never_synced_daily_metrics"]
-    entry = next(e for e in result["accounts"] if e["account_name"] == "Meander No CRTV")
+    assert "Meander All KOL" in result["accounts_synced_but_all_kol"]
+    assert "Meander All KOL" not in result["accounts_never_synced_daily_metrics"]
+    entry = next(e for e in result["accounts"] if e["account_name"] == "Meander All KOL")
     assert entry["ad_daily_metrics_rows"] == 2
-    assert entry["distinct_crtv_ad_names"] == 0
+    assert entry["distinct_eligible_ad_names"] == 0
     assert set(entry["sample_ad_names"]) == {
-        "KOL_dnvrchoi_locationtips", "[Video] AI_Text Overlay Solo F",
+        "KOL_dnvrchoi_locationtips", "[Video] KOL_someone_else",
     }
     db.close()
 
 
-def test_account_with_crtv_ads_is_not_flagged():
+def test_account_with_non_kol_ads_is_not_flagged():
     db = TestSession()
     acc = _account(db, "Meander Healthy")
-    _metric(db, acc, "[Video] CRTV_Couple_PH")
+    _metric(db, acc, "[Video] AI_Text Overlay Solo F")
 
     result = diagnose_winning_by_month(db)
 
     assert "Meander Healthy" not in result["accounts_never_synced_daily_metrics"]
-    assert "Meander Healthy" not in result["accounts_synced_but_no_crtv_ads"]
+    assert "Meander Healthy" not in result["accounts_synced_but_all_kol"]
     entry = next(e for e in result["accounts"] if e["account_name"] == "Meander Healthy")
-    assert entry["distinct_crtv_ad_names"] == 1
+    assert entry["distinct_eligible_ad_names"] == 1
     assert "sample_ad_names" not in entry
     db.close()
 

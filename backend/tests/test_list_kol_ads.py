@@ -1,10 +1,10 @@
-"""Tests for winning_months_service.list_non_crtv_ads — finding every
+"""Tests for winning_months_service.list_kol_ads — finding every
 currently-spending ad that Winning by Month is blind to because its name
-lacks "CRTV".
+contains "KOL" (the one excluded category).
 
 Coverage:
-  - a non-CRTV ad is listed with its aggregated spend/revenue/roas
-  - a CRTV ad is excluded entirely (it already counts toward the KPI)
+  - a KOL ad is listed with its aggregated spend/revenue/roas
+  - a non-KOL ad is excluded entirely (it already counts toward the KPI)
   - multiple day-rows for the same ad_name are summed, not duplicated
   - results are ranked by spend descending
   - account_name_filter scopes to one branch (substring, case-insensitive)
@@ -17,7 +17,7 @@ from datetime import date
 
 from app.models.account import AdAccount
 from app.models.ad_daily_metric import AdDailyMetric
-from app.services.winning_months_service import list_non_crtv_ads
+from app.services.winning_months_service import list_kol_ads
 from tests.db import TestSession
 
 
@@ -41,16 +41,16 @@ def _metric(db, acc, *, ad_name, on, spend, revenue, conversions=5, ad_id=None):
     db.commit()
 
 
-def test_non_crtv_ad_is_listed_with_totals():
+def test_kol_ad_is_listed_with_totals():
     db = TestSession()
     acc = _account(db)
-    _metric(db, acc, ad_name="[Carousel] Full plan travel", on=date(2026, 8, 1), spend=100, revenue=300)
+    _metric(db, acc, ad_name="[Video] KOL_runawaygirl", on=date(2026, 8, 1), spend=100, revenue=300)
 
-    result = list_non_crtv_ads(db)
+    result = list_kol_ads(db)
 
     assert result["count"] == 1
     ad = result["ads"][0]
-    assert ad["ad_name"] == "[Carousel] Full plan travel"
+    assert ad["ad_name"] == "[Video] KOL_runawaygirl"
     assert ad["account_name"] == "Meander 1948"
     assert ad["spend"] == 100
     assert ad["revenue"] == 300
@@ -58,35 +58,35 @@ def test_non_crtv_ad_is_listed_with_totals():
     db.close()
 
 
-def test_crtv_ad_is_excluded():
+def test_non_kol_ad_is_excluded():
     db = TestSession()
     acc = _account(db)
-    _metric(db, acc, ad_name="[Video] CRTV_Solo_TW", on=date(2026, 8, 1), spend=100, revenue=300)
+    _metric(db, acc, ad_name="[Carousel] Full plan travel", on=date(2026, 8, 1), spend=100, revenue=300)
 
-    result = list_non_crtv_ads(db)
+    result = list_kol_ads(db)
 
     assert result["count"] == 0
     assert result["ads"] == []
     db.close()
 
 
-def test_crtv_match_is_case_insensitive():
+def test_kol_match_is_case_insensitive():
     db = TestSession()
     acc = _account(db)
-    _metric(db, acc, ad_name="crtv_lowercase_variant", on=date(2026, 8, 1), spend=100, revenue=300)
+    _metric(db, acc, ad_name="kol_lowercase_variant", on=date(2026, 8, 1), spend=100, revenue=300)
 
-    result = list_non_crtv_ads(db)
-    assert result["count"] == 0
+    result = list_kol_ads(db)
+    assert result["count"] == 1
     db.close()
 
 
 def test_multiple_days_are_summed_not_duplicated():
     db = TestSession()
     acc = _account(db)
-    _metric(db, acc, ad_name="[Carousel] Full plan travel", on=date(2026, 8, 1), spend=100, revenue=300, ad_id="fixed")
-    _metric(db, acc, ad_name="[Carousel] Full plan travel", on=date(2026, 8, 2), spend=50, revenue=150, ad_id="fixed")
+    _metric(db, acc, ad_name="KOL_full_plan_travel", on=date(2026, 8, 1), spend=100, revenue=300, ad_id="fixed")
+    _metric(db, acc, ad_name="KOL_full_plan_travel", on=date(2026, 8, 2), spend=50, revenue=150, ad_id="fixed")
 
-    result = list_non_crtv_ads(db)
+    result = list_kol_ads(db)
 
     assert result["count"] == 1
     ad = result["ads"][0]
@@ -99,13 +99,13 @@ def test_multiple_days_are_summed_not_duplicated():
 def test_ranked_by_spend_descending():
     db = TestSession()
     acc = _account(db)
-    _metric(db, acc, ad_name="Small spender", on=date(2026, 8, 1), spend=10, revenue=20)
-    _metric(db, acc, ad_name="Big spender", on=date(2026, 8, 1), spend=1000, revenue=2000)
-    _metric(db, acc, ad_name="Mid spender", on=date(2026, 8, 1), spend=100, revenue=200)
+    _metric(db, acc, ad_name="KOL_small_spender", on=date(2026, 8, 1), spend=10, revenue=20)
+    _metric(db, acc, ad_name="KOL_big_spender", on=date(2026, 8, 1), spend=1000, revenue=2000)
+    _metric(db, acc, ad_name="KOL_mid_spender", on=date(2026, 8, 1), spend=100, revenue=200)
 
-    result = list_non_crtv_ads(db)
+    result = list_kol_ads(db)
 
-    assert [a["ad_name"] for a in result["ads"]] == ["Big spender", "Mid spender", "Small spender"]
+    assert [a["ad_name"] for a in result["ads"]] == ["KOL_big_spender", "KOL_mid_spender", "KOL_small_spender"]
     db.close()
 
 
@@ -113,10 +113,10 @@ def test_account_name_filter_scopes_to_one_branch():
     db = TestSession()
     oani = _account(db, "Oani (Taipei)")
     saigon = _account(db, "Meander Saigon")
-    _metric(db, oani, ad_name="Oani travel ad", on=date(2026, 8, 1), spend=100, revenue=200)
-    _metric(db, saigon, ad_name="Saigon travel ad", on=date(2026, 8, 1), spend=100, revenue=200)
+    _metric(db, oani, ad_name="KOL_oani_travel_ad", on=date(2026, 8, 1), spend=100, revenue=200)
+    _metric(db, saigon, ad_name="KOL_saigon_travel_ad", on=date(2026, 8, 1), spend=100, revenue=200)
 
-    result = list_non_crtv_ads(db, account_name_filter="oani")
+    result = list_kol_ads(db, account_name_filter="oani")
 
     assert result["count"] == 1
     assert result["ads"][0]["account_name"] == "Oani (Taipei)"
@@ -126,9 +126,9 @@ def test_account_name_filter_scopes_to_one_branch():
 def test_zero_spend_ad_has_none_roas_not_a_crash():
     db = TestSession()
     acc = _account(db)
-    _metric(db, acc, ad_name="No spend yet", on=date(2026, 8, 1), spend=0, revenue=0)
+    _metric(db, acc, ad_name="KOL_no_spend_yet", on=date(2026, 8, 1), spend=0, revenue=0)
 
-    result = list_non_crtv_ads(db)
+    result = list_kol_ads(db)
 
     assert result["count"] == 1
     assert result["ads"][0]["roas"] is None
@@ -140,7 +140,7 @@ def test_no_ads_at_all_returns_empty_not_error():
     _account(db)
     db.commit()
 
-    result = list_non_crtv_ads(db)
+    result = list_kol_ads(db)
     assert result == {
         "count": 0, "ads": [],
         "note": result["note"],  # just confirm the key exists; content checked elsewhere

@@ -419,7 +419,7 @@ def trigger_freeze_winning_ads(
 
     The Creative Library verdict is dynamic (lifetime ROAS vs the account's
     current blended ROAS), so a past month's winner count drifts. This pass
-    snapshots it: any CRTV ad that clears its month's benchmark gets a
+    snapshots it: any non-KOL ad that clears its month's benchmark gets a
     permanent winning_ad_months row. Append-only — it can add awards to a
     month, never rewrite or remove one. Runs inline (pure SQL over
     ad_daily_metrics, no external API calls)."""
@@ -1023,11 +1023,10 @@ def trigger_diagnose_winning_by_month(
     """Synchronous, read-only: explain an empty Winning-by-Month tab.
 
     freeze_winning_months() has two silent skip conditions — an account with
-    zero ad_daily_metrics rows, and an account whose ad_daily_metrics has no
-    ad_name containing "CRTV" — neither logs anything, so there's nothing to
-    grep. This surfaces both per account, plus a naming sample when the CRTV
-    filter is the blocker, so a naming-convention mismatch is obvious instead
-    of guessed at.
+    zero ad_daily_metrics rows, and an account whose ad_daily_metrics rows are
+    ALL "KOL"-tagged (the one excluded category) — neither logs anything, so
+    there's nothing to grep. This surfaces both per account, plus a naming
+    sample for the all-KOL case, instead of guessing.
     """
     _require_secret(x_internal_secret)
     from app.services.winning_months_service import diagnose_winning_by_month
@@ -1043,28 +1042,27 @@ def trigger_diagnose_winning_by_month(
     return _api_response(data=result)
 
 
-@router.post("/internal/tasks/list-non-crtv-ads", status_code=200)
-def trigger_list_non_crtv_ads(
+@router.post("/internal/tasks/list-kol-ads", status_code=200)
+def trigger_list_kol_ads(
     x_internal_secret: str | None = Header(default=None),
     account: str | None = None,
     limit: int = 200,
 ):
-    """Synchronous, read-only: every currently-spending ad whose name has no
-    "CRTV" in it, ranked by spend — i.e. exactly what Winning by Month is
+    """Synchronous, read-only: every currently-spending ad whose name
+    contains "KOL", ranked by spend — i.e. exactly what Winning by Month is
     blind to. Pass `?account=Oani` (or `1948`, substring match) to scope to
-    one branch. Use this to find which running ads need a rename on Meta to
-    start counting toward the KPI.
+    one branch.
     """
     _require_secret(x_internal_secret)
     if limit <= 0 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be 1..1000")
-    from app.services.winning_months_service import list_non_crtv_ads
+    from app.services.winning_months_service import list_kol_ads
 
     db = SessionLocal()
     try:
-        result = list_non_crtv_ads(db, account_name_filter=account, limit=limit)
+        result = list_kol_ads(db, account_name_filter=account, limit=limit)
     except Exception as e:
-        logger.exception("[list-non-crtv-ads] failed")
+        logger.exception("[list-kol-ads] failed")
         return _api_response(error=f"{type(e).__name__}: {e}")
     finally:
         db.close()

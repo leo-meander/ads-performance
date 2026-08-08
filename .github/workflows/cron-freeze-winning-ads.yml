@@ -6,7 +6,7 @@
 # moves. This pass writes each award once and never rewrites it.
 #
 # Append-only: a re-run can add winners to a month, never demote one. Scope is
-# ads whose name contains "CRTV".
+# every ad EXCEPT ones whose name contains "KOL".
 name: Cron — Freeze winning ads by month
 
 on:
