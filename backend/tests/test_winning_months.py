@@ -1,13 +1,16 @@
-"""Monthly winning-creative awards — CRTV scope, the lifetime bar, and the freeze.
+"""Monthly winning-creative awards — KOL exclusion scope, the lifetime bar, and the freeze.
 
 Things that must hold:
-  1. Only ads whose name contains "CRTV" are in play — as candidates AND when
-     computing the benchmark, so a KOL ad's outlier ROAS can't raise the bar
-     and hide a real winner.
-  2. The bar is the account's LIFETIME-to-date blended CRTV ROAS — "hiện tại"
-     per Mason's spec means lifetime, not a single month's isolated cohort.
-     Only the CANDIDATE's own roas is month-scoped (that's what "winning BY
-     MONTH" means); the benchmark it's measured against is not.
+  1. Every ad counts EXCEPT ones whose name contains "KOL" — as candidates AND
+     when computing the benchmark, so a KOL ad's outlier ROAS can't raise the
+     bar and hide a real winner. Ads that lack "CRTV" now count too — that
+     naming convention no longer gates anything.
+  2. The bar is the account's LIFETIME-to-date blended non-KOL ROAS — "hiện
+     tại" per Mason's spec means lifetime, not year-to-date and not a single
+     month's isolated cohort. Only the CANDIDATE's own roas is month-scoped
+     (that's what "winning BY MONTH" means); the benchmark it's measured
+     against is not. The year-to-date windowing is REPORTING only — see
+     test_year_filter_* below.
   3. Once awarded, a row is frozen: later data can add new winners to a month
      but must never rewrite or remove an existing award.
   4. An ad's verdict (WIN or LOSE) is decided ONCE, ever, per account — once
@@ -26,6 +29,7 @@ exists.
 import uuid
 from datetime import date
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -38,7 +42,7 @@ from app.services.winning_months_service import (
     compute_lifetime_benchmark,
     compute_month_verdicts,
     freeze_winning_months,
-    is_crtv,
+    is_kol,
     month_end,
     months_between,
 )
@@ -92,11 +96,12 @@ def _metric(db, acc, *, ad_name, on, spend, revenue, clicks=100, conversions=10,
 # ── helpers ───────────────────────────────────────────────
 
 
-def test_is_crtv_is_case_insensitive_and_substring():
-    assert is_crtv("[Video] CRTV_Couple_PH")
-    assert is_crtv("crtv-osaka-solo")
-    assert not is_crtv("[Video] KOL_runawaygirl")
-    assert not is_crtv(None)
+def test_is_kol_is_case_insensitive_and_substring():
+    assert is_kol("[Video] KOL_runawaygirl")
+    assert is_kol("kol-osaka-solo")
+    assert not is_kol("[Video] CRTV_Couple_PH")
+    assert not is_kol("[Carousel] Full plan travel")
+    assert not is_kol(None)
 
 
 def test_month_end_handles_december_and_short_months():
@@ -114,12 +119,13 @@ def test_months_between_spans_year_boundary():
 # ── scope + classification ────────────────────────────────
 
 
-def test_non_crtv_ads_are_ignored_and_never_move_the_benchmark():
+def test_kol_ads_are_ignored_and_never_move_the_benchmark():
     db = TestSession()
     acc = _account(db)
-    # CRTV pair: blended ROAS = 600/200 = 3.0x. A clears it, B doesn't.
-    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)
-    _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=100)
+    # Non-KOL pair: blended ROAS = 600/200 = 3.0x. A clears it, B doesn't.
+    # Neither is named "CRTV" — proving the broadened scope counts them.
+    _metric(db, acc, ad_name="Plain_A", on=MAY, spend=100, revenue=500)
+    _metric(db, acc, ad_name="Plain_B", on=MAY, spend=100, revenue=100)
     # A KOL ad at 100x. If it counted, the bar would jump to ~35x and A
     # would lose its award.
     _metric(db, acc, ad_name="KOL_runawaygirl", on=MAY, spend=100, revenue=10_000)
@@ -131,9 +137,9 @@ def test_non_crtv_ads_are_ignored_and_never_move_the_benchmark():
     assert benchmark == 3.0
     winners = [d for d in decided if d["verdict"] == "WIN"]
     losers = [d for d in decided if d["verdict"] == "LOSE"]
-    assert [w["ad_name"] for w in winners] == ["CRTV_A"]
+    assert [w["ad_name"] for w in winners] == ["Plain_A"]
     assert winners[0]["roas"] == 5.0
-    assert [l["ad_name"] for l in losers] == ["CRTV_B"]  # crossed the test bar, just lost it
+    assert [l["ad_name"] for l in losers] == ["Plain_B"]  # crossed the test bar, just lost it
 
 
 def test_low_volume_ad_is_test_not_a_winner():
@@ -172,6 +178,23 @@ def test_benchmark_is_lifetime_to_date_not_a_per_month_cohort():
     # CRTV_A's 2x monthly roas cleared May's isolated 1.0x bar but not the
     # account's lifetime 6.0x bar.
     assert "CRTV_A" in may_losers
+
+
+def test_benchmark_spans_years_rather_than_resetting_each_january():
+    """The reporting window is year-to-date, but the BAR is not — a prior
+    year's data still counts toward it. Guards the split from being
+    "simplified" into a YTD benchmark."""
+    db = TestSession()
+    acc = _account(db)
+    # 2025: 100 spend / 2000 revenue. 2026: 100 spend / 200 revenue.
+    # Lifetime blend = 2200 / 200 = 11.0x. A year-to-date bar would be 2.0x.
+    _metric(db, acc, ad_name="CRTV_old", on=date(2025, 6, 1), spend=100, revenue=2000)
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=200)
+
+    benchmark = compute_lifetime_benchmark(db, acc.id)
+    db.close()
+
+    assert benchmark == 11.0
 
 
 # ── freeze semantics ──────────────────────────────────────
@@ -299,7 +322,10 @@ def test_win_rate_is_wins_over_tested_ads_for_a_closed_month():
     _metric(db, acc, ad_name="CRTV_D", on=JUN, spend=100, revenue=100)
     db.close()
 
-    resp = client.get("/api/creative/winning-months", headers=_admin_headers())
+    # year=2026 pinned explicitly — the endpoint defaults to wall-clock
+    # "current year," which would make this test flaky once real time moves
+    # past 2026.
+    resp = client.get("/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"], body["error"]
@@ -325,7 +351,7 @@ def test_winning_months_endpoint_groups_by_month():
     _metric(db, acc, ad_name="KOL_star", on=MAY, spend=100, revenue=99_999)
     db.close()
 
-    resp = client.get("/api/creative/winning-months", headers=_admin_headers())
+    resp = client.get("/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"], body["error"]
@@ -353,3 +379,43 @@ def test_winning_months_endpoint_groups_by_month():
     assert may["lose_count"] == 1
     assert may["tested"] == 2
     assert may["win_rate"] == 0.5
+
+
+def test_year_filter_scopes_the_totals_without_changing_verdicts():
+    """The YTD window is REPORTING only. A 2025 award stays frozen with the
+    same verdict and benchmark; asking for 2026 just leaves it out of the
+    buckets and the headline totals."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    # Both clear the lifetime bar and both sit in CLOSED months (JUN's data
+    # is what closes MAY, and 2026 data closes 2025), so both freeze as WIN.
+    _metric(db, acc, ad_name="CRTV_2025", on=date(2025, 6, 10), spend=100, revenue=5000)
+    _metric(db, acc, ad_name="CRTV_2026", on=MAY, spend=100, revenue=5000)
+    _metric(db, acc, ad_name="CRTV_later", on=JUN, spend=100, revenue=100)
+    acc_id = acc.id  # `acc` detaches once the session closes
+    db.close()
+
+    headers = _admin_headers()
+    ytd = client.get("/api/creative/winning-months", params={"year": 2026}, headers=headers).json()["data"]
+    all_time = client.get("/api/creative/winning-months", params={"year": 0}, headers=headers).json()["data"]
+
+    ytd_months = [m["month"] for m in ytd["months"]]
+    assert ytd_months == ["2026-05"]  # 2025 is windowed out
+    assert ytd["year"] == 2026
+
+    # year=0 opts out of the window entirely and 2025 reappears, unchanged.
+    assert [m["month"] for m in all_time["months"]] == ["2026-05", "2025-06"]
+    assert all_time["year"] is None
+    assert all_time["total_wins"] == ytd["total_wins"] + 1
+
+    # The 2025 row itself was never re-judged by either request — same
+    # verdict, and its frozen bar is the lifetime one, not a 2025-only blend.
+    db = TestSession()
+    row = db.query(WinningAdMonth).filter(WinningAdMonth.ad_name == "CRTV_2025").one()
+    assert row.verdict == "WIN"
+    # ~33.67 (the lifetime blend), not 50.0 (what a 2025-only bar would be).
+    # approx because the column rounds to 4 decimal places.
+    assert float(row.benchmark_roas) == pytest.approx(
+        compute_lifetime_benchmark(db, acc_id), rel=1e-4
+    )
+    db.close()

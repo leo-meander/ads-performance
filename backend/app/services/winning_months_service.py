@@ -9,14 +9,20 @@ stable answer.
 
 This module answers it. For every (account, calendar month) it aggregates
 that month's ad_daily_metrics per ad_name, compares each candidate's MONTHLY
-roas against the account's LIFETIME (all-time-to-date) blended CRTV roas —
+roas against the account's LIFETIME (all-time-to-date) blended non-KOL roas —
 same "current benchmark" the Library compares combos against, per Mason:
 "hiện tại" means lifetime, not that month's isolated cohort — applies the
 same WIN/LOSE/TEST rule the Library uses, and INSERTs the decided ads into
 winning_ad_months. Rows are append-only: re-running can award NEW verdicts to
 a past month, but never rewrites or removes one that was already frozen —
 the roas / benchmark / bookings stored on the row are the numbers as of the
-award.
+award, so a month's win_rate never drifts later just because the lifetime
+benchmark kept moving.
+
+Note the split: the BENCHMARK is lifetime, but the REPORTING window is
+year-to-date — list_winning_months buckets only the selected calendar year,
+so the headline "% win rate" resets each January without changing how any
+individual verdict was decided.
 
 Two rules that make the win-rate % meaningful instead of misleading:
 
@@ -39,9 +45,12 @@ the account's current/most-recent synced month is still accumulating data,
 so its win_rate looks artificially high (or is None) until the month
 closes and its stragglers get their final LOSE.
 
-Scope: only ads whose name contains "CRTV" (the creative-team naming
-convention). The filter applies to candidates AND to the lifetime benchmark,
-so KOL and other non-creative traffic never moves the bar.
+Scope: every ad EXCEPT ones whose name contains "KOL" (paid amplification of
+KOL-sourced content — testing someone else's creative, not the design team's).
+Everything else — CRTV-tagged or not — counts. The filter applies to
+candidates AND to the lifetime benchmark, so KOL traffic never moves the bar.
+Per Mason: previously only "CRTV"-named ads counted; now it's "all ads, minus
+KOL."
 """
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -57,13 +66,14 @@ from app.services.creative_service import classify_verdict
 
 logger = logging.getLogger(__name__)
 
-# Creative-team naming convention. Case-insensitive so "crtv"/"Crtv" also match.
-CRTV_TOKEN = "CRTV"
-_CRTV_LIKE = f"%{CRTV_TOKEN}%"
+# Paid amplification of KOL content — the one category excluded from "all
+# ads." Case-insensitive so "kol"/"Kol" also match.
+KOL_TOKEN = "KOL"
+_KOL_LIKE = f"%{KOL_TOKEN}%"
 
 
-def is_crtv(ad_name: str | None) -> bool:
-    return bool(ad_name) and CRTV_TOKEN in ad_name.upper()
+def is_kol(ad_name: str | None) -> bool:
+    return bool(ad_name) and KOL_TOKEN in ad_name.upper()
 
 
 def month_start(d: date) -> date:
@@ -89,21 +99,25 @@ def months_between(first: date, last: date) -> list[date]:
 
 
 def compute_lifetime_benchmark(db: Session, account_id: str) -> float:
-    """The account's all-time blended CRTV ROAS — the "current" benchmark.
+    """The account's all-time blended (non-KOL) ROAS — the "current" benchmark.
 
     Per Mason: "hiện tại" (current) means lifetime-to-date, not that one
-    month's isolated cohort. This mirrors the Creative Library's own bar —
-    "each combo's LIFETIME ROAS vs the account's CURRENT blended ROAS" — just
-    scoped to CRTV ads only, same as everywhere else in this module, so KOL
-    and other non-creative traffic never moves it. No date filter: every day
-    ever synced for this account counts.
+    month's isolated cohort and not year-to-date either. This mirrors the
+    Creative Library's own bar — "each combo's LIFETIME ROAS vs the account's
+    CURRENT blended ROAS" — just excluding KOL ads, same as everywhere else in
+    this module, so KOL traffic never moves it. No date filter: every day ever
+    synced for this account counts.
+
+    The year-to-date scoping added alongside this lives in
+    list_winning_months, on the REPORTING side only — it never touches how a
+    verdict is decided.
     """
     total_spend, total_revenue = (
         db.query(sf.sum(AdDailyMetric.spend), sf.sum(AdDailyMetric.revenue))
         .filter(
             AdDailyMetric.account_id == account_id,
             AdDailyMetric.ad_name.isnot(None),
-            AdDailyMetric.ad_name.ilike(_CRTV_LIKE),
+            ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
         )
         .first()
     )
@@ -122,7 +136,7 @@ def compute_month_verdicts(
     """Aggregate one account-month and decide every candidate that qualifies.
 
     `benchmark` is the bar every candidate is measured against — the
-    account's CURRENT (lifetime-to-date) blended CRTV ROAS, from
+    account's CURRENT (lifetime-to-date) blended non-KOL ROAS, from
     compute_lifetime_benchmark, NOT recomputed from this month's cohort
     alone. Only the candidate's own roas is month-scoped: that's the whole
     point of "winning BY MONTH" — did this ad's performance THIS MONTH clear
@@ -154,7 +168,7 @@ def compute_month_verdicts(
             AdDailyMetric.date >= start,
             AdDailyMetric.date <= end,
             AdDailyMetric.ad_name.isnot(None),
-            AdDailyMetric.ad_name.ilike(_CRTV_LIKE),
+            ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
         )
         .group_by(AdDailyMetric.ad_name)
         .all()
@@ -199,9 +213,10 @@ def freeze_winning_months(
     month is computed — see compute_month_verdicts. Commits once at the end.
 
     The benchmark is computed ONCE per account per call — the account's
-    current (lifetime-to-date) blended CRTV ROAS, via compute_lifetime_benchmark
-    — and reused as the bar for every month processed this run, rather than
-    recomputed from each month's own isolated cohort.
+    current (lifetime-to-date) blended non-KOL ROAS, via
+    compute_lifetime_benchmark — and reused as the bar for every month
+    processed this run, rather than recomputed from each month's own isolated
+    cohort.
 
     LOSE verdicts are only frozen for a CLOSED month — one strictly before
     the account's most-recent synced month. The most-recent month is still
@@ -257,7 +272,7 @@ def freeze_winning_months(
         }
 
         # One "current" bar for every month processed this run — the
-        # account's lifetime-to-date blended CRTV ROAS, not a per-month
+        # account's lifetime-to-date blended non-KOL ROAS, not a per-month
         # recomputation. See compute_lifetime_benchmark.
         benchmark = compute_lifetime_benchmark(db, acc.id)
 
@@ -316,14 +331,15 @@ def freeze_winning_months(
 
 def diagnose_winning_by_month(db: Session) -> dict:
     """Explain an empty Winning-by-Month tab: is ad_daily_metrics unpopulated,
-    or is it populated but nothing matches the "CRTV" naming filter?
+    or is it populated but every synced ad is KOL-tagged (the one excluded
+    category)?
 
     freeze_winning_months() silently skips an account with zero ad_daily_metrics
-    rows (bounds[0] is None) and silently skips a month with zero CRTV-matching
-    rows (compute_month_verdicts returns no decided ads) — neither is an error, so
-    there's nothing in the logs to point at. This makes both conditions visible
-    at once, plus a naming sample so a naming-convention mismatch (the account
-    just doesn't use "CRTV") is obvious rather than guessed at. Read-only.
+    rows (bounds[0] is None) and silently skips a month with zero eligible
+    (non-KOL) rows (compute_month_verdicts returns no decided ads) — neither is
+    an error, so there's nothing in the logs to point at. This makes both
+    conditions visible at once, plus a naming sample for the all-KOL case so
+    it's obvious rather than guessed at. Read-only.
     """
     accounts = (
         db.query(AdAccount)
@@ -339,9 +355,9 @@ def diagnose_winning_by_month(db: Session) -> dict:
             .first()
         )
         row_count = bounds[2] or 0
-        crtv_count = (
+        eligible_count = (
             db.query(sf.count(sf.distinct(AdDailyMetric.ad_name)))
-            .filter(AdDailyMetric.account_id == acc.id, AdDailyMetric.ad_name.ilike(_CRTV_LIKE))
+            .filter(AdDailyMetric.account_id == acc.id, ~AdDailyMetric.ad_name.ilike(_KOL_LIKE))
             .scalar()
         ) or 0
 
@@ -351,11 +367,11 @@ def diagnose_winning_by_month(db: Session) -> dict:
             "date_range": (
                 f"{bounds[0].isoformat()} to {bounds[1].isoformat()}" if bounds[0] else None
             ),
-            "distinct_crtv_ad_names": crtv_count,
+            "distinct_eligible_ad_names": eligible_count,
         }
-        if row_count and not crtv_count:
-            # Populated but nothing matches — show what naming this account
-            # actually uses instead of leaving Mason to guess.
+        if row_count and not eligible_count:
+            # Populated but every ad is KOL-tagged — show a sample instead of
+            # leaving Mason to guess.
             sample = (
                 db.query(AdDailyMetric.ad_name)
                 .filter(AdDailyMetric.account_id == acc.id, AdDailyMetric.ad_name.isnot(None))
@@ -367,9 +383,9 @@ def diagnose_winning_by_month(db: Session) -> dict:
         per_account.append(entry)
 
     never_synced = [e["account_name"] for e in per_account if e["ad_daily_metrics_rows"] == 0]
-    synced_no_crtv = [
+    synced_all_kol = [
         e["account_name"] for e in per_account
-        if e["ad_daily_metrics_rows"] > 0 and e["distinct_crtv_ad_names"] == 0
+        if e["ad_daily_metrics_rows"] > 0 and e["distinct_eligible_ad_names"] == 0
     ]
 
     frozen_awards = (
@@ -380,30 +396,28 @@ def diagnose_winning_by_month(db: Session) -> dict:
     return {
         "frozen_awards_so_far": frozen_awards,
         "accounts_never_synced_daily_metrics": never_synced,
-        "accounts_synced_but_no_crtv_ads": synced_no_crtv,
+        "accounts_synced_but_all_kol": synced_all_kol,
         "diagnosis": (
             "ad_daily_metrics is never populated by cron — only by the manual "
             "'Sync from Meta' button on the ad-performance page "
             "(POST /api/ad-performance/sync-daily). If accounts_never_synced_daily_metrics "
             "is non-empty, that's why: freeze_winning_months silently skips an "
-            "account with zero rows. If accounts_synced_but_no_crtv_ads is "
-            "non-empty instead, daily metrics ARE flowing but no ad name in "
-            "that account contains \"CRTV\" — check sample_ad_names below to see "
-            "what naming convention is actually in use."
+            "account with zero rows. If accounts_synced_but_all_kol is "
+            "non-empty instead, daily metrics ARE flowing but every ad name in "
+            "that account contains \"KOL\" — check sample_ad_names below."
         ),
         "accounts": per_account,
     }
 
 
-def list_non_crtv_ads(db: Session, account_name_filter: str | None = None, limit: int = 200) -> dict:
-    """Ads currently spending that DON'T match the "CRTV" naming filter —
-    i.e. every ad invisible to Winning by Month, by name alone. Read-only.
+def list_kol_ads(db: Session, account_name_filter: str | None = None, limit: int = 200) -> dict:
+    """Ads currently spending that ARE KOL-tagged — the one category excluded
+    from Winning by Month, by name alone. Read-only.
 
     Aggregates ad_daily_metrics per (account, ad_name) across all synced
     history (no month boundary — this isn't a verdict decision, just "what's
-    out there"), so the creative team can see exactly which running ads need
-    a rename on Meta to start counting toward the KPI, ranked by spend so the
-    highest-impact renames surface first.
+    out there"), ranked by spend so the highest-impact exclusions surface
+    first.
 
     `account_name_filter` is an ILIKE substring match (e.g. "Oani" or "1948"),
     same convention as diagnose_orphan_combos.
@@ -430,7 +444,7 @@ def list_non_crtv_ads(db: Session, account_name_filter: str | None = None, limit
             .filter(
                 AdDailyMetric.account_id == acc.id,
                 AdDailyMetric.ad_name.isnot(None),
-                ~AdDailyMetric.ad_name.ilike(_CRTV_LIKE),
+                AdDailyMetric.ad_name.ilike(_KOL_LIKE),
             )
             .group_by(AdDailyMetric.ad_name)
             .all()
@@ -453,10 +467,10 @@ def list_non_crtv_ads(db: Session, account_name_filter: str | None = None, limit
         "count": len(out_ads),
         "ads": out_ads[:limit],
         "note": (
-            'Every ad here is excluded from Winning by Month solely because its '
-            'name has no "CRTV" — rename it on Meta (case-insensitive, any '
-            "position in the name) to make it eligible from the next sync onward. "
-            "Renaming does not retroactively decide past months."
+            'Every ad here is excluded from Winning by Month because its name '
+            'contains "KOL" (case-insensitive, any position) — paid '
+            "amplification of KOL-sourced content, not the design team's own "
+            "creative. Everything else counts, CRTV-tagged or not."
         ),
     }
 
@@ -466,12 +480,17 @@ def list_winning_months(
     account_ids: list[str] | None = None,
     branch_id: str | None = None,
     month: str | None = None,
+    year: int | None = None,
 ) -> dict:
     """Frozen verdicts grouped by month, newest month first.
 
     `account_ids=None` means "no scoping" (admin). `month` (YYYY-MM) narrows
-    the ad list to one month; the per-month counts always cover every month so
-    the trend never collapses to a single bar.
+    the ad list to one month; the per-month counts always cover every month
+    within scope so the trend never collapses to a single bar. `year`
+    restricts that scope to one calendar year — the router defaults this to
+    the current year so the page reads as a YTD report ("% win rate" resets
+    every January) — pass `year=None` explicitly for the untruncated,
+    all-time view.
 
     Every row (WIN or LOSE) counts toward `tested` and `win_rate`; only WIN
     rows populate `count`, the `ads` detail list, and the win-only totals —
@@ -496,6 +515,11 @@ def list_winning_months(
         q = q.filter(WinningAdMonth.account_id == branch_id)
     elif account_ids is not None:
         q = q.filter(WinningAdMonth.account_id.in_(account_ids or ["__no_match__"]))
+    if year is not None:
+        q = q.filter(
+            WinningAdMonth.month >= date(year, 1, 1),
+            WinningAdMonth.month <= date(year, 12, 31),
+        )
     rows = q.order_by(WinningAdMonth.month.desc(), WinningAdMonth.roas.desc().nullslast()).all()
 
     acc_names = {
@@ -580,10 +604,11 @@ def list_winning_months(
         "overall_win_rate": (len(win_rows) / tested_count) if tested_count > 0 else None,
         # Distinct creatives — one ad can only win once now (see module docstring).
         "distinct_ads": len({(r.account_id, r.ad_name) for r in win_rows}),
+        "year": year,
         "scope_note": (
-            f'Only ads whose name contains "{CRTV_TOKEN}" are counted. '
+            f'All ads count except ones whose name contains "{KOL_TOKEN}". '
             "win_rate = WIN / (WIN + LOSE) among ads that crossed the test "
-            "threshold that month; an ad already decided in an earlier month "
-            "is never re-tested."
+            "threshold that month, within the selected year; an ad already "
+            "decided in an earlier month is never re-tested."
         ),
     }
