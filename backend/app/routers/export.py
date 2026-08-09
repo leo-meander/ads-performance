@@ -63,6 +63,10 @@ from app.services.budget_service import (
 )
 from app.services.country_utils import COUNTRY_NAMES
 from app.services.export_auth import create_api_key, validate_api_key
+from app.services.winning_months_service import (
+    EXCLUDED_BRANCHES as WINNING_EXCLUDED_BRANCHES,
+)
+from app.services.winning_months_service import excluded_account_ids
 
 router = APIRouter()
 
@@ -1381,8 +1385,11 @@ def export_winning_ads_monthly(
 
     Scope: every ad is eligible EXCEPT ones whose name contains "KOL" (paid
     amplification of KOL-sourced content), so this feed excludes that one
-    category by construction. Each award was judged against the account's
-    lifetime-to-date blended ROAS — see winning_months_service.
+    category by construction. Branches in
+    winning_months_service.EXCLUDED_BRANCHES (currently Bread) are out of the
+    KPI entirely — asking for one by name is an error rather than a silent
+    empty result. Each award was judged against the account's lifetime-to-date
+    blended ROAS — see winning_months_service.
 
     Money is stored in each branch's native currency; `*_vnd` applies the same
     FX map the rest of the export API uses so a cross-branch dashboard can sum
@@ -1394,10 +1401,21 @@ def export_winning_ads_monthly(
             canonical = canonical_branch(branch)
             if canonical is None:
                 return _api_response(error=f"Unknown branch: {branch}")
+            if canonical in WINNING_EXCLUDED_BRANCHES:
+                return _api_response(
+                    error=f"Branch not covered by this KPI: {canonical}"
+                )
 
         # Every verdict is fetched (not just WIN) so the month counters can
         # carry the denominator; `rows` is filtered down to winners below.
         q = db.query(WinningAdMonth)
+
+        # Same branch scope as the /winning-ads tab — otherwise the HiD
+        # dashboard and the page would report different win rates. Rows are
+        # append-only, so pre-exclusion awards are hidden, not deleted.
+        excluded = excluded_account_ids(db)
+        if excluded:
+            q = q.filter(WinningAdMonth.account_id.notin_(excluded))
 
         if canonical:
             account_ids = get_account_ids_for_branches(db, [canonical])

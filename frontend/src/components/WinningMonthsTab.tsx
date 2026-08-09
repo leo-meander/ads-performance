@@ -108,6 +108,13 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
       .finally(() => setRefreshing(false))
   }
 
+  // Branches the backend leaves out of this KPI (winning_months_service
+  // .EXCLUDED_BRANCHES). Listing one would just render an empty tab.
+  const selectableAccounts = useMemo(
+    () => accounts.filter(a => !/bread/i.test(a.account_name)),
+    [accounts],
+  )
+
   const months = data?.months || []
   const maxCount = Math.max(1, ...months.map(m => m.count))
   // Oldest → newest reads like a trend; the API returns newest first.
@@ -119,7 +126,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <select value={fBranch} onChange={e => setFBranch(e.target.value)} className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm">
           <option value="">All Branches</option>
-          {accounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
+          {selectableAccounts.map(a => <option key={a.id} value={a.id}>{a.account_name}</option>)}
         </select>
         {canEdit && (
           <button
@@ -139,7 +146,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
         <span>An ad wins a month when its ROAS <strong>that month</strong> clears the branch&apos;s <strong>current</strong> (lifetime-to-date) blended ROAS — not that month&apos;s isolated cohort — and it has enough data: &gt; 4,500 clicks or ≥ 5 bookings. Below that it&apos;s still TEST and isn&apos;t counted at all.</span>
         <span><strong>Win rate</strong> = winning ads ÷ every ad that cleared the test threshold that month (win + lose), not the whole ad list.</span>
         <span>An ad is judged <strong>once, ever</strong>: once it has a win/lose verdict in some month, it&apos;s never re-tested in a later month — the Library&apos;s live verdict keeps moving with the benchmark, these rows don&apos;t.</span>
-        <span className="font-semibold">All ads count except ones with &ldquo;KOL&rdquo; in the name (paid amplification of KOL content).</span>
+        <span className="font-semibold">All ads count except ones with &ldquo;KOL&rdquo; in the name (paid amplification of KOL content). Bread is not covered by this KPI.</span>
         <span className="font-semibold">Totals below cover {data?.year ?? 'this year'} only — the year-to-date view resets every January. The benchmark itself stays lifetime, so narrowing the year never re-judges an ad.</span>
       </div>
 
@@ -151,7 +158,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
           <Trophy className="w-8 h-8 text-gray-200 mx-auto mb-2" />
           <p className="text-sm text-gray-400">No winning months yet.</p>
           <p className="text-xs text-gray-400 mt-1">
-            Needs daily ad metrics (synced from 2026-05-01) and at least one non-KOL ad clearing its month&apos;s benchmark this year.
+            Needs daily ad metrics (synced from 2026-01-01) and at least one non-KOL ad clearing its month&apos;s benchmark this year.
           </p>
         </div>
       )}

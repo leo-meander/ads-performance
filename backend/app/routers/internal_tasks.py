@@ -434,6 +434,44 @@ def trigger_freeze_winning_ads(
     return _api_response(data={"status": "ok", **summary})
 
 
+@router.post("/internal/tasks/rebuild-winning-ads", status_code=200)
+def trigger_rebuild_winning_ads(
+    x_internal_secret: str | None = Header(default=None),
+    confirm: bool = False,
+):
+    """ONE-OFF, DESTRUCTIVE: wipe winning_ad_months and re-freeze from scratch.
+
+    Needed after ad_daily_metrics gains EARLIER months than the ones already
+    frozen (the 2026-01-01 backfill). The "decided once, ever" rule keys off
+    existing rows rather than calendar order, so without a rebuild the new
+    months only pick up ads that stopped running before the previously
+    earliest month — a biased subset. See
+    winning_months_service.rebuild_winning_months.
+
+    Re-stamps every row with TODAY's lifetime benchmark, so previously frozen
+    verdicts can change. Requires `?confirm=true`. Never put this on a cron.
+    """
+    _require_secret(x_internal_secret)
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Refusing to rebuild without ?confirm=true — this deletes every "
+                   "frozen verdict and re-judges them against today's benchmark.",
+        )
+    from app.services.winning_months_service import rebuild_winning_months
+
+    db = SessionLocal()
+    try:
+        summary = rebuild_winning_months(db)
+    except Exception as e:
+        db.rollback()
+        logger.exception("[rebuild-winning-ads] failed")
+        return _api_response(error=f"{type(e).__name__}: {e}")
+    finally:
+        db.close()
+    return _api_response(data={"status": "ok", **summary})
+
+
 @router.post("/internal/tasks/vision-tag-materials", status_code=200)
 def trigger_vision_tag_materials(
     x_internal_secret: str | None = Header(default=None),
