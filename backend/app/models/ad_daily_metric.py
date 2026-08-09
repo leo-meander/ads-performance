@@ -1,4 +1,6 @@
-from sqlalchemy import Column, Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import (
+    Column, Date, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint,
+)
 
 from app.models.base import Base, TimestampMixin, UUIDType
 
@@ -18,6 +20,10 @@ class AdDailyMetric(TimestampMixin, Base):
     __tablename__ = "ad_daily_metrics"
     __table_args__ = (
         UniqueConstraint("account_id", "ad_id", "date", name="uq_ad_daily_metrics_acc_ad_date"),
+        # Equality on account_id + a range on date is the shape every
+        # winning-months query uses; the unique constraint above can't serve it
+        # because ad_id sits between the two filtered columns. Migration 067.
+        Index("ix_adm_account_date", "account_id", "date"),
     )
 
     account_id = Column(

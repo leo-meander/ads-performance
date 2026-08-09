@@ -63,6 +63,19 @@ const inferFormat = (adName: string | null): string => {
   return 'video'
 }
 
+const nextMonth = (m: string) => {
+  const [y, mm] = m.split('-').map(Number)
+  return mm === 12 ? `${y + 1}-01` : `${y}-${String(mm + 1).padStart(2, '0')}`
+}
+
+// A month the API never returned: nothing was judged in it. `tested: 0` is what
+// marks it as a gap rather than a real 0% month, so it renders unclickable —
+// there is no detail row to open.
+const emptyMonth = (month: string): WinMonth => ({
+  month, count: 0, lose_count: 0, tested: 0, win_rate: null, in_progress: false,
+  spend: 0, revenue: 0, conversions: 0, roas: null, by_branch: [], ads: [],
+})
+
 const MONTH_LABEL = (m: string) => {
   const [y, mm] = m.split('-')
   const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -118,7 +131,24 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
   const months = data?.months || []
   const maxCount = Math.max(1, ...months.map(m => m.count))
   // Oldest → newest reads like a trend; the API returns newest first.
-  const chartMonths = useMemo(() => [...months].reverse(), [months])
+  //
+  // The API only returns months that produced at least one verdict, so a month
+  // where nothing was judged is absent rather than zero. On a timeline that
+  // reads as "this month never happened" — fill the gaps back in so the axis
+  // stays continuous. Such a month means the ads running then were either
+  // still in TEST, or already decided in an earlier month (judged once, ever).
+  const chartMonths = useMemo(() => {
+    const asc = [...months].reverse()
+    if (asc.length < 2) return asc
+    const out: WinMonth[] = []
+    let cursor = asc[0].month
+    for (const m of asc) {
+      while (cursor < m.month) { out.push(emptyMonth(cursor)); cursor = nextMonth(cursor) }
+      out.push(m)
+      cursor = nextMonth(m.month)
+    }
+    return out
+  }, [months])
   const current = months.find(m => m.month === selected) || null
 
   return (
@@ -178,24 +208,36 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
             <div className="flex items-end gap-3 overflow-x-auto pb-1">
               {chartMonths.map(m => {
                 const active = m.month === selected
-                const title = [
-                  ...m.by_branch.map(b => `${b.branch_name}: ${b.count}`),
-                  `${m.count} win / ${m.tested} tested${m.win_rate != null ? ` (${(m.win_rate * 100).toFixed(0)}%)` : ''}`,
-                  m.in_progress ? 'Still open — win rate provisional' : '',
-                ].filter(Boolean).join('\n')
+                // tested === 0 marks a gap month the API never returned — see
+                // emptyMonth. Nothing to drill into, so it isn't clickable.
+                const gap = m.tested === 0
+                const title = gap
+                  ? 'No ad was judged this month — the ads running then were either still in TEST, or had already been decided in an earlier month.'
+                  : [
+                      ...m.by_branch.map(b => `${b.branch_name}: ${b.count}`),
+                      `${m.count} win / ${m.tested} tested${m.win_rate != null ? ` (${(m.win_rate * 100).toFixed(0)}%)` : ''}`,
+                      m.in_progress ? 'Still open — win rate provisional' : '',
+                    ].filter(Boolean).join('\n')
                 return (
                   <button
                     key={m.month}
-                    onClick={() => setSelected(m.month)}
-                    className="flex flex-col items-center gap-1 min-w-[64px] group"
+                    onClick={() => { if (!gap) setSelected(m.month) }}
+                    disabled={gap}
+                    className={`flex flex-col items-center gap-1 min-w-[64px] group ${gap ? 'cursor-default' : ''}`}
                     title={title}
                   >
-                    <span className={`text-sm font-bold tabular-nums ${active ? 'text-amber-600' : 'text-gray-700'}`}>{m.count}</span>
+                    <span className={`text-sm font-bold tabular-nums ${gap ? 'text-gray-300' : active ? 'text-amber-600' : 'text-gray-700'}`}>
+                      {gap ? '—' : m.count}
+                    </span>
                     <div
-                      className={`w-10 rounded-t transition-colors ${active ? 'bg-amber-500' : 'bg-gray-200 group-hover:bg-amber-200'}`}
-                      style={{ height: `${Math.max(6, (m.count / maxCount) * 96)}px` }}
+                      className={`w-10 rounded-t transition-colors ${
+                        gap
+                          ? 'bg-gray-100 border border-dashed border-gray-200'
+                          : active ? 'bg-amber-500' : 'bg-gray-200 group-hover:bg-amber-200'
+                      }`}
+                      style={{ height: `${gap ? 6 : Math.max(6, (m.count / maxCount) * 96)}px` }}
                     />
-                    <span className={`text-[10px] whitespace-nowrap ${active ? 'text-amber-700 font-semibold' : 'text-gray-400'}`}>
+                    <span className={`text-[10px] whitespace-nowrap ${gap ? 'text-gray-300' : active ? 'text-amber-700 font-semibold' : 'text-gray-400'}`}>
                       {MONTH_LABEL(m.month)}
                     </span>
                     {m.win_rate != null && (

@@ -370,6 +370,36 @@ def freeze_winning_months(
     return summary
 
 
+def describe_data_window(db: Session, accounts: list[AdAccount] | None = None) -> list[dict]:
+    """Per account, the ad_daily_metrics window currently on disk.
+
+    The pre-flight check for a rebuild. /ad-performance/sync runs in a daemon
+    thread and returns immediately, so there is no signal for when a backfill
+    has finished; rebuilding early silently re-creates the skew the rebuild
+    exists to fix (see rebuild_winning_months). This makes "how far back does
+    the data actually go" answerable in one cheap call, per account so one
+    lagging branch can't hide behind the others.
+    """
+    accounts = accounts if accounts is not None else eligible_accounts(db)
+    out = []
+    for acc in accounts:
+        # Distinct months counted in Python, not via date_trunc — that's
+        # Postgres-only and the test suite runs on SQLite.
+        dates = [
+            d for (d,) in db.query(AdDailyMetric.date)
+            .filter(AdDailyMetric.account_id == acc.id)
+            .distinct().all()
+            if d
+        ]
+        out.append({
+            "account_name": acc.account_name,
+            "from": min(dates).isoformat() if dates else None,
+            "to": max(dates).isoformat() if dates else None,
+            "months": len({(d.year, d.month) for d in dates}),
+        })
+    return sorted(out, key=lambda e: (e["from"] or "9999", e["account_name"] or ""))
+
+
 def rebuild_winning_months(db: Session, account_ids: list[str] | None = None) -> dict:
     """DESTRUCTIVE repair: wipe every frozen verdict and re-freeze from scratch.
 
@@ -415,9 +445,16 @@ def rebuild_winning_months(db: Session, account_ids: list[str] | None = None) ->
 
     summary = freeze_winning_months(db, account_ids=sorted(keep_ids) if keep_ids else [])
     summary["deleted"] = deleted
+    # The window the rebuild actually SAW. A rebuild run while a backfill is
+    # still writing silently produces the very skew it exists to fix — the
+    # missing months just aren't candidates yet, and the once-ever rule then
+    # locks their ads into whatever later month did have data. Reporting the
+    # range makes that visible in the response instead of weeks later on the
+    # chart. Per account, so one lagging branch can't hide behind the others.
+    summary["data_seen"] = describe_data_window(db, accounts)
     logger.warning(
-        "[winning-months] REBUILD deleted %d frozen rows, re-froze %d wins / %d losses",
-        deleted, summary["awarded"], summary["lost"],
+        "[winning-months] REBUILD deleted %d frozen rows, re-froze %d wins / %d losses; data_seen=%s",
+        deleted, summary["awarded"], summary["lost"], summary["data_seen"],
     )
     return summary
 
