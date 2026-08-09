@@ -51,6 +51,10 @@ Everything else — CRTV-tagged or not — counts. The filter applies to
 candidates AND to the lifetime benchmark, so KOL traffic never moves the bar.
 Per Mason: previously only "CRTV"-named ads counted; now it's "all ads, minus
 KOL."
+
+Branch scope: EXCLUDED_BRANCHES (currently Bread, the restaurant) is out of
+this KPI entirely — no new rows are frozen for it and already-frozen ones are
+hidden from every read path.
 """
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -58,6 +62,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import func as sf
 from sqlalchemy.orm import Session
 
+from app.core.branches import resolve_branch_for_account_name
 from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.ad_daily_metric import AdDailyMetric
@@ -71,9 +76,44 @@ logger = logging.getLogger(__name__)
 KOL_TOKEN = "KOL"
 _KOL_LIKE = f"%{KOL_TOKEN}%"
 
+# Branches this KPI does not cover. Bread (Bread Espresso) is the restaurant,
+# not a hotel — its ads aren't part of the design team's creative-test cycle,
+# so counting them would distort the win rate. Canonical BRANCH_ACCOUNT_MAP
+# keys; matched via resolve_branch_for_account_name so the account-name
+# patterns stay in one place.
+EXCLUDED_BRANCHES = {"Bread"}
+
 
 def is_kol(ad_name: str | None) -> bool:
     return bool(ad_name) and KOL_TOKEN in ad_name.upper()
+
+
+def is_excluded_branch(account_name: str | None) -> bool:
+    return resolve_branch_for_account_name(account_name or "") in EXCLUDED_BRANCHES
+
+
+def excluded_account_ids(db: Session) -> set[str]:
+    """Every account id belonging to an EXCLUDED_BRANCHES branch.
+
+    Used to keep already-frozen rows for those branches out of the read paths
+    too — the table is append-only, so an award frozen before a branch was
+    excluded can only be hidden, never deleted.
+    """
+    return {
+        a.id
+        for a in db.query(AdAccount.id, AdAccount.account_name).all()
+        if is_excluded_branch(a.account_name)
+    }
+
+
+def eligible_accounts(db: Session) -> list[AdAccount]:
+    """Active Meta accounts this KPI covers, minus EXCLUDED_BRANCHES."""
+    accounts = (
+        db.query(AdAccount)
+        .filter(AdAccount.platform == "meta", AdAccount.is_active.is_(True))
+        .all()
+    )
+    return [a for a in accounts if not is_excluded_branch(a.account_name)]
 
 
 def month_start(d: date) -> date:
@@ -228,13 +268,14 @@ def freeze_winning_months(
     same as before this change — only the LOSE side waits for the month to
     close. Once a later month's data shows up, this month is closed on the
     next freeze pass and its still-undecided ads get their final verdict.
+
+    Accounts belonging to an EXCLUDED_BRANCHES branch are skipped entirely —
+    no new rows are ever written for them.
     """
-    accounts = db.query(AdAccount).filter(
-        AdAccount.platform == "meta", AdAccount.is_active.is_(True)
-    )
-    if account_ids is not None:
-        accounts = accounts.filter(AdAccount.id.in_(account_ids or ["__no_match__"]))
-    accounts = accounts.all()
+    accounts = [
+        a for a in eligible_accounts(db)
+        if account_ids is None or a.id in set(account_ids or [])
+    ]
 
     now = datetime.now(timezone.utc)
     summary = {"accounts": 0, "months": 0, "awarded": 0, "lost": 0, "already_frozen": 0}
@@ -340,12 +381,12 @@ def diagnose_winning_by_month(db: Session) -> dict:
     an error, so there's nothing in the logs to point at. This makes both
     conditions visible at once, plus a naming sample for the all-KOL case so
     it's obvious rather than guessed at. Read-only.
+
+    EXCLUDED_BRANCHES accounts are left out — they're absent from the tab by
+    design, not by a fixable data problem, so listing them here would be a
+    false lead.
     """
-    accounts = (
-        db.query(AdAccount)
-        .filter(AdAccount.platform == "meta", AdAccount.is_active.is_(True))
-        .all()
-    )
+    accounts = eligible_accounts(db)
 
     per_account = []
     for acc in accounts:
@@ -420,13 +461,10 @@ def list_kol_ads(db: Session, account_name_filter: str | None = None, limit: int
     first.
 
     `account_name_filter` is an ILIKE substring match (e.g. "Oani" or "1948"),
-    same convention as diagnose_orphan_combos.
+    same convention as diagnose_orphan_combos. EXCLUDED_BRANCHES accounts are
+    left out — their ads are out of scope regardless of the KOL naming.
     """
-    accounts = (
-        db.query(AdAccount)
-        .filter(AdAccount.platform == "meta", AdAccount.is_active.is_(True))
-        .all()
-    )
+    accounts = eligible_accounts(db)
     if account_name_filter:
         needle = account_name_filter.lower()
         accounts = [a for a in accounts if needle in (a.account_name or "").lower()]
@@ -515,6 +553,12 @@ def list_winning_months(
         q = q.filter(WinningAdMonth.account_id == branch_id)
     elif account_ids is not None:
         q = q.filter(WinningAdMonth.account_id.in_(account_ids or ["__no_match__"]))
+    # Rows are append-only, so awards frozen for a branch BEFORE it was
+    # excluded still exist — hide them here rather than leaving them to skew
+    # the totals.
+    excluded = excluded_account_ids(db)
+    if excluded:
+        q = q.filter(WinningAdMonth.account_id.notin_(excluded))
     if year is not None:
         q = q.filter(
             WinningAdMonth.month >= date(year, 1, 1),
@@ -607,6 +651,7 @@ def list_winning_months(
         "year": year,
         "scope_note": (
             f'All ads count except ones whose name contains "{KOL_TOKEN}". '
+            f"Branches not covered: {', '.join(sorted(EXCLUDED_BRANCHES))}. "
             "win_rate = WIN / (WIN + LOSE) among ads that crossed the test "
             "threshold that month, within the selected year; an ad already "
             "decided in an earlier month is never re-tested."

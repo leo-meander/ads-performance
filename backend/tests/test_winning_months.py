@@ -381,6 +381,59 @@ def test_winning_months_endpoint_groups_by_month():
     assert may["win_rate"] == 0.5
 
 
+def test_bread_branch_is_excluded_from_the_kpi():
+    """Bread (the restaurant) is out of this KPI: no rows are frozen for it,
+    and any frozen before the exclusion stay hidden from the read path."""
+    db = TestSession()
+    hotel = _account(db, name="Meander Saigon")
+    bread = _account(db, name="Bread Espresso")
+    for acc in (hotel, bread):
+        _metric(db, acc, ad_name=f"CRTV_win_{acc.account_name}", on=MAY, spend=100, revenue=500)
+        _metric(db, acc, ad_name=f"CRTV_lose_{acc.account_name}", on=MAY, spend=100, revenue=100)
+        _metric(db, acc, ad_name=f"CRTV_next_{acc.account_name}", on=JUN, spend=100, revenue=100)
+    bread_id = bread.id
+    db.close()
+
+    freeze_db = TestSession()
+    freeze_winning_months(freeze_db)
+    bread_rows = (
+        freeze_db.query(WinningAdMonth)
+        .filter(WinningAdMonth.account_id == bread_id).count()
+    )
+    freeze_db.close()
+    assert bread_rows == 0  # never frozen in the first place
+
+    data = client.get(
+        "/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers()
+    ).json()["data"]
+
+    branches = {b["branch_name"] for m in data["months"] for b in m["by_branch"]}
+    assert branches == {"Meander Saigon"}
+    assert "Bread" in data["scope_note"]
+
+
+def test_frozen_bread_rows_are_hidden_from_the_read_path():
+    """The table is append-only, so an award frozen before Bread was excluded
+    still exists on disk — it must not reach the totals."""
+    db = TestSession()
+    bread = _account(db, name="Bread Espresso")
+    db.add(WinningAdMonth(
+        id=str(uuid.uuid4()), account_id=bread.id, month=date(2026, 5, 1),
+        ad_name="CRTV_legacy_bread", verdict="WIN", spend=100, revenue=500, roas=5.0,
+    ))
+    db.commit()
+    db.close()
+
+    data = client.get(
+        "/api/creative/winning-months",
+        params={"year": 2026, "refresh": "false"},
+        headers=_admin_headers(),
+    ).json()["data"]
+
+    assert data["total_wins"] == 0
+    assert data["months"] == []
+
+
 def test_year_filter_scopes_the_totals_without_changing_verdicts():
     """The YTD window is REPORTING only. A 2025 award stays frozen with the
     same verdict and benchmark; asking for 2026 just leaves it out of the
