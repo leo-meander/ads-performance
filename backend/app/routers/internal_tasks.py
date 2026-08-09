@@ -434,6 +434,33 @@ def trigger_freeze_winning_ads(
     return _api_response(data={"status": "ok", **summary})
 
 
+@router.post("/internal/tasks/winning-ads-data-window", status_code=200)
+def trigger_winning_ads_data_window(
+    x_internal_secret: str | None = Header(default=None),
+):
+    """Read-only: how far back ad_daily_metrics actually reaches, per account.
+
+    The pre-flight for rebuild-winning-ads. /ad-performance/sync is
+    fire-and-forget and swallows per-account Meta errors into the logs, so an
+    account can quietly end up short a month — rebuilding on top of that bakes
+    in wrong verdicts, since an ad is judged once ever and would be first
+    decided in the wrong month. Check this first; every account should reach
+    back as far as you expect before a rebuild is worth running.
+    """
+    _require_secret(x_internal_secret)
+    from app.services.winning_months_service import describe_data_window
+
+    db = SessionLocal()
+    try:
+        window = describe_data_window(db)
+    except Exception as e:
+        logger.exception("[winning-ads-data-window] failed")
+        return _api_response(error=f"{type(e).__name__}: {e}")
+    finally:
+        db.close()
+    return _api_response(data={"accounts": window})
+
+
 @router.post("/internal/tasks/rebuild-winning-ads", status_code=200)
 def trigger_rebuild_winning_ads(
     x_internal_secret: str | None = Header(default=None),
