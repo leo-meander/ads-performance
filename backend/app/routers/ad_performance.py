@@ -45,7 +45,7 @@ def _api_response(data=None, error=None):
 
 
 def _parse_range(date_from: str | None, date_to: str | None) -> tuple[date, date]:
-    """Default window: from DEFAULT_SINCE (2026-05-01) to today."""
+    """Default window: from DEFAULT_SINCE (2026-01-01) to today."""
     df = date.fromisoformat(date_from) if date_from else DEFAULT_SINCE
     dt = date.fromisoformat(date_to) if date_to else date.today()
     return df, dt
@@ -322,7 +322,7 @@ def sync_ad_performance(
     db: Session = Depends(get_db),
 ):
     """Manual 'Sync from Meta' button. Pulls daily ad metrics over
-    [since, until] (since default 2026-05-01, until default today).
+    [since, until] (since default 2026-01-01, until default today).
 
     When `branch_id` is given only that branch is synced; otherwise every Meta
     account the user can edit. The window matches the page's active filters so a

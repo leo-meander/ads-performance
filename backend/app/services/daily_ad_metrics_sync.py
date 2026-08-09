@@ -29,8 +29,11 @@ from app.models.ad_daily_metric import AdDailyMetric
 
 logger = logging.getLogger(__name__)
 
-# Mason: pull from May 2026 onward only — no need for deep history.
-DEFAULT_SINCE = date(2026, 5, 1)
+# Mason needs actual spend from the start of the year for the Winning-by-Month
+# KPI, so the default window is the whole calendar year 2026. (It was
+# 2026-05-01 until 2026-08-08 — that's why ad_daily_metrics has no Jan–Apr
+# rows until a sync runs with this default.)
+DEFAULT_SINCE = date(2026, 1, 1)
 
 # Per-day, ad-level insight fields (time_increment=1 gives one row per ad/day).
 _INSIGHT_FIELDS = [

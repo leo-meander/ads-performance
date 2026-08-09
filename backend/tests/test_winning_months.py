@@ -45,6 +45,7 @@ from app.services.winning_months_service import (
     is_kol,
     month_end,
     months_between,
+    rebuild_winning_months,
 )
 from tests.db import TestSession
 
@@ -379,6 +380,96 @@ def test_winning_months_endpoint_groups_by_month():
     assert may["lose_count"] == 1
     assert may["tested"] == 2
     assert may["win_rate"] == 0.5
+
+
+def test_backfill_alone_leaves_the_earlier_month_wrong():
+    """Documents WHY rebuild_winning_months exists. The "decided once, ever"
+    rule keys off existing rows, not calendar order — so an ad already decided
+    in May keeps that row and never gets one in the January that a later
+    backfill revealed."""
+    db = TestSession()
+    acc = _account(db)
+    # First pass: only May/Jun data exists (the pre-backfill world).
+    _metric(db, acc, ad_name="CRTV_long_runner", on=MAY, spend=100, revenue=500)
+    _metric(db, acc, ad_name="CRTV_other", on=JUN, spend=100, revenue=100)
+    freeze_winning_months(db)
+    assert [r.month for r in db.query(WinningAdMonth)
+            .filter(WinningAdMonth.ad_name == "CRTV_long_runner").all()] == [date(2026, 5, 1)]
+
+    # Backfill: the same ad turns out to have been running since January.
+    _metric(db, acc, ad_name="CRTV_long_runner", on=date(2026, 1, 15), spend=100, revenue=500)
+    freeze_winning_months(db)
+
+    rows = db.query(WinningAdMonth).filter(
+        WinningAdMonth.ad_name == "CRTV_long_runner"
+    ).all()
+    db.close()
+
+    # Still only the May row — January got nothing, which is the bug the
+    # rebuild fixes.
+    assert [r.month for r in rows] == [date(2026, 5, 1)]
+
+
+def test_rebuild_moves_the_verdict_to_the_true_first_month():
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_long_runner", on=MAY, spend=100, revenue=500)
+    _metric(db, acc, ad_name="CRTV_other", on=JUN, spend=100, revenue=100)
+    freeze_winning_months(db)
+    _metric(db, acc, ad_name="CRTV_long_runner", on=date(2026, 1, 15), spend=100, revenue=500)
+
+    summary = rebuild_winning_months(db)
+
+    rows = db.query(WinningAdMonth).filter(
+        WinningAdMonth.ad_name == "CRTV_long_runner"
+    ).all()
+    db.close()
+
+    assert summary["deleted"] > 0
+    # Now decided in January — the month it actually first cleared the bar.
+    assert [r.month for r in rows] == [date(2026, 1, 1)]
+    assert rows[0].verdict == "WIN"
+
+
+def test_rebuild_is_idempotent():
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)
+    _metric(db, acc, ad_name="CRTV_B", on=JUN, spend=100, revenue=100)
+
+    rebuild_winning_months(db)
+    first = {(r.account_id, r.month, r.ad_name, r.verdict)
+             for r in db.query(WinningAdMonth).all()}
+    rebuild_winning_months(db)
+    second = {(r.account_id, r.month, r.ad_name, r.verdict)
+              for r in db.query(WinningAdMonth).all()}
+    db.close()
+
+    assert first == second
+
+
+def test_rebuild_purges_excluded_branch_rows():
+    """A rebuild also cleans out awards frozen for Bread before it was
+    excluded — they can't come back, since freeze skips the branch."""
+    db = TestSession()
+    hotel = _account(db, name="Meander Saigon")
+    bread = _account(db, name="Bread Espresso")
+    _metric(db, hotel, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)
+    _metric(db, hotel, ad_name="CRTV_B", on=JUN, spend=100, revenue=100)
+    db.add(WinningAdMonth(
+        id=str(uuid.uuid4()), account_id=bread.id, month=date(2026, 5, 1),
+        ad_name="CRTV_legacy_bread", verdict="WIN", spend=100, revenue=500, roas=5.0,
+    ))
+    db.commit()
+    bread_id = bread.id
+
+    rebuild_winning_months(db)
+
+    remaining = db.query(WinningAdMonth).filter(
+        WinningAdMonth.account_id == bread_id
+    ).count()
+    db.close()
+    assert remaining == 0
 
 
 def test_bread_branch_is_excluded_from_the_kpi():

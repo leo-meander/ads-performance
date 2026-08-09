@@ -370,6 +370,58 @@ def freeze_winning_months(
     return summary
 
 
+def rebuild_winning_months(db: Session, account_ids: list[str] | None = None) -> dict:
+    """DESTRUCTIVE repair: wipe every frozen verdict and re-freeze from scratch.
+
+    WHY THIS EXISTS. The "an ad is decided once, ever" rule keys off whether a
+    row already exists, NOT off calendar order — see freeze_winning_months,
+    which loads `decided_ad_names` for the whole account before walking the
+    months. That is correct while history only ever grows forward, but it
+    breaks when a backfill adds EARLIER months than the ones already frozen:
+    an ad that ran Jan→Aug and was first decided in May stays decided in May,
+    and never gets the January row where it actually first crossed the test
+    threshold. The backfilled months would then contain only the ads that
+    stopped running before the previously-earliest month — a small, biased
+    subset that reads as a real win rate but isn't one.
+
+    So after widening the ad_daily_metrics window (DEFAULT_SINCE moved from
+    2026-05-01 to 2026-01-01 on 2026-08-08), the table has to be rebuilt for
+    the new months to mean anything.
+
+    THE TRADE-OFF, EXPLICITLY. Rebuilding re-stamps every row with TODAY's
+    lifetime benchmark, so verdicts frozen earlier can come out different —
+    which is exactly what freezing normally prevents. That is acceptable only
+    as a deliberate, one-off repair after the underlying data changed, never
+    on a schedule. It also makes every month comparable for once, since all of
+    them end up judged against the same bar. This is why it is a separate
+    function behind an explicit confirm rather than a flag on the daily pass.
+
+    Scope note: EXCLUDED_BRANCHES accounts are not re-created, and their
+    pre-existing rows are deleted, so a rebuild also cleans them out for good.
+    """
+    accounts = [
+        a for a in eligible_accounts(db)
+        if account_ids is None or a.id in set(account_ids or [])
+    ]
+    keep_ids = {a.id for a in accounts}
+
+    q = db.query(WinningAdMonth)
+    if account_ids is not None:
+        # Also drop excluded-branch rows that the caller asked about, so a
+        # scoped rebuild still clears them rather than stranding them.
+        q = q.filter(WinningAdMonth.account_id.in_(set(account_ids or ["__no_match__"])))
+    deleted = q.delete(synchronize_session=False)
+    db.flush()
+
+    summary = freeze_winning_months(db, account_ids=sorted(keep_ids) if keep_ids else [])
+    summary["deleted"] = deleted
+    logger.warning(
+        "[winning-months] REBUILD deleted %d frozen rows, re-froze %d wins / %d losses",
+        deleted, summary["awarded"], summary["lost"],
+    )
+    return summary
+
+
 def diagnose_winning_by_month(db: Session) -> dict:
     """Explain an empty Winning-by-Month tab: is ad_daily_metrics unpopulated,
     or is it populated but every synced ad is KOL-tagged (the one excluded

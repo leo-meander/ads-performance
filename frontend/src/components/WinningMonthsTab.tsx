@@ -158,7 +158,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
           <Trophy className="w-8 h-8 text-gray-200 mx-auto mb-2" />
           <p className="text-sm text-gray-400">No winning months yet.</p>
           <p className="text-xs text-gray-400 mt-1">
-            Needs daily ad metrics (synced from 2026-05-01) and at least one non-KOL ad clearing its month&apos;s benchmark this year.
+            Needs daily ad metrics (synced from 2026-01-01) and at least one non-KOL ad clearing its month&apos;s benchmark this year.
           </p>
         </div>
       )}
