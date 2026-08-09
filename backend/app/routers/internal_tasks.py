@@ -450,6 +450,15 @@ def trigger_rebuild_winning_ads(
 
     Re-stamps every row with TODAY's lifetime benchmark, so previously frozen
     verdicts can change. Requires `?confirm=true`. Never put this on a cron.
+
+    Runs in a daemon thread: with a full year of ad_daily_metrics the pass
+    walks ~8 months x every account and blew past Zeabur's ~225s ingress cap,
+    which surfaces as a bare 500 with no usable error. The response instead
+    returns immediately, carrying `data_seen` — the window the rebuild is
+    about to read. Check that FIRST: if it doesn't reach back as far as you
+    expect, the backfill is still running and this rebuild will bake in the
+    wrong verdicts, so re-run it once the sync finishes. Progress and the
+    final counts go to the logs under [winning-months].
     """
     _require_secret(x_internal_secret)
     if not confirm:
@@ -458,18 +467,33 @@ def trigger_rebuild_winning_ads(
             detail="Refusing to rebuild without ?confirm=true — this deletes every "
                    "frozen verdict and re-judges them against today's benchmark.",
         )
-    from app.services.winning_months_service import rebuild_winning_months
+    from app.services.winning_months_service import (
+        describe_data_window, rebuild_winning_months,
+    )
 
+    # Cheap enough to answer inline, and it's the one thing worth seeing
+    # before the rebuild commits to anything.
     db = SessionLocal()
     try:
-        summary = rebuild_winning_months(db)
+        data_seen = describe_data_window(db)
     except Exception as e:
-        db.rollback()
-        logger.exception("[rebuild-winning-ads] failed")
+        logger.exception("[rebuild-winning-ads] data-window probe failed")
         return _api_response(error=f"{type(e).__name__}: {e}")
     finally:
         db.close()
-    return _api_response(data={"status": "ok", **summary})
+
+    _run_in_thread(rebuild_winning_months, "rebuild-winning-ads")
+    return _api_response(data={
+        "status": "started",
+        "data_seen": data_seen,
+        "note": (
+            "Rebuild runs in the background — watch the logs for "
+            "'[winning-months] REBUILD'. Verify data_seen reaches back as far "
+            "as you expect BEFORE trusting the result; if it doesn't, the "
+            "backfill is still running and this pass will bake in the wrong "
+            "verdicts."
+        ),
+    })
 
 
 @router.post("/internal/tasks/vision-tag-materials", status_code=200)

@@ -41,6 +41,7 @@ from app.services.auth_service import create_access_token, hash_password
 from app.services.winning_months_service import (
     compute_lifetime_benchmark,
     compute_month_verdicts,
+    describe_data_window,
     freeze_winning_months,
     is_kol,
     month_end,
@@ -429,6 +430,42 @@ def test_rebuild_moves_the_verdict_to_the_true_first_month():
     # Now decided in January — the month it actually first cleared the bar.
     assert [r.month for r in rows] == [date(2026, 1, 1)]
     assert rows[0].verdict == "WIN"
+
+
+def test_describe_data_window_is_the_rebuild_preflight():
+    """Answers "how far back does the data actually go" without running a
+    rebuild — the check that catches a still-running backfill. Excluded
+    branches are left out, same scope as the rebuild itself."""
+    db = TestSession()
+    saigon = _account(db, name="Meander Saigon")
+    bread = _account(db, name="Bread Espresso")
+    _metric(db, saigon, ad_name="CRTV_A", on=date(2026, 1, 10), spend=100, revenue=500)
+    _metric(db, saigon, ad_name="CRTV_A", on=date(2026, 1, 11), spend=100, revenue=500)
+    _metric(db, saigon, ad_name="CRTV_B", on=date(2026, 3, 4), spend=100, revenue=100)
+    _metric(db, bread, ad_name="CRTV_bread", on=MAY, spend=100, revenue=100)
+
+    window = describe_data_window(db)
+    db.close()
+
+    assert [e["account_name"] for e in window] == ["Meander Saigon"]  # Bread excluded
+    saigon_window = window[0]
+    assert saigon_window["from"] == "2026-01-10"
+    assert saigon_window["to"] == "2026-03-04"
+    # Two distinct months, not three day-rows — Jan counted once.
+    assert saigon_window["months"] == 2
+
+
+def test_describe_data_window_handles_an_account_with_no_metrics():
+    db = TestSession()
+    _account(db, name="Meander Saigon")
+    db.commit()
+
+    window = describe_data_window(db)
+    db.close()
+
+    assert window == [{
+        "account_name": "Meander Saigon", "from": None, "to": None, "months": 0,
+    }]
 
 
 def test_rebuild_reports_the_data_window_it_saw():
