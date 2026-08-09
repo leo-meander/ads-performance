@@ -431,6 +431,24 @@ def test_rebuild_moves_the_verdict_to_the_true_first_month():
     assert rows[0].verdict == "WIN"
 
 
+def test_rebuild_reports_the_data_window_it_saw():
+    """A rebuild run while a backfill is still writing silently re-creates the
+    skew it exists to fix. `data_seen` surfaces the window in the response so
+    a short range is caught immediately instead of weeks later on the chart."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    _metric(db, acc, ad_name="CRTV_A", on=date(2026, 1, 10), spend=100, revenue=500)
+    _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=100)
+
+    summary = rebuild_winning_months(db)
+    db.close()
+
+    seen = {e["account_name"]: e for e in summary["data_seen"]}
+    assert seen["Meander Saigon"]["from"] == "2026-01-10"
+    assert seen["Meander Saigon"]["to"] == "2026-05-10"
+    assert seen["Meander Saigon"]["months"] == 2  # Jan and May only
+
+
 def test_rebuild_is_idempotent():
     db = TestSession()
     acc = _account(db)
