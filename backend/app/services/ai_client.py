@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Generator
+from datetime import date
 
 from anthropic import Anthropic
 from sqlalchemy.orm import Session
@@ -74,6 +75,29 @@ def _tools_with_cache(tools: list[dict]) -> list[dict]:
 
 
 _CACHED_TOOLS = _tools_with_cache(TOOLS)
+
+
+def _date_context_block() -> dict:
+    """Today's date, as its own uncached system block.
+
+    The model has no ground truth for "today" otherwise — asked for "60 ngày
+    gần đây" it has to guess, and guesses wrong (observed: computed a 2025
+    window against an August 2026 system clock, so get_ad_performance's
+    date_from/date_to came out over a year stale and every query returned
+    zero rows). Kept separate from SYSTEM_PROMPT so the big cached block
+    doesn't get invalidated every day by a changing date string."""
+    today = date.today()
+    return {
+        "type": "text",
+        "text": (
+            f"Today's date is {today.isoformat()} ({today.strftime('%A')}). "
+            "Use this — never a guess or your training cutoff — as the "
+            "anchor for any relative date range (e.g. 'last 60 days' = "
+            f"{today.isoformat()} minus 60 days through {today.isoformat()}; "
+            "'this month', 'last week'). Pass explicit date_from/date_to to "
+            "tools whenever the user's window isn't each tool's own default."
+        ),
+    }
 
 
 SYSTEM_PROMPT = """You are an expert hotel marketing analyst for MEANDER Group — 5 hotel/hostel branches across Asia + 1 restaurant:
@@ -180,11 +204,14 @@ def chat_stream(
     model = COMPLEX_MODEL if complexity == "COMPLEX" else SIMPLE_MODEL
     logger.info("AI chat routed: %s → %s", complexity, model)
 
-    cached_system = [{
-        "type": "text",
-        "text": SYSTEM_PROMPT,
-        "cache_control": {"type": "ephemeral"},
-    }]
+    cached_system = [
+        _date_context_block(),
+        {
+            "type": "text",
+            "text": SYSTEM_PROMPT,
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
 
     for turn in range(MAX_TOOL_TURNS):
         with client.messages.stream(
