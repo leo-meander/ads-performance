@@ -192,6 +192,7 @@ def test_win_rate_counts_losses_in_the_denominator_only():
     aug = data["by_month"][0]
     assert (aug["wins"], aug["losses"], aug["tested"]) == (1, 2, 3)
     assert aug["win_rate"] == 1 / 3
+    assert aug["win_rate_pct"] == 33.3
     # Losers' spend/revenue stay out of the winners-only money columns.
     assert aug["spend_vnd"] == 100
     assert aug["revenue_vnd"] == 500
@@ -200,7 +201,57 @@ def test_win_rate_counts_losses_in_the_denominator_only():
     assert data["total_losses"] == 2
     assert data["total_tested"] == 3
     assert data["overall_win_rate"] == 1 / 3
+    assert data["overall_win_rate_pct"] == 33.3
     assert data["distinct_ads"] == 1
+    db.close()
+
+
+def test_win_rate_pct_is_the_fraction_scaled_not_recomputed():
+    """A KPI-sheet automation should be able to drop win_rate_pct straight
+    into a percentage cell with no transformation. Locks the scale (0-100,
+    not 0-1) and that it's None, not 0, when nothing was tested."""
+    db = TestSession()
+    key = _api_key(db)
+    acc = _account(db, "Meander Saigon", "VND")
+    _award(db, acc, month=date(2026, 8, 1), ad_name="CRTV_a", spend=1, revenue=5, roas=5.0)
+    _award(db, acc, month=date(2026, 8, 1), ad_name="CRTV_b", spend=1, revenue=5, roas=5.0)
+
+    data = _get(key).json()["data"]
+
+    aug = data["by_month"][0]
+    assert aug["win_rate"] == 1.0
+    assert aug["win_rate_pct"] == 100.0
+    assert data["overall_win_rate_pct"] == 100.0
+    db.close()
+
+
+def test_win_rate_pct_is_none_when_nothing_tested():
+    db = TestSession()
+    key = _api_key(db)
+    _account(db, "Meander Saigon", "VND")
+    db.commit()
+
+    data = _get(key).json()["data"]
+
+    assert data["overall_win_rate"] is None
+    assert data["overall_win_rate_pct"] is None
+    db.close()
+
+
+def test_scope_note_reflects_the_kol_exclusion_not_stale_crtv_text():
+    """Regression: scope_note kept saying "only CRTV ads" long after the
+    scope changed to "all ads except KOL" (see winning_months_service) — a
+    consumer reading the note would be told the wrong rule."""
+    db = TestSession()
+    key = _api_key(db)
+    _account(db, "Meander Saigon", "VND")
+    db.commit()
+
+    note = _get(key).json()["data"]["scope_note"]
+
+    assert "CRTV" not in note
+    assert "KOL" in note
+    assert "Bread" in note
     db.close()
 
 

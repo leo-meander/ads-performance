@@ -71,6 +71,12 @@ from app.services.winning_months_service import excluded_account_ids
 router = APIRouter()
 
 
+def _pct(fraction: float | None) -> float | None:
+    """0-1 fraction -> 0-100 percentage, rounded to 1 decimal. None stays None
+    (untested, not "0%") — see export_winning_ads_monthly."""
+    return round(fraction * 100, 1) if fraction is not None else None
+
+
 def _api_response(data=None, error=None):
     return {
         "success": error is None,
@@ -1534,16 +1540,19 @@ def export_winning_ads_monthly(
             b["roas_vnd"] = (b["revenue_vnd"] / b["spend_vnd"]) if b["spend_vnd"] > 0 else None
             b["tested"] = b["wins"] + b["losses"]
             b["win_rate"] = (b["wins"] / b["tested"]) if b["tested"] > 0 else None
+            b["win_rate_pct"] = _pct(b["win_rate"])
             branches = []
             for bb in b["by_branch"].values():
                 bb["tested"] = bb["wins"] + bb["losses"]
                 bb["win_rate"] = (bb["wins"] / bb["tested"]) if bb["tested"] > 0 else None
+                bb["win_rate_pct"] = _pct(bb["win_rate"])
                 branches.append(bb)
             b["by_branch"] = sorted(branches, key=lambda x: -x["wins"])
             months_out.append(b)
 
         win_rows = [r for r in rows if r.verdict == "WIN"]
         tested = len(rows)
+        overall_win_rate = (len(win_rows) / tested) if tested > 0 else None
 
         return _api_response(data={
             "rows": out_rows,
@@ -1551,14 +1560,25 @@ def export_winning_ads_monthly(
             "total_wins": len(out_rows),
             "total_losses": tested - len(win_rows),
             "total_tested": tested,
-            "overall_win_rate": (len(win_rows) / tested) if tested > 0 else None,
+            "overall_win_rate": overall_win_rate,
+            # 0-100, one decimal, rounded — the literal "% Ads Win" KPI value.
+            # Added so a consumer (e.g. a KPI-sheet automation) can drop this
+            # straight into a percentage cell without also having to remember
+            # to multiply overall_win_rate by 100 itself; get that
+            # transformation wrong once and a Target entered as a percentage
+            # (e.g. 50) compares against an Actual entered as a fraction
+            # (e.g. 0.5 vs 50, or the reverse) and silently produces a
+            # nonsense ratio like 500%.
+            "overall_win_rate_pct": _pct(overall_win_rate),
             # One ad can win in several months — count each creative once.
             "distinct_ads": len({(r.account_id, r.ad_name) for r in win_rows}),
             "scope_note": (
-                'Only ads whose name contains "CRTV" are awarded. '
+                f'All ads count except ones whose name contains "KOL". '
+                f"Branches not covered: {', '.join(sorted(WINNING_EXCLUDED_BRANCHES))}. "
                 "win_rate = wins / (wins + losses) among ads that crossed the "
                 "test threshold that month; an ad already decided in an "
-                "earlier month is never re-tested."
+                "earlier month is never re-tested. win_rate is a 0-1 fraction; "
+                "win_rate_pct is the same value already scaled to 0-100."
             ),
         })
     except Exception as e:

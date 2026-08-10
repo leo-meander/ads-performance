@@ -224,6 +224,30 @@ def _do_sync_combo_metrics(db, days_back: int | None = None):
     sync_all_combo_metrics(db, days_back=days_back)
 
 
+def _do_sync_daily_ad_metrics(db, days_back: int = 14):
+    """Pull per-day, ad-level Meta metrics into ad_daily_metrics.
+
+    Rolling window ending today. The window is delete-then-reinserted per
+    account, so overlapping runs never double-count — and the overlap is the
+    point: Meta revises the last few days as attribution lands, so re-fetching
+    them keeps the numbers honest rather than frozen at first sight.
+    """
+    from app.services.daily_ad_metrics_sync import sync_all_daily_ad_metrics
+
+    since = date.today() - timedelta(days=days_back)
+    totals = sync_all_daily_ad_metrics(db, since_date=since)
+    # sync_all_daily_ad_metrics collects per-account failures instead of
+    # raising, so without this an account that fetched nothing looks identical
+    # to one that had no spend. That distinction is exactly what went missing
+    # when Meander Taipei silently lost a month of history.
+    if totals.get("errors"):
+        logger.error(
+            "[ad-daily-cron] %d account(s) failed: %s",
+            len(totals["errors"]), "; ".join(totals["errors"])[:2000],
+        )
+    return totals
+
+
 def _do_vision_tag_materials(db, limit: int = 25):
     """Score the next batch of un-tagged image materials with Claude vision.
 
@@ -432,6 +456,37 @@ def trigger_freeze_winning_ads(
     finally:
         db.close()
     return _api_response(data={"status": "ok", **summary})
+
+
+@router.post("/internal/tasks/sync-daily-ad-metrics", status_code=200)
+def trigger_sync_daily_ad_metrics(
+    x_internal_secret: str | None = Header(default=None),
+    days_back: int = 14,
+):
+    """Daily: refresh ad_daily_metrics over a rolling `days_back`-day window.
+
+    This table backs /winning-ads. It used to have NO cron at all — only the
+    manual "Sync from Meta" button — while freeze-winning-ads ran every day at
+    05:30 regardless. Since a verdict is frozen once and an ad is judged once
+    ever, freezing against a table nobody had refreshed in weeks could stamp an
+    ad into the wrong month permanently. Scheduled at 04:30 so both this and
+    the 05:00 combo-metrics job land before that freeze.
+
+    A rolling window (not the full DEFAULT_SINCE range) keeps the nightly run
+    cheap; the window is delete-then-reinserted per account, so overlapping
+    runs never double-count and Meta's late attribution still gets picked up.
+    Backfilling older history stays a manual, explicitly-scoped job.
+
+    Runs async in a thread (one paginated Meta call per account)."""
+    _require_secret(x_internal_secret)
+    if days_back <= 0 or days_back > 365:
+        raise HTTPException(status_code=400, detail="days_back must be 1..365")
+    _run_in_thread(_do_sync_daily_ad_metrics, "sync-daily-ad-metrics", days_back=days_back)
+    return _api_response(data={
+        "status": "started",
+        "days_back": days_back,
+        "since": (date.today() - timedelta(days=days_back)).isoformat(),
+    })
 
 
 @router.post("/internal/tasks/winning-ads-data-window", status_code=200)

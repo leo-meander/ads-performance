@@ -1,0 +1,50 @@
+# Daily 04:30 UTC — refresh ad_daily_metrics (per-day, ad-level Meta metrics).
+#
+# This table backs /winning-ads "Winning by Month". Until now it had NO cron:
+# it was written only by the manual "Sync from Meta" button, while
+# cron-freeze-winning-ads ran every day at 05:30 regardless. A verdict is
+# frozen once and an ad is judged once ever, so freezing against a table
+# nobody had refreshed in weeks could stamp an ad into the wrong month
+# permanently.
+#
+# Ordering matters: 04:30 here → 05:00 combo-metrics → 05:30 freeze, so the
+# freeze always sees fresh data.
+#
+# Rolling 14-day window, delete-then-reinserted per account: overlapping runs
+# never double-count, and re-fetching recent days picks up Meta's late
+# attribution. Backfilling older history stays a manual, scoped job.
+name: Cron — Sync daily ad metrics
+
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+env:
+  BACKEND_URL: https://ads-performance-fuls.zeabur.app
+  ENDPOINT: sync-daily-ad-metrics
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/internal/tasks/sync-daily-ad-metrics
+        env:
+          INTERNAL_TASK_SECRET: ${{ secrets.INTERNAL_TASK_SECRET }}
+        run: |
+          set -euo pipefail
+          echo "Triggering endpoint: $ENDPOINT"
+          HTTP_CODE=$(curl -s -o /tmp/body.txt -w "%{http_code}" \
+            -X POST \
+            -H "X-Internal-Secret: $INTERNAL_TASK_SECRET" \
+            "$BACKEND_URL/api/internal/tasks/$ENDPOINT")
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/body.txt || true
+          echo
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::endpoint $ENDPOINT returned HTTP $HTTP_CODE"
+            exit 1
+          fi
+          # The sync itself runs in a background thread, so a 200 here only
+          # means it STARTED. Per-account Meta failures surface as
+          # [ad-daily-cron] error lines in the backend logs, not here.
