@@ -28,6 +28,8 @@ from uuid import UUID
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
+from app.core.branches import get_account_ids_for_branches, resolve_branch_for_account_name
+from app.core.campaign_types import apply_campaign_type
 from app.models.account import AdAccount
 from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
@@ -109,6 +111,30 @@ def _resolve_branch_ads(db: Session, name: str | None) -> AdAccount | None:
         if key in ak or ak in key:
             return a
     return None
+
+
+def _resolve_branch_account_ids(db: Session, name: str | None) -> tuple[list[str], AdAccount | None]:
+    """Return every active AdAccount id for the branch (Meta + Google + TikTok),
+    plus one representative account for display fields (name/currency).
+
+    A branch commonly has one AdAccount row per platform (see CLAUDE.md:
+    "each maps to one or more ad_accounts"). `_resolve_branch_ads` above only
+    returns the first fuzzy match, so aggregate tools silently dropped every
+    other platform's spend/revenue for multi-account branches. This resolves
+    one account first (existing fuzzy match, unchanged), then expands to the
+    full account set via the canonical app.core.branches mapping the rest of
+    the app already relies on for this — so it also self-heals the "Meander
+    Taipei" vs "MEANDER Taipei" casing split (BUG-010)."""
+    primary = _resolve_branch_ads(db, name)
+    if not primary:
+        return [], None
+    branch = resolve_branch_for_account_name(primary.account_name)
+    if not branch:
+        return [primary.id], primary
+    ids = get_account_ids_for_branches(db, [branch])
+    if not ids:
+        return [primary.id], primary
+    return ids, primary
 
 
 # ── Country resolution ───────────────────────────────────────────────────────
@@ -564,8 +590,8 @@ def _tool_get_ad_performance(db: Session, args: dict) -> dict:
     CPA. Country/TA/funnel filters fall through to AdSet / Campaign as
     appropriate."""
     branch_name = args.get("branch")
-    account = _resolve_branch_ads(db, branch_name)
-    if not account:
+    account_ids, account = _resolve_branch_account_ids(db, branch_name)
+    if not account_ids:
         return {"error": f"Unknown branch: {branch_name!r}"}
     date_from = _parse_date(args.get("date_from"))
     date_to = _parse_date(args.get("date_to"))
@@ -578,6 +604,7 @@ def _tool_get_ad_performance(db: Session, args: dict) -> dict:
     ta = args.get("ta")
     funnel = args.get("funnel")
     platform = args.get("platform")
+    campaign_type = args.get("campaign_type")
 
     q = (
         db.query(
@@ -589,9 +616,14 @@ def _tool_get_ad_performance(db: Session, args: dict) -> dict:
         )
         .join(Campaign, Campaign.id == MetricsCache.campaign_id)
         .filter(
-            Campaign.account_id == account.id,
+            Campaign.account_id.in_(account_ids),
             MetricsCache.date >= date_from,
             MetricsCache.date <= date_to,
+            # metrics_cache holds campaign/ad_set/ad-level rows for the same
+            # date; without this, SUM double/triple-counts (see country.py's
+            # _no_double_count_filter, the same convention).
+            MetricsCache.ad_set_id.is_(None),
+            MetricsCache.ad_id.is_(None),
         )
     )
     if platform:
@@ -600,6 +632,8 @@ def _tool_get_ad_performance(db: Session, args: dict) -> dict:
         q = q.filter(Campaign.ta == ta)
     if funnel:
         q = q.filter(func.upper(Campaign.funnel_stage) == funnel.upper())
+    if campaign_type:
+        q = apply_campaign_type(q, campaign_type.lower())
     if country:
         q = (
             q.outerjoin(AdSet, AdSet.id == MetricsCache.ad_set_id)
@@ -622,6 +656,7 @@ def _tool_get_ad_performance(db: Session, args: dict) -> dict:
         "date_to": date_to.isoformat(),
         "filters": {
             "country": country, "ta": ta, "funnel": funnel, "platform": platform,
+            "campaign_type": campaign_type,
         },
         "spend": spend,
         "impressions": impressions,
@@ -1343,7 +1378,8 @@ TOOLS: list[dict] = [
         "description": (
             "Aggregate ads performance for a branch over a date range: "
             "spend, impressions, clicks, conversions, revenue, ROAS, CTR, "
-            "CPA, CPC. Same filters as get_campaign_setup."
+            "CPA, CPC. Same filters as get_campaign_setup, plus campaign_type "
+            "(Sale / Lead / Engagement) to split by campaign objective."
         ),
         "input_schema": {
             "type": "object",
@@ -1358,6 +1394,16 @@ TOOLS: list[dict] = [
                 },
                 "funnel": {"type": "string", "enum": ["TOF", "MOF", "BOF"]},
                 "platform": {"type": "string", "enum": ["meta", "google", "tiktok"]},
+                "campaign_type": {
+                    "type": "string",
+                    "enum": ["sale", "lead", "engagement"],
+                    "description": (
+                        "Split by campaign objective: 'lead' = campaign name "
+                        "carries the 'Lea' token; 'engagement' = platform "
+                        "objective or name signals awareness/engagement/reach; "
+                        "'sale' = everything else. Omit for all types combined."
+                    ),
+                },
             },
             "required": ["branch"],
         },
