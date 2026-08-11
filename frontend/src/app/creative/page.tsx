@@ -51,6 +51,11 @@ function CreativePageInner() {
   // ?search=CMB-060 — used by the Winning-by-Month tab (now on /winning-ads)
   // to jump straight to one creative in this Library
   const initialSearch = search?.get('search') || ''
+  // ?combo=CMB-060 — same jump, but landing on the creative's detail drawer
+  // instead of a one-row table the reader still has to click. The chip that
+  // sends you here already names the exact creative, so stopping at the list
+  // is a step with nothing to decide.
+  const initialCombo = search?.get('combo') || ''
 
   const [combos, setCombos] = useState<Combo[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -58,7 +63,7 @@ function CreativePageInner() {
   const [comboTotal, setComboTotal] = useState(0)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [classifyMsg, setClassifyMsg] = useState('')
-  const [detailId, setDetailId] = useState<string | null>(null)
+  const [detailId, setDetailId] = useState<string | null>(initialCombo || null)
   const [kpModalCombo, setKpModalCombo] = useState<Combo | null>(null)
 
   // Filters

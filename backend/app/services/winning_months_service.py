@@ -76,6 +76,7 @@ hidden from every read path.
 import logging
 from datetime import date, datetime, timedelta, timezone
 
+from sqlalchemy import extract
 from sqlalchemy import func as sf
 from sqlalchemy.orm import Session
 
@@ -169,18 +170,40 @@ def compute_lifetime_benchmark(db: Session, account_id: str) -> float:
     list_winning_months, on the REPORTING side only — it never touches how a
     verdict is decided.
     """
-    total_spend, total_revenue = (
-        db.query(sf.sum(AdDailyMetric.spend), sf.sum(AdDailyMetric.revenue))
+    return compute_lifetime_benchmarks(db, [account_id]).get(account_id, 0.0)
+
+
+def compute_lifetime_benchmarks(db: Session, account_ids: list[str]) -> dict[str, float]:
+    """compute_lifetime_benchmark for many accounts in ONE query.
+
+    Same number, same rules — this exists only because the read path needs a
+    bar for every in-scope account at once, and one round trip per account is
+    the difference between a page that opens and a page that spins (the
+    database sits behind the public internet; see deployment-rules).
+    Accounts with no non-KOL spend are omitted, so callers should `.get(id,
+    0.0)` exactly as they would have read a 0.0 back.
+    """
+    if not account_ids:
+        return {}
+    rows = (
+        db.query(
+            AdDailyMetric.account_id,
+            sf.sum(AdDailyMetric.spend),
+            sf.sum(AdDailyMetric.revenue),
+        )
         .filter(
-            AdDailyMetric.account_id == account_id,
+            AdDailyMetric.account_id.in_(account_ids),
             AdDailyMetric.ad_name.isnot(None),
             ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
         )
-        .first()
+        .group_by(AdDailyMetric.account_id)
+        .all()
     )
-    total_spend = float(total_spend or 0)
-    total_revenue = float(total_revenue or 0)
-    return total_revenue / total_spend if total_spend > 0 else 0.0
+    out: dict[str, float] = {}
+    for acc_id, spend, revenue in rows:
+        spend = float(spend or 0)
+        out[acc_id] = (float(revenue or 0) / spend) if spend > 0 else 0.0
+    return out
 
 
 def compute_month_verdicts(
@@ -229,32 +252,36 @@ def compute_month_verdicts(
     Returns one dict per ad that crossed the test threshold this month
     (verdict WIN or LOSE — ads still in TEST are omitted).
     """
-    already_decided = already_decided or set()
     start = month_start(month)
-    end = month_end(start)
+    return compute_month_verdicts_by_month(
+        db, account_id, [start], benchmark, already_decided
+    ).get(start, [])
 
-    # Candidacy: must actually be running THIS month.
-    active_this_month = {
-        r[0] for r in db.query(AdDailyMetric.ad_name)
-        .filter(
-            AdDailyMetric.account_id == account_id,
-            AdDailyMetric.date >= start,
-            AdDailyMetric.date <= end,
-            AdDailyMetric.ad_name.isnot(None),
-            ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
-        )
-        .distinct()
-        .all()
-    }
-    active_this_month -= already_decided
-    if not active_this_month:
-        return []
 
-    # Numbers: cumulative from the beginning of this ad_name's history
-    # through the end of THIS month — no lower date bound.
+def monthly_ad_totals(
+    db: Session, account_ids: list[str]
+) -> dict[str, dict[str, dict[date, dict]]]:
+    """``{account_id: {ad_name: {month_start: that month's own raw totals}}}``.
+
+    One query for every account's whole history. Cumulative-through-month-N is
+    then a running sum in Python (see compute_month_verdicts_by_month) instead
+    of one round trip per account per month, which is what the freeze pass
+    used to cost — the database sits behind the public internet (see
+    deployment-rules), so round trips, not rows, are what the page waits on.
+
+    Month is derived with EXTRACT rather than date_trunc so the same query
+    runs on the SQLite test database.
+    """
+    if not account_ids:
+        return {}
+    y = extract("year", AdDailyMetric.date)
+    m = extract("month", AdDailyMetric.date)
     rows = (
         db.query(
+            AdDailyMetric.account_id.label("account_id"),
             AdDailyMetric.ad_name.label("ad_name"),
+            y.label("y"),
+            m.label("m"),
             sf.sum(AdDailyMetric.spend).label("spend"),
             sf.sum(AdDailyMetric.revenue).label("revenue"),
             sf.sum(AdDailyMetric.impressions).label("impressions"),
@@ -262,45 +289,106 @@ def compute_month_verdicts(
             sf.sum(AdDailyMetric.conversions).label("conversions"),
         )
         .filter(
-            AdDailyMetric.account_id == account_id,
-            AdDailyMetric.date <= end,
-            AdDailyMetric.ad_name.in_(active_this_month),
+            AdDailyMetric.account_id.in_(account_ids),
+            AdDailyMetric.ad_name.isnot(None),
+            ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
         )
-        .group_by(AdDailyMetric.ad_name)
+        .group_by(AdDailyMetric.account_id, AdDailyMetric.ad_name, y, m)
         .all()
     )
-    if not rows:
-        return []
-
-    decided: list[dict] = []
+    out: dict[str, dict[str, dict[date, dict]]] = {}
     for r in rows:
-        # r.ad_name is guaranteed in active_this_month (already_decided
-        # already subtracted before the query ran).
-        spend = float(r.spend or 0)
-        revenue = float(r.revenue or 0)
-        clicks = int(r.clicks or 0)
-        conversions = int(r.conversions or 0)
-        roas = revenue / spend if spend > 0 else 0.0
-        verdict = classify_verdict(clicks, conversions, roas, benchmark)
-        if verdict not in ("WIN", "LOSE"):
-            continue  # still TEST — cumulative total carries into next month
-        decided.append({
-            "ad_name": r.ad_name,
-            "verdict": verdict,
-            "spend": spend,
-            "revenue": revenue,
+        out.setdefault(r.account_id, {}).setdefault(r.ad_name, {})[date(int(r.y), int(r.m), 1)] = {
+            "spend": float(r.spend or 0),
+            "revenue": float(r.revenue or 0),
             "impressions": int(r.impressions or 0),
-            "clicks": clicks,
-            "conversions": conversions,
-            "roas": roas,
-        })
-    return decided
+            "clicks": int(r.clicks or 0),
+            "conversions": int(r.conversions or 0),
+        }
+    return out
+
+
+def compute_month_verdicts_by_month(
+    db: Session,
+    account_id: str,
+    months: list[date],
+    benchmark: float,
+    already_decided: set[str] | None = None,
+    totals: dict[str, dict[date, dict]] | None = None,
+) -> dict[date, list[dict]]:
+    """compute_month_verdicts for a whole run of months, in ONE query.
+
+    Same rules, month by month, in the order given: candidacy is still "had a
+    row in THIS month," the numbers judged are still cumulative from the ad's
+    first day through this month's end, and an ad decided in an earlier month
+    of the run is not a candidate in a later one — the decided set grows as
+    the loop advances, exactly as the caller's own loop used to grow it.
+
+    Months outside `months` still contribute their spend to the cumulative
+    totals; they just never produce verdicts. That matters when a caller
+    passes `since` — history before it is evidence, not a decision point.
+
+    `totals` is this account's slice of monthly_ad_totals, for a caller that
+    already loaded several accounts' worth in one query; fetched here when
+    omitted.
+
+    Returns ``{month_start: decided list}``, omitting months that decided
+    nothing.
+    """
+    decided_names = set(already_decided or ())
+    if totals is None:
+        totals = monthly_ad_totals(db, [account_id]).get(account_id, {})
+    if not totals:
+        return {}
+
+    # Cumulative-to-date per ad, keyed by the month it's cumulative THROUGH.
+    cumulative: dict[str, dict[date, dict]] = {}
+    for ad_name, by_month in totals.items():
+        run = {"spend": 0.0, "revenue": 0.0, "impressions": 0, "clicks": 0, "conversions": 0}
+        acc: dict[date, dict] = {}
+        for m in sorted(by_month):
+            t = by_month[m]
+            run = {k: run[k] + t[k] for k in run}
+            acc[m] = run
+        cumulative[ad_name] = acc
+
+    out: dict[date, list[dict]] = {}
+    for month in months:
+        start = month_start(month)
+        decided: list[dict] = []
+        for ad_name, by_month in totals.items():
+            if start not in by_month or ad_name in decided_names:
+                continue  # not running this month, or already judged
+            cum = cumulative[ad_name][start]
+            spend = cum["spend"]
+            clicks = cum["clicks"]
+            conversions = cum["conversions"]
+            roas = cum["revenue"] / spend if spend > 0 else 0.0
+            verdict = classify_verdict(clicks, conversions, roas, benchmark)
+            if verdict not in ("WIN", "LOSE"):
+                continue  # still TEST — cumulative total carries into next month
+            decided.append({
+                "ad_name": ad_name,
+                "verdict": verdict,
+                "spend": spend,
+                "revenue": cum["revenue"],
+                "impressions": cum["impressions"],
+                "clicks": clicks,
+                "conversions": conversions,
+                "roas": roas,
+            })
+        if decided:
+            decided_names.update(d["ad_name"] for d in decided)
+            out[start] = decided
+    return out
 
 
 def live_open_month_loses(
     db: Session,
     accounts: list[AdAccount],
     account_open_month: dict[str, date],
+    benchmarks: dict[str, float] | None = None,
+    decided_by_account: dict[str, set[str]] | None = None,
 ) -> dict[str, tuple[date, int]]:
     """``{account_id: (open_month, live_lose_count)}`` — the unfrozen LOSEs
     sitting in each account's still-open month, accounts with none omitted.
@@ -318,21 +406,33 @@ def live_open_month_loses(
     Nothing is persisted, and the number is intentionally volatile: a live
     LOSE today can flip to WIN and freeze there tomorrow. Callers apply their
     own month/year window and attribute the count to a branch themselves.
+
+    `benchmarks` and `decided_by_account` let a caller that already loaded
+    those hand them over instead of paying for two more queries per account;
+    both are computed here when omitted.
     """
     out: dict[str, tuple[date, int]] = {}
+    if benchmarks is None:
+        benchmarks = compute_lifetime_benchmarks(db, [a.id for a in accounts])
+    open_ids = [a.id for a in accounts if account_open_month.get(a.id) is not None]
+    totals_by_account = monthly_ad_totals(db, open_ids)
     for acc in accounts:
         open_m = account_open_month.get(acc.id)
         if open_m is None:
             continue
-        already_decided = {
-            r[0] for r in db.query(WinningAdMonth.ad_name)
-            .filter(WinningAdMonth.account_id == acc.id).distinct().all()
-        }
-        benchmark = compute_lifetime_benchmark(db, acc.id)
-        live_lose = sum(
-            1 for d in compute_month_verdicts(db, acc.id, open_m, benchmark, already_decided)
-            if d["verdict"] == "LOSE"
-        )
+        if decided_by_account is not None:
+            already_decided = decided_by_account.get(acc.id, set())
+        else:
+            already_decided = {
+                r[0] for r in db.query(WinningAdMonth.ad_name)
+                .filter(WinningAdMonth.account_id == acc.id).distinct().all()
+            }
+        benchmark = benchmarks.get(acc.id, 0.0)
+        decided = compute_month_verdicts_by_month(
+            db, acc.id, [open_m], benchmark, already_decided,
+            totals=totals_by_account.get(acc.id, {}),
+        ).get(month_start(open_m), [])
+        live_lose = sum(1 for d in decided if d["verdict"] == "LOSE")
         if live_lose:
             out[acc.id] = (open_m, live_lose)
     return out
@@ -377,12 +477,43 @@ def freeze_winning_months(
     now = datetime.now(timezone.utc)
     summary = {"accounts": 0, "months": 0, "awarded": 0, "lost": 0, "already_frozen": 0}
 
-    for acc in accounts:
-        bounds = (
-            db.query(sf.min(AdDailyMetric.date), sf.max(AdDailyMetric.date))
-            .filter(AdDailyMetric.account_id == acc.id)
-            .first()
+    # Everything that can be asked for all accounts at once, is — this pass
+    # runs on every page load of the Winning-by-Month tab, and one round trip
+    # per account per month is what made it spin (see monthly_ad_totals).
+    acc_ids = [a.id for a in accounts]
+    bounds_by_account = {
+        r[0]: (r[1], r[2])
+        for r in db.query(
+            AdDailyMetric.account_id,
+            sf.min(AdDailyMetric.date),
+            sf.max(AdDailyMetric.date),
         )
+        .filter(AdDailyMetric.account_id.in_(acc_ids or ["__no_match__"]))
+        .group_by(AdDailyMetric.account_id)
+        .all()
+    }
+    # One "current" bar per account for every month processed this run — the
+    # account's lifetime-to-date blended non-KOL ROAS, not a per-month
+    # recomputation. See compute_lifetime_benchmark.
+    benchmarks = compute_lifetime_benchmarks(db, acc_ids)
+    totals_by_account = monthly_ad_totals(db, acc_ids)
+    # ad_name → combo, so an award can deep-link into the Creative Library.
+    combo_by_account: dict[str, dict[str, AdCombo]] = {}
+    for c in db.query(AdCombo).filter(AdCombo.branch_id.in_(acc_ids or ["__no_match__"])).all():
+        if c.ad_name:
+            combo_by_account.setdefault(c.branch_id, {})[c.ad_name] = c
+    # Already-frozen rows, by account and by (account, month) — an ad decided
+    # (WIN or LOSE) in ANY past month is never a candidate again.
+    decided_by_account: dict[str, set[str]] = {}
+    existing_by_account: dict[str, dict[date, set[str]]] = {}
+    for r in db.query(
+        WinningAdMonth.account_id, WinningAdMonth.month, WinningAdMonth.ad_name
+    ).filter(WinningAdMonth.account_id.in_(acc_ids or ["__no_match__"])).all():
+        decided_by_account.setdefault(r[0], set()).add(r[2])
+        existing_by_account.setdefault(r[0], {}).setdefault(r[1], set()).add(r[2])
+
+    for acc in accounts:
+        bounds = bounds_by_account.get(acc.id)
         if not bounds or not bounds[0]:
             continue
         first, last = bounds[0], bounds[1]
@@ -392,32 +523,25 @@ def freeze_winning_months(
             continue
         summary["accounts"] += 1
 
-        # ad_name → combo, so an award can deep-link into the Creative Library.
-        combo_map = {
-            c.ad_name: c
-            for c in db.query(AdCombo).filter(AdCombo.branch_id == acc.id).all()
-            if c.ad_name
-        }
-
-        # An ad already decided (WIN or LOSE) in ANY past month — including
-        # months before `first`/`since` — is never a candidate again.
-        decided_ad_names = {
-            r[0]
-            for r in db.query(WinningAdMonth.ad_name)
-            .filter(WinningAdMonth.account_id == acc.id)
-            .distinct()
-            .all()
-        }
-
-        # One "current" bar for every month processed this run — the
-        # account's lifetime-to-date blended non-KOL ROAS, not a per-month
-        # recomputation. See compute_lifetime_benchmark.
-        benchmark = compute_lifetime_benchmark(db, acc.id)
+        combo_map = combo_by_account.get(acc.id, {})
+        # Includes months before `first`/`since` — being decided at all is what
+        # disqualifies an ad, not when.
+        decided_ad_names = set(decided_by_account.get(acc.id, set()))
+        benchmark = benchmarks.get(acc.id, 0.0)
 
         open_month = month_start(last)  # data can still change this month's outcome
 
+        # Every month's verdicts in one pass — see compute_month_verdicts_by_month.
+        # It advances `already_decided` across the run itself, so an ad decided
+        # in June is no longer a candidate in July, same as the per-month loop.
+        verdicts_by_month = compute_month_verdicts_by_month(
+            db, acc.id, months_between(first, last), benchmark, decided_ad_names,
+            totals=totals_by_account.get(acc.id, {}),
+        )
+        existing_by_month = existing_by_account.get(acc.id, {})
+
         for m in months_between(first, last):
-            decided = compute_month_verdicts(db, acc.id, m, benchmark, decided_ad_names)
+            decided = verdicts_by_month.get(m, [])
             if m == open_month:
                 # Don't lock in a LOSE the month could still climb out of.
                 decided = [d for d in decided if d["verdict"] == "WIN"]
@@ -425,12 +549,7 @@ def freeze_winning_months(
                 continue
             summary["months"] += 1
 
-            existing = {
-                r[0]
-                for r in db.query(WinningAdMonth.ad_name)
-                .filter(WinningAdMonth.account_id == acc.id, WinningAdMonth.month == m)
-                .all()
-            }
+            existing = existing_by_month.get(m, set())
             for d in decided:
                 if d["ad_name"] in existing:
                     summary["already_frozen"] += 1
@@ -967,9 +1086,9 @@ def list_winning_months(
     # the same bar classify_verdict is given, so the status shown next to an
     # ad matches the verdict the freeze pass would reach for it.
     # (live_open_month_loses computes its own; it owns that path.)
-    benchmarks: dict[str, float] = {
-        a.id: compute_lifetime_benchmark(db, a.id) for a in accounts_in_scope
-    }
+    benchmarks: dict[str, float] = compute_lifetime_benchmarks(
+        db, [a.id for a in accounts_in_scope]
+    )
 
     # Every frozen verdict for the in-scope accounts, keyed by ad. Deliberately
     # NOT year-filtered: an ad created in December can be decided the following
@@ -1116,8 +1235,14 @@ def list_winning_months(
     # today's real state instead of only counting the WINs that already
     # froze. Can create a bucket that has no frozen rows at all.
     live_lose_total = 0
+    # frozen_by_ad already holds every frozen row for these accounts, and the
+    # bars are already computed — hand both over rather than re-querying them
+    # per account.
+    decided_by_account: dict[str, set[str]] = {}
+    for acc_id, ad_name in frozen_by_ad:
+        decided_by_account.setdefault(acc_id, set()).add(ad_name)
     for _acc_id, (open_m, live_lose) in live_open_month_loses(
-        db, accounts_in_scope, account_open_month
+        db, accounts_in_scope, account_open_month, benchmarks, decided_by_account
     ).items():
         if year is not None and open_m.year != year:
             continue
