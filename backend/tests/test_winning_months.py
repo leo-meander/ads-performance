@@ -474,6 +474,79 @@ def test_new_ads_counts_first_seen_ad_names_per_month():
     assert jun["new_ads"] == 1  # only CRTV_new_jun is new in June
 
 
+def test_new_ad_list_itemises_the_ads_behind_the_count():
+    """`new_ads` says 3; `new_ad_list` says WHICH three and where — the whole
+    point being that a reader can audit the number instead of trusting it.
+    Same scope as the count (KOL excluded)."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)  # wins
+    _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=50)   # loses
+    # Thin ad: nowhere near 2,500 clicks / 5 bookings, so it never leaves TEST.
+    _metric(db, acc, ad_name="CRTV_thin", on=MAY, spend=10, revenue=5,
+            clicks=40, conversions=0)
+    _metric(db, acc, ad_name="KOL_someone", on=MAY, spend=100, revenue=100)  # excluded
+    _metric(db, acc, ad_name="CRTV_jun", on=JUN, spend=100, revenue=300)
+    db.close()
+
+    data = client.get(
+        "/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers()
+    ).json()["data"]
+    may = next(m for m in data["months"] if m["month"] == "2026-05")
+
+    # The list is exactly as long as the count it explains.
+    assert may["new_ads"] == 3
+    assert len(may["new_ad_list"]) == 3
+    by_name = {e["ad_name"]: e for e in may["new_ad_list"]}
+    assert set(by_name) == {"CRTV_A", "CRTV_B", "CRTV_thin"}  # KOL stays out
+    assert all(e["branch_name"] == "Meander Saigon" for e in may["new_ad_list"])
+
+    # Status explains why 3 created ≠ 3 tested: the thin one never qualified.
+    assert by_name["CRTV_A"]["status"] == "WIN"
+    assert by_name["CRTV_B"]["status"] == "LOSE"
+    assert by_name["CRTV_thin"]["status"] == "TEST"
+    assert by_name["CRTV_thin"]["status_source"] == "test"
+    assert by_name["CRTV_thin"]["decided_month"] is None
+    # And the reader sees the same clicks number the TEST rule judged on.
+    assert by_name["CRTV_thin"]["clicks"] == 40
+
+    # Winners first, then losers, then TEST (see the sort in list_winning_months).
+    assert [e["status"] for e in may["new_ad_list"]] == ["WIN", "LOSE", "TEST"]
+
+
+def test_new_ad_list_reports_the_month_an_ad_was_actually_decided():
+    """The reason a month can read "6 created / 3 tested": an ad is judged the
+    month its CUMULATIVE evidence clears the bar, which is often later than
+    the month it launched. `decided_month` makes that visible on the ad."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    # Launches in May with too little evidence, keeps running, and only clears
+    # MIN_TEST_CLICKS once June's clicks are added to May's.
+    _metric(db, acc, ad_name="CRTV_slow", on=MAY, spend=100, revenue=500,
+            clicks=1400, conversions=0)
+    _metric(db, acc, ad_name="CRTV_slow", on=JUN, spend=100, revenue=500,
+            clicks=1400, conversions=0)
+    # A second ad so June is not the open month for the LOSE-freeze rule.
+    _metric(db, acc, ad_name="CRTV_jul", on=JUL, spend=100, revenue=500)
+    db.close()
+
+    data = client.get(
+        "/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers()
+    ).json()["data"]
+
+    may = next(m for m in data["months"] if m["month"] == "2026-05")
+    slow = next(e for e in may["new_ad_list"] if e["ad_name"] == "CRTV_slow")
+
+    # Counted as CREATED in May...
+    assert may["new_ads"] == 1
+    # ...but decided in June, once 1,400 + 1,400 clicks cleared the 2,500 bar.
+    assert slow["decided_month"] == "2026-06"
+    assert slow["status"] == "WIN"
+    assert slow["clicks"] == 2800  # cumulative, matching what the rule used
+    # So May's own tested count doesn't include it — the exact gap the list explains.
+    assert may["tested"] == 0
+
+
 def test_winning_months_endpoint_groups_by_month():
     db = TestSession()
     acc = _account(db, name="Meander Saigon")
