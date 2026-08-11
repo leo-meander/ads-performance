@@ -33,6 +33,7 @@ interface WinMonth {
   revenue: number
   conversions: number
   roas: number | null
+  new_ads: number
   by_branch: { branch_name: string; count: number }[]
   ads: WinAd[]
 }
@@ -73,7 +74,7 @@ const nextMonth = (m: string) => {
 // there is no detail row to open.
 const emptyMonth = (month: string): WinMonth => ({
   month, count: 0, lose_count: 0, tested: 0, win_rate: null, in_progress: false,
-  spend: 0, revenue: 0, conversions: 0, roas: null, by_branch: [], ads: [],
+  spend: 0, revenue: 0, conversions: 0, roas: null, new_ads: 0, by_branch: [], ads: [],
 })
 
 const MONTH_LABEL = (m: string) => {
@@ -217,6 +218,8 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
                       ...m.by_branch.map(b => `${b.branch_name}: ${b.count}`),
                       `${m.count} win / ${m.tested} tested${m.win_rate != null ? ` (${(m.win_rate * 100).toFixed(0)}%)` : ''}`,
                       m.in_progress ? 'Still open — win rate provisional' : '',
+                      // Reference only — new creatives launched, not part of win/tested.
+                      `${m.new_ads} ad${m.new_ads === 1 ? '' : 's'} created this month`,
                     ].filter(Boolean).join('\n')
                 return (
                   <button

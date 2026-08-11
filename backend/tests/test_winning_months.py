@@ -413,6 +413,28 @@ def test_win_rate_is_wins_over_tested_ads_for_a_closed_month():
     assert may["in_progress"] is False  # May closed once June's data arrived
 
 
+def test_new_ads_counts_first_seen_ad_names_per_month():
+    """`new_ads` is reference-only: how many ad_names first appeared that
+    month, same scope as the KPI (non-KOL). Doesn't touch win/tested."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)  # wins
+    _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=50)   # loses
+    _metric(db, acc, ad_name="KOL_someone", on=MAY, spend=100, revenue=100)  # excluded
+    # June is the account's open month — a LOSE there wouldn't freeze yet
+    # (see freeze_winning_months), so this needs to be a WIN to get a bucket.
+    _metric(db, acc, ad_name="CRTV_new_jun", on=JUN, spend=100, revenue=300)
+    db.close()
+
+    resp = client.get("/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers())
+    data = resp.json()["data"]
+
+    may = next(m for m in data["months"] if m["month"] == "2026-05")
+    jun = next(m for m in data["months"] if m["month"] == "2026-06")
+    assert may["new_ads"] == 2  # CRTV_A + CRTV_B; KOL_someone excluded
+    assert jun["new_ads"] == 1  # only CRTV_new_jun is new in June
+
+
 def test_winning_months_endpoint_groups_by_month():
     db = TestSession()
     acc = _account(db, name="Meander Saigon")

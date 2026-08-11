@@ -687,6 +687,14 @@ def list_winning_months(
     from wall-clock "today," which would be wrong for a branch whose sync
     has silently stalled (its "open" month never closes until fresh data
     arrives, no matter how much wall-clock time passes).
+
+    `new_ads` is a reference-only count of distinct ad_names that FIRST
+    appeared in ad_daily_metrics that month, same scope as the KPI (non-KOL,
+    EXCLUDED_BRANCHES out). It never feeds win_rate or any other number here
+    — just display context for whether a month was quiet or busy on output.
+    A month only gets a bucket at all if it has at least one WIN/LOSE row, so
+    a month with new_ads > 0 but zero decided ads (everything still TEST)
+    won't appear in `months` — this stat is opportunistic, not exhaustive.
     """
     q = db.query(WinningAdMonth)
     if branch_id:
@@ -705,6 +713,32 @@ def list_winning_months(
             WinningAdMonth.month <= date(year, 12, 31),
         )
     rows = q.order_by(WinningAdMonth.month.desc(), WinningAdMonth.roas.desc().nullslast()).all()
+
+    # Reference-only stat: how many NEW ad_names first appeared each month,
+    # scoped the same way as the KPI (non-KOL, EXCLUDED_BRANCHES out) so the
+    # number sits in the same universe as win/tested. Purely informational —
+    # doesn't feed win_rate or any other calculation, just display context for
+    # "was this a quiet month for output or a busy one."
+    new_ads_q = db.query(
+        AdDailyMetric.account_id,
+        AdDailyMetric.ad_name,
+        sf.min(AdDailyMetric.date).label("first_date"),
+    ).filter(
+        AdDailyMetric.ad_name.isnot(None),
+        ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
+    )
+    if branch_id:
+        new_ads_q = new_ads_q.filter(AdDailyMetric.account_id == branch_id)
+    elif account_ids is not None:
+        new_ads_q = new_ads_q.filter(AdDailyMetric.account_id.in_(account_ids or ["__no_match__"]))
+    if excluded:
+        new_ads_q = new_ads_q.filter(AdDailyMetric.account_id.notin_(excluded))
+    new_ads_by_month: dict[str, int] = {}
+    for _acc_id, _ad_name, first_date in new_ads_q.group_by(
+        AdDailyMetric.account_id, AdDailyMetric.ad_name
+    ).all():
+        key = first_date.isoformat()[:7]
+        new_ads_by_month[key] = new_ads_by_month.get(key, 0) + 1
 
     acc_names = {
         a.id: a.account_name
@@ -768,6 +802,7 @@ def list_winning_months(
         b["tested"] = b["count"] + b["lose_count"]
         b["win_rate"] = (b["count"] / b["tested"]) if b["tested"] > 0 else None
         b["in_progress"] = key in in_progress_keys
+        b["new_ads"] = new_ads_by_month.get(key, 0)
         b["by_branch"] = [
             {"branch_name": n, "count": c}
             for n, c in sorted(b["by_branch"].items(), key=lambda kv: -kv[1])
