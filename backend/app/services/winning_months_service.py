@@ -52,10 +52,15 @@ win_rate for a month = WIN count / (WIN count + LOSE count) among ads
 decided that month — i.e. wins divided by everything that crossed the test
 threshold, per Mason's spec.
 
-Caveat: LOSE only freezes for a CLOSED month (see freeze_winning_months) —
+Caveat: LOSE only FREEZES for a CLOSED month (see freeze_winning_months) —
 the account's current/most-recent synced month is still accumulating data,
-so its win_rate looks artificially high (or is None) until the month
-closes and its stragglers get their final LOSE.
+and permanently locking in a LOSE it might climb out of before the month
+ends would be wrong. But per Mason (2026-08-11): an ad that already crossed
+the test threshold this month IS tested, frozen or not — so
+list_winning_months blends a LIVE (unfrozen) LOSE count into the open
+month's tested/win_rate for reporting, without writing anything to
+WinningAdMonth. That number can move day to day as live LOSEs flip to WIN
+and freeze there instead — see list_winning_months for the mechanics.
 
 Scope: every ad EXCEPT ones whose name contains "KOL" (paid amplification of
 KOL-sourced content — testing someone else's creative, not the design team's).
@@ -824,12 +829,27 @@ def list_winning_months(
     (insufficient clicks/bookings) never has a row here at all, so it's
     already excluded from both sides of the ratio.
 
+    LIVE LOSE PREVIEW. freeze_winning_months never freezes a LOSE for the
+    open month (an ad still spending could climb out of it before month
+    end), so without help every open-month bucket would show 100% win_rate
+    no matter how many ads had already crossed the test threshold and were
+    actually sitting at LOSE right now. Per Mason (2026-08-11): once an ad
+    clears MIN_TEST_CLICKS/bookings and scores below benchmark it IS tested
+    — that should count for tracking purposes even though nothing gets
+    written to WinningAdMonth yet. So for every account whose most-recently-
+    synced month is the bucket being built, this re-runs
+    compute_month_verdicts live (not persisted) and folds any LOSEs it finds
+    straight into that bucket's `lose_count`/`tested`/`win_rate` — this can
+    create a bucket that has zero frozen rows at all (open month, no WIN yet,
+    but some ads already at live LOSE). This number is intentionally
+    volatile: a live LOSE today can flip to WIN and freeze there tomorrow,
+    which is the whole reason it isn't frozen now.
+
     `in_progress` flags a calendar month bucket that still contains at least
-    one account for which this is the most-recently-synced month —
-    freeze_winning_months only freezes LOSE once a month is CLOSED for that
-    account (see its docstring), so such a bucket's win_rate is provisional
-    (usually inflated, since its stragglers haven't taken their final LOSE
-    yet). This mirrors the freeze algorithm exactly rather than guessing
+    one account for which this is the most-recently-synced month — i.e. a
+    bucket that may still be carrying a live LOSE preview per above, or gain
+    new WIN/LOSE rows as more ads clear the test threshold before the month
+    closes. This mirrors the freeze algorithm exactly rather than guessing
     from wall-clock "today," which would be wrong for a branch whose sync
     has silently stalled (its "open" month never closes until fresh data
     arrives, no matter how much wall-clock time passes).
@@ -838,9 +858,9 @@ def list_winning_months(
     appeared in ad_daily_metrics that month, same scope as the KPI (non-KOL,
     EXCLUDED_BRANCHES out). It never feeds win_rate or any other number here
     — just display context for whether a month was quiet or busy on output.
-    A month only gets a bucket at all if it has at least one WIN/LOSE row, so
-    a month with new_ads > 0 but zero decided ads (everything still TEST)
-    won't appear in `months` — this stat is opportunistic, not exhaustive.
+    A month only gets a bucket at all if it has at least one WIN/LOSE row (or
+    a live LOSE preview, see above) — a month with new_ads > 0 but nothing
+    tested/live-tested yet won't appear in `months`.
     """
     q = db.query(WinningAdMonth)
     if branch_id:
@@ -891,17 +911,24 @@ def list_winning_months(
         for a in db.query(AdAccount.id, AdAccount.account_name).all()
     }
 
-    account_open_month: dict[str, date] = {}
-    if rows:
-        involved = {r.account_id for r in rows}
-        account_open_month = {
-            r[0]: month_start(r[1])
-            for r in db.query(AdDailyMetric.account_id, sf.max(AdDailyMetric.date))
-            .filter(AdDailyMetric.account_id.in_(involved))
-            .group_by(AdDailyMetric.account_id)
-            .all()
-            if r[1] is not None
-        }
+    # Every account within scope (not just ones with a frozen row already) —
+    # needed below both for `in_progress` and for the live LOSE preview,
+    # which can create a bucket with no frozen rows at all.
+    accounts_in_scope = eligible_accounts(db)
+    if branch_id:
+        accounts_in_scope = [a for a in accounts_in_scope if a.id == branch_id]
+    elif account_ids is not None:
+        wanted = set(account_ids or [])
+        accounts_in_scope = [a for a in accounts_in_scope if a.id in wanted]
+
+    account_open_month: dict[str, date] = {
+        r[0]: month_start(r[1])
+        for r in db.query(AdDailyMetric.account_id, sf.max(AdDailyMetric.date))
+        .filter(AdDailyMetric.account_id.in_([a.id for a in accounts_in_scope] or ["__no_match__"]))
+        .group_by(AdDailyMetric.account_id)
+        .all()
+        if r[1] is not None
+    }
 
     buckets: dict[str, dict] = {}
     in_progress_keys: set[str] = set()
@@ -943,6 +970,37 @@ def list_winning_months(
         else:
             b["lose_count"] += 1
 
+    # Live (unfrozen) LOSE preview — see the "LIVE LOSE PREVIEW" note in this
+    # function's docstring. For every account whose most-recently-synced
+    # month is still open, re-run compute_month_verdicts (not persisted) and
+    # fold any LOSEs straight into that bucket so tested/win_rate reflect
+    # today's real state instead of only counting the WINs that already
+    # froze. Can create a bucket that has no frozen rows at all.
+    live_lose_total = 0
+    for acc in accounts_in_scope:
+        open_m = account_open_month.get(acc.id)
+        if open_m is None or (year is not None and open_m.year != year):
+            continue
+        already_decided = {
+            r[0] for r in db.query(WinningAdMonth.ad_name)
+            .filter(WinningAdMonth.account_id == acc.id).distinct().all()
+        }
+        benchmark = compute_lifetime_benchmark(db, acc.id)
+        live_lose = sum(
+            1 for d in compute_month_verdicts(db, acc.id, open_m, benchmark, already_decided)
+            if d["verdict"] == "LOSE"
+        )
+        if not live_lose:
+            continue
+        key = open_m.isoformat()[:7]
+        b = buckets.setdefault(key, {
+            "month": key, "count": 0, "lose_count": 0, "spend": 0.0, "revenue": 0.0,
+            "conversions": 0, "by_branch": {}, "ads": [],
+        })
+        b["lose_count"] += live_lose
+        in_progress_keys.add(key)
+        live_lose_total += live_lose
+
     months = []
     for key in sorted(buckets, reverse=True):
         b = buckets[key]
@@ -960,8 +1018,10 @@ def list_winning_months(
         months.append(b)
 
     win_rows = [r for r in rows if r.verdict == "WIN"]
-    lose_count = len(rows) - len(win_rows)
-    tested_count = len(rows)
+    # live_lose_total folds the open month's unfrozen LOSEs into the org-wide
+    # totals too, same reasoning as the per-month buckets above.
+    lose_count = len(rows) - len(win_rows) + live_lose_total
+    tested_count = len(rows) + live_lose_total
 
     return {
         "months": months,
@@ -977,6 +1037,7 @@ def list_winning_months(
             f"Branches not covered: {', '.join(sorted(EXCLUDED_BRANCHES))}. "
             "win_rate = WIN / (WIN + LOSE) among ads that crossed the test "
             "threshold that month, within the selected year; an ad already "
-            "decided in an earlier month is never re-tested."
+            "decided in an earlier month is never re-tested. The open "
+            "month's LOSE count is a live (unfrozen) preview — see in_progress."
         ),
     }
