@@ -73,6 +73,11 @@ function CreativePageInner() {
   // Coverage gaps: creatives still missing a hypothesis / keypoints
   const [fNoHypothesis, setFNoHypothesis] = useState(false)
   const [fNoKeypoint, setFNoKeypoint] = useState(false)
+  // Pivot view: cluster combos sharing an ad_name — surfaces the
+  // "same ad name, split into multiple combo_ids" duplicate-insert class
+  // (see winning_months_service / creative_sync.find_duplicate_named_combos)
+  // that a flat list hides.
+  const [groupByName, setGroupByName] = useState(false)
 
   useEffect(() => {
     const t = setTimeout(() => setFSearch(searchInput.trim()), 300)
@@ -223,6 +228,32 @@ function CreativePageInner() {
     [combos, fFormat],
   )
 
+  // Pivot: visibleCombos clustered by exact ad_name. Largest groups first, so
+  // duplicate-name clusters float to the top instead of hiding in a flat list.
+  // `hasDup` flags a group where the SAME (target_audience, country) pair
+  // repeats within it — a legitimate ad running for both Solo and Couple
+  // produces a 2-combo group that's completely normal; two combos sharing
+  // ad_name AND TA AND country is the actual duplicate-insert bug class (see
+  // creative_sync.find_duplicate_named_combos), so only that gets flagged.
+  const groupedCombos = useMemo(() => {
+    const byName = new Map<string, Combo[]>()
+    for (const c of visibleCombos) {
+      const key = c.ad_name || '(no name)'
+      const list = byName.get(key)
+      if (list) list.push(c); else byName.set(key, [c])
+    }
+    return Array.from(byName, ([ad_name, list]) => {
+      const seen = new Set<string>()
+      let hasDup = false
+      for (const c of list) {
+        const slot = `${c.target_audience || ''}|${c.country || ''}`
+        if (seen.has(slot)) hasDup = true
+        seen.add(slot)
+      }
+      return { ad_name, combos: list, hasDup }
+    }).sort((a, b) => b.combos.length - a.combos.length || a.ad_name.localeCompare(b.ad_name))
+  }, [visibleCombos])
+
   // Format-insight aggregation: spend-weighted ROAS + win-rate per format.
   const formatStats = useMemo(() => {
     const acc: Record<string, { count: number; spend: number; revenue: number; wins: number; bookings: number }> = {}
@@ -265,6 +296,120 @@ function CreativePageInner() {
       </span>
     )
   }
+
+  // Table has 15 columns (Ad Name..Comp) — see <thead> below.
+  const COMBO_TABLE_COLS = 15
+
+  // Group-by-name pivot header — spans the full row, shown above each
+  // cluster's combos when groupByName is on.
+  const renderGroupHeader = (g: { ad_name: string; combos: Combo[]; hasDup: boolean }) => (
+    <tr key={`grp-${g.ad_name}`} className="bg-amber-50/60">
+      <td colSpan={COMBO_TABLE_COLS} className="py-1.5 px-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-gray-700 truncate max-w-[420px]" title={g.ad_name}>{g.ad_name}</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${g.hasDup ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-500'}`}>
+            {g.combos.length} combo{g.combos.length === 1 ? '' : 's'}
+          </span>
+          {g.hasDup && (
+            <span
+              className="text-[10px] text-red-600 font-medium"
+              title="Same ad_name, TA, and country across multiple combo_ids — likely a duplicate insert, not a legitimate TA/country split. See creative_sync.find_duplicate_named_combos / POST /internal/tasks/find-duplicate-combos."
+            >
+              ⚠ likely duplicate — same TA + country
+            </span>
+          )}
+        </div>
+      </td>
+    </tr>
+  )
+
+  const renderComboRow = (c: Combo) => (
+    <tr key={c.id} onClick={() => setDetailId(c.combo_id)} className={`border-b border-gray-50 hover:bg-blue-50/40 cursor-pointer ${detailId === c.combo_id ? 'bg-blue-50' : ''}`}>
+      <td className="py-2 px-2">
+        <p className="text-sm font-medium text-gray-900 max-w-[180px] truncate" title={c.ad_name || ''}>{c.ad_name || '—'}</p>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          <span className="text-[10px] text-gray-400 font-mono">{c.combo_id}</span>
+          <FormatChip type={inferFormat(c.ad_name)} />
+          {(c.hypothesis_ids || []).map(hid => (
+            <a
+              key={hid}
+              href={`/angles?tab=hypotheses`}
+              onClick={e => e.stopPropagation()}
+              className="text-[9px] font-mono text-violet-700 bg-violet-100 hover:bg-violet-200 rounded px-1 py-0.5"
+              title="Linked hypothesis — open Hypotheses tab"
+            >
+              {hid}
+            </a>
+          ))}
+          <button
+            onClick={e => { e.stopPropagation(); setHypSearch(''); setHypAllBranches(false); setHypOptions([]); setHypModalCombo(c) }}
+            className="text-[9px] text-violet-500 hover:text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-100 rounded px-1 py-0.5 font-medium"
+            title="Link this ad to an existing hypothesis"
+          >
+            + Hypothesis
+          </button>
+        </div>
+      </td>
+      <td className="py-2 px-2 text-xs text-gray-600">{accName(c.branch_id)}</td>
+      <td className="py-2 px-2"><span className="text-xs px-1.5 py-0.5 rounded bg-gray-100">{c.target_audience || '—'}</span></td>
+      <td className="py-2 px-2 text-xs text-gray-600">{c.country || '—'}</td>
+      <td className="py-2 px-2 text-xs max-w-[180px]" onClick={e => e.stopPropagation()}>
+        <div className="mb-1">
+          {c.keypoint_titles.length > 0 ? c.keypoint_titles.map((t, i) => (
+            <span key={i} className="inline-block bg-blue-50 text-blue-700 rounded px-1 py-0.5 text-[10px] mr-1 mb-0.5">{t.length > 25 ? t.slice(0, 25) + '...' : t}</span>
+          )) : <span className="text-gray-300 text-[10px]">No keypoints</span>}
+        </div>
+        <button
+          onClick={() => setKpModalCombo(c)}
+          className="inline-flex items-center gap-1 text-[10px] font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded px-1.5 py-0.5"
+        >
+          <Sparkles className="w-3 h-3" /> Double check
+        </button>
+      </td>
+      <td className="py-2 px-2 text-xs max-w-[140px] relative" onClick={e => e.stopPropagation()}>
+        {editingId === `ang-${c.combo_id}` ? (
+          <div className="absolute z-10 bg-white border border-gray-200 rounded-lg shadow-lg p-2 w-56 max-h-48 overflow-auto" style={{top: 0, left: 0}}>
+            <p className="text-[10px] text-gray-400 mb-1">Select angle:</p>
+            <div onClick={() => { updateCombo(c.combo_id, { angle_id: '' }); setCombos(prev => prev.map(x => x.combo_id === c.combo_id ? { ...x, angle_id: null, angle_type: '', angle_status: '' } : x)) }} className="py-1 px-1 text-[11px] text-gray-400 cursor-pointer hover:bg-gray-50 rounded">None</div>
+            {allAngles.filter(a => !a.branch_id || a.branch_id === c.branch_id).map(a => (
+              <div key={a.angle_id} onClick={() => { updateCombo(c.combo_id, { angle_id: a.angle_id }); setCombos(prev => prev.map(x => x.combo_id === c.combo_id ? { ...x, angle_id: a.angle_id, angle_type: a.angle_type, angle_status: a.status } : x)); setEditingId(null) }}
+                className={`py-1 px-1 text-[11px] cursor-pointer hover:bg-blue-50 rounded ${c.angle_id === a.angle_id ? 'bg-blue-100' : ''}`}>
+                <span className="font-mono text-gray-400">{a.angle_id}</span> {a.angle_type}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div onClick={() => setEditingId(editingId === `ang-${c.combo_id}` ? null : `ang-${c.combo_id}`)} className="cursor-pointer min-h-[20px]">
+          {c.angle_id ? (
+            <div>
+              <span className={`inline-block text-[10px] px-1 py-0.5 rounded font-medium ${VERDICT_COLORS[c.angle_status] || 'bg-gray-100'}`}>{c.angle_id}</span>
+              <p className="text-[10px] text-blue-600 font-semibold truncate mt-0.5" title={c.angle_type}>{c.angle_type}</p>
+            </div>
+          ) : <span className="text-gray-300 text-[10px]">+ add angle</span>}
+        </div>
+      </td>
+      <td className="py-2 px-2 text-center" onClick={e => e.stopPropagation()}>
+        <select value={c.verdict} onChange={e => updateVerdict(c.combo_id, e.target.value)} className={`text-xs px-2 py-1 rounded-full font-medium border-0 ${VERDICT_COLORS[c.verdict] || ''}`}>
+          <option value="WIN">WIN</option><option value="TEST">TEST</option><option value="LOSE">LOSE</option>
+        </select>
+      </td>
+      <td className="py-2 px-2 text-right text-xs">
+        {c.roas ? (
+          <div>
+            <span className={`font-bold ${c.roas >= c.benchmark_roas ? 'text-green-600' : 'text-red-500'}`}>{c.roas.toFixed(2)}x</span>
+            <p className="text-[9px] text-gray-400">BM: {c.benchmark_roas.toFixed(2)}x</p>
+          </div>
+        ) : '—'}
+      </td>
+      <td className="py-2 px-2 text-right text-xs">{c.cost_per_purchase ? c.cost_per_purchase.toLocaleString() : '—'}</td>
+      <td className="py-2 px-2 text-right text-xs">{c.conversions ?? '—'}</td>
+      <td className="py-2 px-2 text-right text-xs">{c.ctr ? `${(c.ctr * 100).toFixed(2)}%` : '—'}</td>
+      <td className="py-2 px-2 text-right text-xs">{c.engagement_rate ? `${(c.engagement_rate * 100).toFixed(1)}%` : '—'}</td>
+      <td className="py-2 px-2 text-right text-xs">{c.hook_rate ? `${(c.hook_rate * 100).toFixed(1)}%` : '—'}</td>
+      <td className="py-2 px-2 text-right text-xs">{c.thruplay_rate ? `${(c.thruplay_rate * 100).toFixed(1)}%` : '—'}</td>
+      <td className="py-2 px-2 text-right text-xs">{c.video_complete_rate ? `${(c.video_complete_rate * 100).toFixed(1)}%` : '—'}</td>
+    </tr>
+  )
 
   return (
     <div>
@@ -391,6 +536,13 @@ function CreativePageInner() {
         >
           No Keypoint
         </button>
+        <button
+          onClick={() => setGroupByName(v => !v)}
+          title="Cluster combos sharing the same ad name — surfaces duplicate-name combos hiding in the flat list"
+          className={`px-3 py-1.5 rounded-lg text-sm border transition ${groupByName ? 'bg-amber-600 text-white border-amber-600' : 'bg-white text-gray-600 border-gray-200 hover:border-amber-300'}`}
+        >
+          Group by Ad Name
+        </button>
         {(fSearch || fNoHypothesis || fNoKeypoint || fBranch || fTA || fCountry || fVerdict || fFormat) && (
           <button
             onClick={() => { setSearchInput(''); setFNoHypothesis(false); setFNoKeypoint(false); setFBranch(''); setFTA(''); setFCountry(''); setFVerdict(''); setFFormat('') }}
@@ -431,93 +583,11 @@ function CreativePageInner() {
                 <SortHeader col="thruplay_rate" label="Thru" className="text-right" />
                 <SortHeader col="video_complete_rate" label="Comp" className="text-right" />
               </tr></thead>
-              <tbody>{visibleCombos.map(c => (
-                <tr key={c.id} onClick={() => setDetailId(c.combo_id)} className={`border-b border-gray-50 hover:bg-blue-50/40 cursor-pointer ${detailId === c.combo_id ? 'bg-blue-50' : ''}`}>
-                  <td className="py-2 px-2">
-                    <p className="text-sm font-medium text-gray-900 max-w-[180px] truncate" title={c.ad_name || ''}>{c.ad_name || '—'}</p>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <span className="text-[10px] text-gray-400 font-mono">{c.combo_id}</span>
-                      <FormatChip type={inferFormat(c.ad_name)} />
-                      {(c.hypothesis_ids || []).map(hid => (
-                        <a
-                          key={hid}
-                          href={`/angles?tab=hypotheses`}
-                          onClick={e => e.stopPropagation()}
-                          className="text-[9px] font-mono text-violet-700 bg-violet-100 hover:bg-violet-200 rounded px-1 py-0.5"
-                          title="Linked hypothesis — open Hypotheses tab"
-                        >
-                          {hid}
-                        </a>
-                      ))}
-                      <button
-                        onClick={e => { e.stopPropagation(); setHypSearch(''); setHypAllBranches(false); setHypOptions([]); setHypModalCombo(c) }}
-                        className="text-[9px] text-violet-500 hover:text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-100 rounded px-1 py-0.5 font-medium"
-                        title="Link this ad to an existing hypothesis"
-                      >
-                        + Hypothesis
-                      </button>
-                    </div>
-                  </td>
-                  <td className="py-2 px-2 text-xs text-gray-600">{accName(c.branch_id)}</td>
-                  <td className="py-2 px-2"><span className="text-xs px-1.5 py-0.5 rounded bg-gray-100">{c.target_audience || '—'}</span></td>
-                  <td className="py-2 px-2 text-xs text-gray-600">{c.country || '—'}</td>
-                  <td className="py-2 px-2 text-xs max-w-[180px]" onClick={e => e.stopPropagation()}>
-                    <div className="mb-1">
-                      {c.keypoint_titles.length > 0 ? c.keypoint_titles.map((t, i) => (
-                        <span key={i} className="inline-block bg-blue-50 text-blue-700 rounded px-1 py-0.5 text-[10px] mr-1 mb-0.5">{t.length > 25 ? t.slice(0, 25) + '...' : t}</span>
-                      )) : <span className="text-gray-300 text-[10px]">No keypoints</span>}
-                    </div>
-                    <button
-                      onClick={() => setKpModalCombo(c)}
-                      className="inline-flex items-center gap-1 text-[10px] font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded px-1.5 py-0.5"
-                    >
-                      <Sparkles className="w-3 h-3" /> Double check
-                    </button>
-                  </td>
-                  <td className="py-2 px-2 text-xs max-w-[140px] relative" onClick={e => e.stopPropagation()}>
-                    {editingId === `ang-${c.combo_id}` ? (
-                      <div className="absolute z-10 bg-white border border-gray-200 rounded-lg shadow-lg p-2 w-56 max-h-48 overflow-auto" style={{top: 0, left: 0}}>
-                        <p className="text-[10px] text-gray-400 mb-1">Select angle:</p>
-                        <div onClick={() => { updateCombo(c.combo_id, { angle_id: '' }); setCombos(prev => prev.map(x => x.combo_id === c.combo_id ? { ...x, angle_id: null, angle_type: '', angle_status: '' } : x)) }} className="py-1 px-1 text-[11px] text-gray-400 cursor-pointer hover:bg-gray-50 rounded">None</div>
-                        {allAngles.filter(a => !a.branch_id || a.branch_id === c.branch_id).map(a => (
-                          <div key={a.angle_id} onClick={() => { updateCombo(c.combo_id, { angle_id: a.angle_id }); setCombos(prev => prev.map(x => x.combo_id === c.combo_id ? { ...x, angle_id: a.angle_id, angle_type: a.angle_type, angle_status: a.status } : x)); setEditingId(null) }}
-                            className={`py-1 px-1 text-[11px] cursor-pointer hover:bg-blue-50 rounded ${c.angle_id === a.angle_id ? 'bg-blue-100' : ''}`}>
-                            <span className="font-mono text-gray-400">{a.angle_id}</span> {a.angle_type}
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    <div onClick={() => setEditingId(editingId === `ang-${c.combo_id}` ? null : `ang-${c.combo_id}`)} className="cursor-pointer min-h-[20px]">
-                      {c.angle_id ? (
-                        <div>
-                          <span className={`inline-block text-[10px] px-1 py-0.5 rounded font-medium ${VERDICT_COLORS[c.angle_status] || 'bg-gray-100'}`}>{c.angle_id}</span>
-                          <p className="text-[10px] text-blue-600 font-semibold truncate mt-0.5" title={c.angle_type}>{c.angle_type}</p>
-                        </div>
-                      ) : <span className="text-gray-300 text-[10px]">+ add angle</span>}
-                    </div>
-                  </td>
-                  <td className="py-2 px-2 text-center" onClick={e => e.stopPropagation()}>
-                    <select value={c.verdict} onChange={e => updateVerdict(c.combo_id, e.target.value)} className={`text-xs px-2 py-1 rounded-full font-medium border-0 ${VERDICT_COLORS[c.verdict] || ''}`}>
-                      <option value="WIN">WIN</option><option value="TEST">TEST</option><option value="LOSE">LOSE</option>
-                    </select>
-                  </td>
-                  <td className="py-2 px-2 text-right text-xs">
-                    {c.roas ? (
-                      <div>
-                        <span className={`font-bold ${c.roas >= c.benchmark_roas ? 'text-green-600' : 'text-red-500'}`}>{c.roas.toFixed(2)}x</span>
-                        <p className="text-[9px] text-gray-400">BM: {c.benchmark_roas.toFixed(2)}x</p>
-                      </div>
-                    ) : '—'}
-                  </td>
-                  <td className="py-2 px-2 text-right text-xs">{c.cost_per_purchase ? c.cost_per_purchase.toLocaleString() : '—'}</td>
-                  <td className="py-2 px-2 text-right text-xs">{c.conversions ?? '—'}</td>
-                  <td className="py-2 px-2 text-right text-xs">{c.ctr ? `${(c.ctr * 100).toFixed(2)}%` : '—'}</td>
-                  <td className="py-2 px-2 text-right text-xs">{c.engagement_rate ? `${(c.engagement_rate * 100).toFixed(1)}%` : '—'}</td>
-                  <td className="py-2 px-2 text-right text-xs">{c.hook_rate ? `${(c.hook_rate * 100).toFixed(1)}%` : '—'}</td>
-                  <td className="py-2 px-2 text-right text-xs">{c.thruplay_rate ? `${(c.thruplay_rate * 100).toFixed(1)}%` : '—'}</td>
-                  <td className="py-2 px-2 text-right text-xs">{c.video_complete_rate ? `${(c.video_complete_rate * 100).toFixed(1)}%` : '—'}</td>
-                </tr>
-              ))}</tbody>
+              <tbody>
+                {groupByName
+                  ? groupedCombos.flatMap(g => [renderGroupHeader(g), ...g.combos.map(renderComboRow)])
+                  : visibleCombos.map(renderComboRow)}
+              </tbody>
             </table>
           </div>
         )}

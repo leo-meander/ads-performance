@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 
 from app.models.base import Base, TimestampMixin, UUIDType
 
@@ -13,21 +13,25 @@ class WinningAdMonth(TimestampMixin, Base):
     rate?" unanswerable.
 
     This table is the answer. One row per (account, month, ad_name), written
-    ONCE when the ad first crosses that month's test threshold (enough
-    clicks/bookings to be judged at all) and never recomputed — roas /
-    benchmark_roas / conversions / verdict are the numbers AS OF that award,
-    kept verbatim for the record. Rows are INSERT-only.
+    ONCE — either automatically, when the ad's CUMULATIVE clicks/bookings
+    first cross MIN_TEST_CLICKS (verdict_source='auto', see
+    winning_months_service.compute_month_verdicts), or by a human deciding an
+    ad that's stuck in TEST and never accumulating enough evidence on its own
+    (verdict_source='manual', see winning_months_service.award_manual_verdict)
+    — and never recomputed after that. roas / benchmark_roas / conversions /
+    verdict are the numbers AS OF that award, kept verbatim for the record.
+    Rows are INSERT-only.
 
     An ad_name only ever gets ONE row across all of history for a given
-    account: once it has a decided verdict (WIN or LOSE) in some month, it
-    is excluded from candidacy in every later month — see
-    winning_months_service.freeze_winning_months. This is what makes
-    win_rate = WIN count / (WIN + LOSE count) for a month meaningful instead
-    of double-counting an ad that keeps clearing the bar every month.
+    account, regardless of verdict_source: once it has a decided verdict
+    (WIN or LOSE) in some month, it is excluded from candidacy in every later
+    month — see winning_months_service.freeze_winning_months. This is what
+    makes win_rate = WIN count / (WIN + LOSE count) for a month meaningful
+    instead of double-counting an ad that keeps clearing the bar every month.
 
-    Scope: only ads whose name contains "CRTV" (the creative-team naming
-    convention) are considered — both as candidates AND when computing the
-    month's benchmark, so KOL/other traffic never skews the bar.
+    Scope: every ad EXCEPT ones whose name contains "KOL" — both as
+    candidates AND when computing the month's benchmark, so KOL traffic
+    never skews the bar. Applies to manual awards too.
     """
 
     __tablename__ = "winning_ad_months"
@@ -67,5 +71,12 @@ class WinningAdMonth(TimestampMixin, Base):
     roas = Column(Numeric(8, 4), nullable=True)
     # The bar the ad cleared: the account's blended CRTV ROAS for that month.
     benchmark_roas = Column(Numeric(8, 4), nullable=True)
+
+    # 'auto' (freeze_winning_months decided it, the default / historical
+    # behavior) or 'manual' (a human overrode a stuck-in-TEST ad — see
+    # winning_months_service.award_manual_verdict). Mirrors
+    # ad_combos.verdict_source / verdict_notes exactly.
+    verdict_source = Column(String(10), nullable=False, default="auto", server_default="auto")
+    verdict_notes = Column(Text, nullable=True)
 
     frozen_at = Column(DateTime(timezone=True), nullable=True)

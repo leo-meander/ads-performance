@@ -26,7 +26,9 @@ from app.services.creative_service import (
     next_copy_id, next_material_id, propagate_derived_verdicts,
 )
 from app.services.parse_utils import parse_campaign_metadata
-from app.services.winning_months_service import freeze_winning_months, list_winning_months
+from app.services.winning_months_service import (
+    ManualVerdictError, award_manual_verdict, freeze_winning_months, list_winning_months,
+)
 
 router = APIRouter()
 
@@ -1249,6 +1251,73 @@ def recompute_winning_months(
             return _api_response(error=err)
         ids = [branch_id] if branch_id else scoped_ids
         return _api_response(data=freeze_winning_months(db, account_ids=ids))
+    except Exception as e:
+        db.rollback()
+        return _api_response(error=str(e))
+
+
+class ManualWinningVerdictBody(BaseModel):
+    account_id: str
+    ad_name: str
+    verdict: str  # WIN | LOSE
+    notes: str | None = None
+    month: str | None = None  # YYYY-MM; defaults to the account's most-recently-synced month
+
+
+@router.post("/creative/winning-months/manual-verdict")
+def manual_winning_verdict(
+    body: ManualWinningVerdictBody,
+    current_user: User = Depends(require_section("meta_ads", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Human override for an ad stuck in TEST that will never accumulate
+    enough clicks/bookings on its own — see
+    winning_months_service.award_manual_verdict for the full rule set (scope,
+    "decided once ever", cumulative totals, etc). Per Mason: "những cái ad cũ
+    và chưa được vendict, tao muốn được tự đánh giá nó win hay lose được
+    không."
+
+    Same append-only guarantee as an automatic award — this INSERTs one row
+    and nothing else ever rewrites it.
+    """
+    try:
+        ok, _ids, err = scoped_account_ids(
+            db, current_user, "meta_ads", requested_account_id=body.account_id, min_level="edit"
+        )
+        if not ok:
+            return _api_response(error=err)
+
+        month = None
+        if body.month:
+            try:
+                y, m = body.month.split("-")
+                month = date(int(y), int(m), 1)
+            except (ValueError, IndexError):
+                return _api_response(error=f"Invalid month (expected YYYY-MM): {body.month}")
+
+        row = award_manual_verdict(
+            db, body.account_id, body.ad_name, body.verdict,
+            notes=body.notes, month=month,
+        )
+        db.commit()
+        return _api_response(data={
+            "id": row.id,
+            "account_id": row.account_id,
+            "ad_name": row.ad_name,
+            "month": row.month.isoformat()[:7],
+            "verdict": row.verdict,
+            "roas": float(row.roas) if row.roas is not None else None,
+            "benchmark_roas": float(row.benchmark_roas) if row.benchmark_roas is not None else None,
+            "spend": float(row.spend) if row.spend is not None else None,
+            "revenue": float(row.revenue) if row.revenue is not None else None,
+            "clicks": row.clicks,
+            "conversions": row.conversions,
+            "verdict_source": row.verdict_source,
+            "verdict_notes": row.verdict_notes,
+        })
+    except ManualVerdictError as e:
+        db.rollback()
+        return _api_response(error=str(e))
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))

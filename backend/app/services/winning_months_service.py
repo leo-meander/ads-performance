@@ -421,6 +421,152 @@ def freeze_winning_months(
     return summary
 
 
+class ManualVerdictError(ValueError):
+    """Raised by award_manual_verdict for any rejection — bad verdict value,
+    out-of-scope account/ad, already decided, or no data at all. The router
+    catches this specifically so callers get a clear 4xx message instead of a
+    generic 500."""
+
+
+def award_manual_verdict(
+    db: Session,
+    account_id: str,
+    ad_name: str,
+    verdict: str,
+    notes: str | None = None,
+    month: date | None = None,
+) -> WinningAdMonth:
+    """Human override for an ad stuck in TEST that will never accumulate
+    enough clicks/bookings on its own to get an automatic verdict.
+
+    Per Mason (2026-08-11): "những cái ad cũ và chưa được vendict, tao muốn
+    được tự đánh giá nó win hay lose được không" — old, low-volume ads sitting
+    in TEST forever were the concrete reason the win-rate KPI's `tested` count
+    stayed small even after MIN_TEST_CLICKS came down to 2,500 (see
+    compute_month_verdicts). This is the escape hatch: skip the click/booking
+    gate entirely and let a person decide.
+
+    Still bound by every other rule this table enforces, because a manual row
+    is a WinningAdMonth row like any other and freeze_winning_months can't
+    tell the difference when it builds `decided_ad_names`:
+
+    - `verdict` must be WIN or LOSE — never TEST, which just means "no row".
+    - The account must not be in EXCLUDED_BRANCHES and `ad_name` must not be
+      KOL-tagged — same scope as every automatic award, so a manual override
+      can't smuggle an out-of-scope ad into the KPI.
+    - The ad_name must not already have a row for this account (checked
+      against ALL verdict_source values) — "decided once, ever" holds
+      regardless of who or what decided it.
+    - The ad must have at least one real ad_daily_metrics row — otherwise
+      there's nothing to award and it's almost certainly a typo'd ad_name.
+
+    `month` defaults to the account's most-recently-synced month (mirrors
+    `last` in freeze_winning_months — deterministic from synced data, not
+    wall-clock "today"). spend/revenue/clicks/conversions/roas are still
+    computed CUMULATIVELY through that month's end, same convention as an
+    automatic award, so the row stays meaningful/auditable even though the
+    threshold check was skipped. `benchmark_roas` is recorded for context —
+    it did NOT decide this verdict, a human did.
+
+    Raises ManualVerdictError (a ValueError) on any rejection. Does not
+    commit — caller owns the transaction, same convention as
+    compute_month_verdicts/freeze_winning_months.
+    """
+    verdict = verdict.upper()
+    if verdict not in ("WIN", "LOSE"):
+        raise ManualVerdictError(f"verdict must be WIN or LOSE, got {verdict!r}")
+
+    account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+    if not account:
+        raise ManualVerdictError(f"no such account: {account_id}")
+    if is_excluded_branch(account.account_name):
+        raise ManualVerdictError(
+            f"{account.account_name} is not covered by this KPI (EXCLUDED_BRANCHES)"
+        )
+    if is_kol(ad_name):
+        raise ManualVerdictError(f'"{ad_name}" contains "KOL" — out of scope for this KPI')
+
+    already = (
+        db.query(WinningAdMonth)
+        .filter(WinningAdMonth.account_id == account_id, WinningAdMonth.ad_name == ad_name)
+        .first()
+    )
+    if already:
+        raise ManualVerdictError(
+            f'"{ad_name}" already has a {already.verdict} verdict for {already.month.isoformat()[:7]} '
+            f"({already.verdict_source}) — an ad is judged once, ever"
+        )
+
+    if month is None:
+        last_synced = (
+            db.query(sf.max(AdDailyMetric.date))
+            .filter(AdDailyMetric.account_id == account_id)
+            .scalar()
+        )
+        if not last_synced:
+            raise ManualVerdictError(
+                f"{account.account_name} has no ad_daily_metrics at all — pass `month` explicitly"
+            )
+        month = month_start(last_synced)
+    else:
+        month = month_start(month)
+
+    totals = (
+        db.query(
+            sf.sum(AdDailyMetric.spend), sf.sum(AdDailyMetric.revenue),
+            sf.sum(AdDailyMetric.impressions), sf.sum(AdDailyMetric.clicks),
+            sf.sum(AdDailyMetric.conversions),
+        )
+        .filter(
+            AdDailyMetric.account_id == account_id,
+            AdDailyMetric.ad_name == ad_name,
+            AdDailyMetric.date <= month_end(month),
+        )
+        .first()
+    )
+    spend = float(totals[0] or 0)
+    if spend == 0 and not (totals[1] or totals[3] or totals[4]):
+        raise ManualVerdictError(
+            f'"{ad_name}" has no ad_daily_metrics rows for {account.account_name} through '
+            f"{month.isoformat()[:7]} — nothing to award"
+        )
+    revenue = float(totals[1] or 0)
+    roas = revenue / spend if spend > 0 else 0.0
+    benchmark = compute_lifetime_benchmark(db, account_id)
+
+    combo = (
+        db.query(AdCombo)
+        .filter(AdCombo.branch_id == account_id, AdCombo.ad_name == ad_name)
+        .first()
+    )
+    row = WinningAdMonth(
+        account_id=account_id,
+        month=month,
+        ad_name=ad_name,
+        verdict=verdict,
+        combo_id=combo.combo_id if combo else None,
+        target_audience=combo.target_audience if combo else None,
+        country=combo.country if combo else None,
+        spend=spend,
+        revenue=revenue,
+        impressions=int(totals[2] or 0),
+        clicks=int(totals[3] or 0),
+        conversions=int(totals[4] or 0),
+        roas=roas,
+        benchmark_roas=benchmark,
+        verdict_source="manual",
+        verdict_notes=notes,
+        frozen_at=datetime.now(timezone.utc),
+    )
+    db.add(row)
+    db.flush()
+    logger.warning(
+        "[winning-months] MANUAL %s awarded to %s / %s (%s), roas=%.2f vs benchmark=%.2f — %s",
+        verdict, account.account_name, ad_name, month.isoformat()[:7], roas, benchmark, notes or "no notes",
+    )
+    return row
+
+
 def describe_data_window(db: Session, accounts: list[AdAccount] | None = None) -> list[dict]:
     """Per account, the ad_daily_metrics window currently on disk.
 
@@ -791,6 +937,8 @@ def list_winning_months(
                 "roas": float(r.roas) if r.roas is not None else None,
                 "benchmark_roas": float(r.benchmark_roas) if r.benchmark_roas is not None else None,
                 "frozen_at": r.frozen_at.isoformat() if r.frozen_at else None,
+                "verdict_source": r.verdict_source,
+                "verdict_notes": r.verdict_notes,
             })
         else:
             b["lose_count"] += 1
