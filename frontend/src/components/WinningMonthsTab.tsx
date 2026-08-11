@@ -33,6 +33,7 @@ interface WinMonth {
   revenue: number
   conversions: number
   roas: number | null
+  new_ads: number
   by_branch: { branch_name: string; count: number }[]
   ads: WinAd[]
 }
@@ -73,7 +74,7 @@ const nextMonth = (m: string) => {
 // there is no detail row to open.
 const emptyMonth = (month: string): WinMonth => ({
   month, count: 0, lose_count: 0, tested: 0, win_rate: null, in_progress: false,
-  spend: 0, revenue: 0, conversions: 0, roas: null, by_branch: [], ads: [],
+  spend: 0, revenue: 0, conversions: 0, roas: null, new_ads: 0, by_branch: [], ads: [],
 })
 
 const MONTH_LABEL = (m: string) => {
@@ -173,7 +174,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
 
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-900 flex flex-wrap items-start gap-x-4 gap-y-1">
         <span className="font-semibold inline-flex items-center gap-1"><Lock className="w-3.5 h-3.5" /> Frozen verdicts</span>
-        <span>An ad wins a month when its ROAS <strong>that month</strong> clears the branch&apos;s <strong>current</strong> (lifetime-to-date) blended ROAS — not that month&apos;s isolated cohort — and it has enough data: &gt; 4,500 clicks or ≥ 5 bookings. Below that it&apos;s still TEST and isn&apos;t counted at all.</span>
+        <span>An ad must still be running this month to be a candidate. It wins the month its <strong>cumulative</strong> ROAS (all history to date) clears the branch&apos;s <strong>current</strong> (lifetime-to-date) blended ROAS, once it has enough <strong>cumulative</strong> data: &gt; 2,500 clicks or ≥ 5 bookings, added up across every month it&apos;s run — not any single month&apos;s isolated total. Below that it&apos;s still TEST and isn&apos;t counted at all.</span>
         <span><strong>Win rate</strong> = winning ads ÷ every ad that cleared the test threshold that month (win + lose), not the whole ad list.</span>
         <span>An ad is judged <strong>once, ever</strong>: once it has a win/lose verdict in some month, it&apos;s never re-tested in a later month — the Library&apos;s live verdict keeps moving with the benchmark, these rows don&apos;t.</span>
         <span className="font-semibold">All ads count except ones with &ldquo;KOL&rdquo; in the name (paid amplification of KOL content). Bread is not covered by this KPI.</span>
@@ -217,6 +218,8 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
                       ...m.by_branch.map(b => `${b.branch_name}: ${b.count}`),
                       `${m.count} win / ${m.tested} tested${m.win_rate != null ? ` (${(m.win_rate * 100).toFixed(0)}%)` : ''}`,
                       m.in_progress ? 'Still open — win rate provisional' : '',
+                      // Reference only — new creatives launched, not part of win/tested.
+                      `${m.new_ads} ad${m.new_ads === 1 ? '' : 's'} created this month`,
                     ].filter(Boolean).join('\n')
                 return (
                   <button
@@ -283,7 +286,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
                   <thead><tr className="bg-gray-50 border-b">
                     <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Ad Name</th>
                     <th className="text-left py-2 px-2 text-gray-500 font-medium text-xs">Branch</th>
-                    <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs" title="Sum across every country and TA this ad ran in — the single number that decided WIN vs the month's benchmark.">
+                    <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs" title="Cumulative across every country, TA, and month this ad ran in through the award month — the single number that decided WIN vs the benchmark.">
                       Total ROAS @ award
                     </th>
                     <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs">Bookings</th>

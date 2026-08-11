@@ -7,17 +7,29 @@ against the account's CURRENT blended ROAS. Move the benchmark and yesterday's
 WIN becomes today's LOSE, so "how many winners did we ship in May?" has no
 stable answer.
 
-This module answers it. For every (account, calendar month) it aggregates
-that month's ad_daily_metrics per ad_name, compares each candidate's MONTHLY
-roas against the account's LIFETIME (all-time-to-date) blended non-KOL roas —
-same "current benchmark" the Library compares combos against, per Mason:
-"hiện tại" means lifetime, not that month's isolated cohort — applies the
-same WIN/LOSE/TEST rule the Library uses, and INSERTs the decided ads into
-winning_ad_months. Rows are append-only: re-running can award NEW verdicts to
-a past month, but never rewrites or removes one that was already frozen —
-the roas / benchmark / bookings stored on the row are the numbers as of the
-award, so a month's win_rate never drifts later just because the lifetime
-benchmark kept moving.
+This module answers it. For every (account, calendar month) it looks at every
+ad_name still running THAT month, but judges it on its CUMULATIVE history —
+every day of spend since the ad's first appearance, through the end of that
+month — against the account's LIFETIME (all-time-to-date) blended non-KOL
+roas, same "current benchmark" the Library compares combos against, per
+Mason: "hiện tại" means lifetime, not an isolated cohort. Splitting an ad's
+clicks into calendar-month buckets meant most ads never individually
+accumulated enough evidence to leave TEST, even after months of real spend —
+1,500 clicks in June and 1,500 more in July never crossed MIN_TEST_CLICKS
+under pure per-month accounting, despite the ad plainly having earned 3,000
+clicks of evidence (comfortably over the 2,500 bar — see
+creative_service.classify_verdict) by the end of July. So the ELIGIBILITY
+check (clicks/bookings) and the ROAS judged against the benchmark are both
+cumulative-to-date as of the month an ad first clears the bar — see
+compute_month_verdicts for the exact mechanics. Per Mason (2026-08-10): "để
+chỉ số phải tính cả nhiều tháng lại với nhau chứ, thì mới đúng được."
+
+The decided ads get INSERTed into winning_ad_months. Rows are append-only:
+re-running can award NEW verdicts to a past month, but never rewrites or
+removes one that was already frozen — the roas / benchmark / bookings stored
+on the row are the numbers as of the award, so a month's win_rate never
+drifts later just because the lifetime benchmark (or a later month's data)
+kept moving.
 
 Note the split: the BENCHMARK is lifetime, but the REPORTING window is
 year-to-date — list_winning_months buckets only the selected calendar year,
@@ -173,19 +185,41 @@ def compute_month_verdicts(
     benchmark: float,
     already_decided: set[str] | None = None,
 ) -> list[dict]:
-    """Aggregate one account-month and decide every candidate that qualifies.
+    """Decide every candidate STILL RUNNING this month, using its CUMULATIVE
+    history through this month's end.
 
     `benchmark` is the bar every candidate is measured against — the
     account's CURRENT (lifetime-to-date) blended non-KOL ROAS, from
-    compute_lifetime_benchmark, NOT recomputed from this month's cohort
-    alone. Only the candidate's own roas is month-scoped: that's the whole
-    point of "winning BY MONTH" — did this ad's performance THIS MONTH clear
-    the account's current bar.
+    compute_lifetime_benchmark.
+
+    Two different things are cumulative here and it's worth being precise
+    about which:
+
+    1. Candidacy — WHICH ad_names are considered this month — is still
+       month-scoped: an ad must have at least one row in [month_start,
+       month_end] to be a candidate at all. An ad that stopped running two
+       months ago isn't re-surfaced just because its old numbers would now
+       clear the bar.
+    2. The NUMBERS used to judge a candidate — clicks, bookings, spend,
+       revenue, and therefore roas — are cumulative from the ad's own first
+       day of history through the end of THIS month, not this month's
+       isolated total. Per Mason (2026-08-10): splitting an ad's clicks into
+       calendar-month buckets meant most ads never individually cleared
+       MIN_TEST_CLICKS (2,500 — see creative_service.classify_verdict) even
+       after months of real spend — 1,500 clicks in June and 1,500 more in
+       July never left TEST under the old per-month accounting, even though
+       the ad plainly earned 3,000 clicks of evidence by the end of July. So:
+       an ad with 1,500 clicks in June (candidate, still TEST) and 1,500 more
+       in July (candidate again, now cumulative 3,000 clicks) gets DECIDED in
+       July, using July's cumulative roas (both months' revenue ÷ both
+       months' spend) — not July's own isolated roas. This mirrors how
+       `benchmark` already works: never an isolated cohort.
 
     `already_decided` is the set of ad_names that already have a frozen
     verdict from an earlier month for this account — they're skipped as
     candidates entirely (not counted as WIN, LOSE, or TEST) so an ad already
-    judged doesn't get re-judged.
+    judged doesn't get re-judged, and its cumulative total isn't diluted by
+    months that happened after it already won or lost.
 
     Returns one dict per ad that crossed the test threshold this month
     (verdict WIN or LOSE — ads still in TEST are omitted).
@@ -194,6 +228,25 @@ def compute_month_verdicts(
     start = month_start(month)
     end = month_end(start)
 
+    # Candidacy: must actually be running THIS month.
+    active_this_month = {
+        r[0] for r in db.query(AdDailyMetric.ad_name)
+        .filter(
+            AdDailyMetric.account_id == account_id,
+            AdDailyMetric.date >= start,
+            AdDailyMetric.date <= end,
+            AdDailyMetric.ad_name.isnot(None),
+            ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
+        )
+        .distinct()
+        .all()
+    }
+    active_this_month -= already_decided
+    if not active_this_month:
+        return []
+
+    # Numbers: cumulative from the beginning of this ad_name's history
+    # through the end of THIS month — no lower date bound.
     rows = (
         db.query(
             AdDailyMetric.ad_name.label("ad_name"),
@@ -205,10 +258,8 @@ def compute_month_verdicts(
         )
         .filter(
             AdDailyMetric.account_id == account_id,
-            AdDailyMetric.date >= start,
             AdDailyMetric.date <= end,
-            AdDailyMetric.ad_name.isnot(None),
-            ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
+            AdDailyMetric.ad_name.in_(active_this_month),
         )
         .group_by(AdDailyMetric.ad_name)
         .all()
@@ -218,8 +269,8 @@ def compute_month_verdicts(
 
     decided: list[dict] = []
     for r in rows:
-        if r.ad_name in already_decided:
-            continue
+        # r.ad_name is guaranteed in active_this_month (already_decided
+        # already subtracted before the query ran).
         spend = float(r.spend or 0)
         revenue = float(r.revenue or 0)
         clicks = int(r.clicks or 0)
@@ -227,7 +278,7 @@ def compute_month_verdicts(
         roas = revenue / spend if spend > 0 else 0.0
         verdict = classify_verdict(clicks, conversions, roas, benchmark)
         if verdict not in ("WIN", "LOSE"):
-            continue  # still TEST — insufficient data, stays eligible next month
+            continue  # still TEST — cumulative total carries into next month
         decided.append({
             "ad_name": r.ad_name,
             "verdict": verdict,
@@ -636,6 +687,14 @@ def list_winning_months(
     from wall-clock "today," which would be wrong for a branch whose sync
     has silently stalled (its "open" month never closes until fresh data
     arrives, no matter how much wall-clock time passes).
+
+    `new_ads` is a reference-only count of distinct ad_names that FIRST
+    appeared in ad_daily_metrics that month, same scope as the KPI (non-KOL,
+    EXCLUDED_BRANCHES out). It never feeds win_rate or any other number here
+    — just display context for whether a month was quiet or busy on output.
+    A month only gets a bucket at all if it has at least one WIN/LOSE row, so
+    a month with new_ads > 0 but zero decided ads (everything still TEST)
+    won't appear in `months` — this stat is opportunistic, not exhaustive.
     """
     q = db.query(WinningAdMonth)
     if branch_id:
@@ -654,6 +713,32 @@ def list_winning_months(
             WinningAdMonth.month <= date(year, 12, 31),
         )
     rows = q.order_by(WinningAdMonth.month.desc(), WinningAdMonth.roas.desc().nullslast()).all()
+
+    # Reference-only stat: how many NEW ad_names first appeared each month,
+    # scoped the same way as the KPI (non-KOL, EXCLUDED_BRANCHES out) so the
+    # number sits in the same universe as win/tested. Purely informational —
+    # doesn't feed win_rate or any other calculation, just display context for
+    # "was this a quiet month for output or a busy one."
+    new_ads_q = db.query(
+        AdDailyMetric.account_id,
+        AdDailyMetric.ad_name,
+        sf.min(AdDailyMetric.date).label("first_date"),
+    ).filter(
+        AdDailyMetric.ad_name.isnot(None),
+        ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
+    )
+    if branch_id:
+        new_ads_q = new_ads_q.filter(AdDailyMetric.account_id == branch_id)
+    elif account_ids is not None:
+        new_ads_q = new_ads_q.filter(AdDailyMetric.account_id.in_(account_ids or ["__no_match__"]))
+    if excluded:
+        new_ads_q = new_ads_q.filter(AdDailyMetric.account_id.notin_(excluded))
+    new_ads_by_month: dict[str, int] = {}
+    for _acc_id, _ad_name, first_date in new_ads_q.group_by(
+        AdDailyMetric.account_id, AdDailyMetric.ad_name
+    ).all():
+        key = first_date.isoformat()[:7]
+        new_ads_by_month[key] = new_ads_by_month.get(key, 0) + 1
 
     acc_names = {
         a.id: a.account_name
@@ -717,6 +802,7 @@ def list_winning_months(
         b["tested"] = b["count"] + b["lose_count"]
         b["win_rate"] = (b["count"] / b["tested"]) if b["tested"] > 0 else None
         b["in_progress"] = key in in_progress_keys
+        b["new_ads"] = new_ads_by_month.get(key, 0)
         b["by_branch"] = [
             {"branch_name": n, "count": c}
             for n, c in sorted(b["by_branch"].items(), key=lambda kv: -kv[1])

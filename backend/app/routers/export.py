@@ -1367,10 +1367,13 @@ def export_winning_ads_monthly(
     unlike the Creative Library verdict, which re-compares lifetime ROAS
     against the account's CURRENT blended ROAS and therefore drifts.
 
-    An award covers a whole ad_name for that month: `spend` / `revenue` /
-    `roas` are the totals summed across every country and TA that ad ran in,
+    An award covers a whole ad_name, decided the month it first accumulated
+    enough evidence: `spend` / `revenue` / `roas` are CUMULATIVE totals from
+    the ad's first day of history through the award month — summed across
+    every country and TA that ad ran in, and across every earlier month too —
     because that combined figure is what the win was judged on
-    (winning_months_service.compute_month_verdicts groups by ad_name alone).
+    (winning_months_service.compute_month_verdicts groups by ad_name and
+    aggregates its full history to date, not just that one month).
     `rows` stays verdict='WIN' only — the feed's name and the design team's
     original KPI usage are both winners-only. The LOSE verdicts the table
     also freezes show up in the `by_month` counters instead, which is what

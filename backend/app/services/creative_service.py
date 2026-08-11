@@ -40,15 +40,31 @@ def next_combo_id(db: Session) -> str:
     return _next_sequential_id(db, AdCombo, "combo_id", "CMB")
 
 
+# The click-only path's bar, in click terms: 5 bookings ÷ the account's
+# blended click→booking conversion rate (0.2% as of 2026-08-10 — this value
+# is exact at that rate, not rounded: 5 / 0.002 = 2500).
+# Keeps the two OR branches of the TEST bar mutually consistent — a pure
+# click count and a pure booking count now represent roughly the same amount
+# of evidence, rather than the click path silently demanding ~2x more (the
+# previous value, 4500, predates this check). Landed together with clicks/
+# bookings becoming CUMULATIVE across months in winning_months_service — see
+# that module's docstring — since the old 4500 bar was tuned for a single
+# calendar month and stayed nearly as hard to clear even accumulated over
+# several. Per Mason (2026-08-10): "chắc benchmark lần này sẽ là 2500 click
+# thôi."
+MIN_TEST_CLICKS = 2500
+
+
 def classify_verdict(clicks: int, conversions: int, roas: float, benchmark_roas: float) -> str:
     """Classify combo verdict based on MEANDER rules.
 
-    TEST: clicks <= 4500 OR purchases < 5 (insufficient data)
+    TEST: clicks <= MIN_TEST_CLICKS AND purchases < 5 (insufficient data on
+    BOTH sides — either one alone is enough to exit TEST)
     WIN:  ROAS >= account benchmark ROAS
     LOSE: ROAS < account benchmark ROAS
     """
     # Insufficient data → TEST (need EITHER enough clicks OR enough bookings)
-    if clicks <= 4500 and conversions < 5:
+    if clicks <= MIN_TEST_CLICKS and conversions < 5:
         return "TEST"
     # Enough data → compare to benchmark
     if benchmark_roas <= 0:

@@ -199,6 +199,78 @@ def test_benchmark_spans_years_rather_than_resetting_each_january():
     assert benchmark == 11.0
 
 
+# ── cumulative click/booking threshold ─────────────────────
+
+
+def test_click_threshold_accumulates_across_months_using_cumulative_roas():
+    """Mason's spec (2026-08-10): 1,500 clicks in June + 1,500 more in July
+    never cleared MIN_TEST_CLICKS (2,500) under pure per-month accounting,
+    despite the ad plainly earning 3,000 clicks of evidence by end of July.
+    Decide it in July, using CUMULATIVE roas — not July's own isolated roas,
+    which would tell a different (wrong) story."""
+    db = TestSession()
+    acc = _account(db)
+    # June alone: 1,500 clicks (<=2500), 0 bookings → still TEST. Own roas
+    # would be 10.0x if it mattered, but it doesn't — not enough evidence yet.
+    _metric(db, acc, ad_name="CRTV_slow_burn", on=JUN, spend=100, revenue=1000,
+            clicks=1500, conversions=0)
+    decided_june = compute_month_verdicts(db, acc.id, JUN, benchmark=3.0)
+    assert decided_june == []  # cumulative clicks (1500) still <= 2500
+
+    # July: 1,500 more clicks. Cumulative = 3,000 clicks (>2500) → exits TEST.
+    _metric(db, acc, ad_name="CRTV_slow_burn", on=JUL, spend=100, revenue=100,
+            clicks=1500, conversions=0)
+    decided_july = compute_month_verdicts(db, acc.id, JUL, benchmark=3.0)
+    db.close()
+
+    assert len(decided_july) == 1
+    d = decided_july[0]
+    assert d["ad_name"] == "CRTV_slow_burn"
+    assert d["clicks"] == 3000  # cumulative, not July's own 1,500
+    # Cumulative roas = (1000+100) / (100+100) = 5.5x — clears the 3.0x bar.
+    # July's OWN roas (100/100 = 1.0x) would have been a LOSE — proves the
+    # cumulative figure, not the isolated month, decided this.
+    assert d["roas"] == 5.5
+    assert d["verdict"] == "WIN"
+
+
+def test_dormant_ad_is_not_a_candidate_in_a_month_it_did_not_run():
+    """Candidacy stays month-scoped even though the NUMBERS are cumulative:
+    an ad with no rows in the month being judged isn't re-surfaced just
+    because its old (still insufficient) totals sit in the account's
+    history."""
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_stopped", on=MAY, spend=100, revenue=1000,
+            clicks=1000, conversions=0)  # below threshold, and never runs again
+
+    may_decided = compute_month_verdicts(db, acc.id, MAY, benchmark=3.0)
+    jun_decided = compute_month_verdicts(db, acc.id, JUN, benchmark=3.0)
+    db.close()
+
+    assert may_decided == []  # correctly still TEST in May
+    assert jun_decided == []  # NOT a June candidate — it didn't run in June
+
+
+def test_click_threshold_never_clears_across_many_thin_months():
+    """The realistic failure mode this was built to diagnose: an ad running
+    every month at low volume, never individually or cumulatively reaching
+    the bar within the months tested, stays TEST throughout."""
+    db = TestSession()
+    acc = _account(db)
+    for on in (MAY, JUN, JUL):
+        _metric(db, acc, ad_name="CRTV_thin", on=on, spend=100, revenue=200,
+                clicks=400, conversions=0)  # 400/month; even x3 = 1200 < 2500
+
+    decided = [
+        d for m in (MAY, JUN, JUL)
+        for d in compute_month_verdicts(db, acc.id, m, benchmark=1.0)
+    ]
+    db.close()
+
+    assert decided == []
+
+
 # ── freeze semantics ──────────────────────────────────────
 
 
@@ -339,6 +411,28 @@ def test_win_rate_is_wins_over_tested_ads_for_a_closed_month():
     assert may["tested"] == 3
     assert may["win_rate"] == 1 / 3
     assert may["in_progress"] is False  # May closed once June's data arrived
+
+
+def test_new_ads_counts_first_seen_ad_names_per_month():
+    """`new_ads` is reference-only: how many ad_names first appeared that
+    month, same scope as the KPI (non-KOL). Doesn't touch win/tested."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)  # wins
+    _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=50)   # loses
+    _metric(db, acc, ad_name="KOL_someone", on=MAY, spend=100, revenue=100)  # excluded
+    # June is the account's open month — a LOSE there wouldn't freeze yet
+    # (see freeze_winning_months), so this needs to be a WIN to get a bucket.
+    _metric(db, acc, ad_name="CRTV_new_jun", on=JUN, spend=100, revenue=300)
+    db.close()
+
+    resp = client.get("/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers())
+    data = resp.json()["data"]
+
+    may = next(m for m in data["months"] if m["month"] == "2026-05")
+    jun = next(m for m in data["months"] if m["month"] == "2026-06")
+    assert may["new_ads"] == 2  # CRTV_A + CRTV_B; KOL_someone excluded
+    assert jun["new_ads"] == 1  # only CRTV_new_jun is new in June
 
 
 def test_winning_months_endpoint_groups_by_month():
