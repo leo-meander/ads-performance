@@ -227,7 +227,11 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
         </ul>
       </div>
 
-      {loading && <p className="text-sm text-gray-400">Loading…</p>}
+      {/* Only the FIRST load blanks the page. Switching branch re-runs the
+          same server work, and throwing the chart away to show one word means
+          the reader loses their place for the whole round trip — dim the old
+          numbers instead and swap them when the new ones land. */}
+      {loading && !data && <p className="text-sm text-gray-400">Loading…</p>}
       {error && <p className="text-sm text-red-500">{error}</p>}
 
       {!loading && !error && months.length === 0 && (
@@ -240,8 +244,8 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
         </div>
       )}
 
-      {!loading && months.length > 0 && data && (
-        <>
+      {months.length > 0 && data && (
+        <div className={loading ? 'opacity-50 transition-opacity' : 'transition-opacity'}>
           {/* Monthly counts — the headline number, one bar per month */}
           <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
             <div className="flex items-baseline justify-between mb-3">
@@ -370,11 +374,16 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
                             {a.country && (
                               <span className="text-[9px] text-gray-400 bg-gray-50 border border-gray-100 rounded px-1 py-0.5">{a.country}</span>
                             )}
+                            {/* Straight to the creative's detail drawer — the chip
+                                already names it, so landing on a filtered one-row
+                                table would just be a click with nothing to choose.
+                                `search` stays so the list behind the drawer is that
+                                same creative once it's closed. */}
                             {a.combo_id && (
                               <a
-                                href={`/creative?search=${encodeURIComponent(a.combo_id)}`}
+                                href={`/creative?search=${encodeURIComponent(a.combo_id)}&combo=${encodeURIComponent(a.combo_id)}`}
                                 className="text-[9px] font-mono text-blue-600 bg-blue-50 hover:bg-blue-100 rounded px-1 py-0.5"
-                                title="Open this creative in the Library"
+                                title="Open this creative's details"
                               >
                                 {a.combo_id}
                               </a>
@@ -489,7 +498,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
               )}
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   )
