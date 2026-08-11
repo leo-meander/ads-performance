@@ -998,7 +998,7 @@ def sync_hypothesis_results(
     """Evaluate all hypotheses with a linked combo_id.
 
     Applies Creative Library verdict rules:
-      running    = clicks <= 4500 AND bookings < 5
+      running    = clicks <= 2500 AND bookings < 5
       validated  = ROAS >= branch benchmark
       refuted    = ROAS < branch benchmark
     """

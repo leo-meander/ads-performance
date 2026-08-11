@@ -404,7 +404,7 @@ function CreativePageInner() {
       {/* Verdict Rules */}
       <div className="bg-gray-50 rounded-lg border border-gray-200 p-3 mb-4 text-xs text-gray-600 flex flex-wrap gap-4">
         <span className="font-semibold text-gray-700">Verdict Rules:</span>
-        <span><span className="inline-block w-2 h-2 rounded-full bg-yellow-400 mr-1"></span><strong>TEST</strong> = Clicks ≤ 4,500 AND Bookings &lt; 5</span>
+        <span><span className="inline-block w-2 h-2 rounded-full bg-yellow-400 mr-1"></span><strong>TEST</strong> = Clicks ≤ 2,500 AND Bookings &lt; 5</span>
         <span><span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-1"></span><strong>WIN</strong> = ROAS ≥ Account Benchmark</span>
         <span><span className="inline-block w-2 h-2 rounded-full bg-red-500 mr-1"></span><strong>LOSE</strong> = ROAS &lt; Account Benchmark</span>
       </div>

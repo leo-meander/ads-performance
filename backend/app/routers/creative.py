@@ -1038,7 +1038,7 @@ def auto_classify(
     current_user: User = Depends(require_section("meta_ads", "edit")),
     db: Session = Depends(get_db),
 ):
-    """Auto-classify all combos: TEST (clicks<=4500 or bookings<5), WIN (ROAS>=benchmark), LOSE (ROAS<benchmark)."""
+    """Auto-classify all combos: TEST (clicks<=2500 and bookings<5), WIN (ROAS>=benchmark), LOSE (ROAS<benchmark)."""
     try:
         updated = auto_classify_all_combos(db)
         combos = db.query(AdCombo).all()
@@ -1195,10 +1195,11 @@ def winning_months(
     The Library's WIN/LOSE is dynamic (lifetime ROAS vs the account's CURRENT
     blended ROAS), so it can't answer "how many winners in May, and what
     fraction of tested ads were winners?". These rows can: each is written
-    once, when the ad first crosses that month's test threshold, and is
-    never recomputed. An ad already decided in an earlier month is excluded
-    from candidacy in every later month, so win_rate = WIN / (WIN + LOSE)
-    for a month never double-counts the same standing winner.
+    once, when the ad's CUMULATIVE clicks/bookings (from its first day of
+    history) first cross the test threshold, and is never recomputed. An ad
+    already decided in an earlier month is excluded from candidacy in every
+    later month, so win_rate = WIN / (WIN + LOSE) for a month never
+    double-counts the same standing winner.
 
     `refresh=True` (default) runs the append-only freeze pass first so a month
     that just crossed the line shows up without anyone clicking a button. It
