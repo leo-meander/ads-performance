@@ -39,12 +39,15 @@ from app.models.user import User
 from app.models.winning_ad_month import WinningAdMonth
 from app.services.auth_service import create_access_token, hash_password
 from app.services.winning_months_service import (
+    ManualVerdictError,
+    award_manual_verdict,
     compute_lifetime_benchmark,
     compute_month_verdicts,
     describe_data_window,
     freeze_winning_months,
     is_kol,
     month_end,
+    month_start,
     months_between,
     rebuild_winning_months,
 )
@@ -712,3 +715,216 @@ def test_year_filter_scopes_the_totals_without_changing_verdicts():
         compute_lifetime_benchmark(db, acc_id), rel=1e-4
     )
     db.close()
+
+
+# ── manual verdict override ─────────────────────────────────
+
+
+def test_manual_verdict_awards_a_stuck_test_ad():
+    """The actual point of this feature: an ad that will NEVER accumulate
+    enough clicks/bookings on its own gets a human-decided verdict instead of
+    sitting in TEST forever."""
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_thin", on=MAY, spend=100, revenue=300,
+            clicks=400, conversions=0)  # nowhere near 2500 clicks / 5 bookings
+    acc_id = acc.id
+    db.close()
+
+    db = TestSession()
+    row = award_manual_verdict(db, acc_id, "CRTV_thin", "win", notes="creative team call")
+    db.commit()
+    assert row.verdict == "WIN"  # lowercase input normalized, checked before the session closes
+    db.close()
+
+    db = TestSession()
+    saved = db.query(WinningAdMonth).filter(WinningAdMonth.ad_name == "CRTV_thin").one()
+    db.close()
+
+    assert saved.verdict == "WIN"
+    assert saved.verdict_source == "manual"
+    assert saved.verdict_notes == "creative team call"
+    assert saved.month == month_start(MAY)  # defaulted to the account's only synced month
+    assert float(saved.spend) == 100
+    assert float(saved.roas) == 3.0
+
+
+def test_manual_verdict_rejects_an_already_decided_ad():
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)  # auto-decides via bookings
+    acc_id = acc.id
+    db.close()
+
+    freeze_db = TestSession()
+    freeze_winning_months(freeze_db)
+    freeze_db.close()
+
+    db = TestSession()
+    with pytest.raises(ManualVerdictError, match="already has a WIN verdict"):
+        award_manual_verdict(db, acc_id, "CRTV_A", "LOSE")
+    db.close()
+
+
+def test_manual_verdict_rejects_kol_ads():
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="KOL_someone", on=MAY, spend=100, revenue=100, clicks=100)
+    acc_id = acc.id
+    db.close()
+
+    db = TestSession()
+    with pytest.raises(ManualVerdictError, match="KOL"):
+        award_manual_verdict(db, acc_id, "KOL_someone", "WIN")
+    db.close()
+
+
+def test_manual_verdict_rejects_excluded_branches():
+    db = TestSession()
+    bread = _account(db, name="Bread Espresso")
+    _metric(db, bread, ad_name="CRTV_bread", on=MAY, spend=100, revenue=100, clicks=100)
+    bread_id = bread.id
+    db.close()
+
+    db = TestSession()
+    with pytest.raises(ManualVerdictError, match="EXCLUDED_BRANCHES"):
+        award_manual_verdict(db, bread_id, "CRTV_bread", "WIN")
+    db.close()
+
+
+def test_manual_verdict_rejects_invalid_verdict_value():
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=100, clicks=100)
+    acc_id = acc.id
+    db.close()
+
+    db = TestSession()
+    with pytest.raises(ManualVerdictError, match="WIN or LOSE"):
+        award_manual_verdict(db, acc_id, "CRTV_A", "TEST")
+    db.close()
+
+
+def test_manual_verdict_rejects_an_ad_with_no_data():
+    """The account has OTHER data (so month-resolution succeeds) but this
+    specific ad_name never ran — almost certainly a typo, not a real award."""
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_other", on=MAY, spend=100, revenue=100, clicks=100)
+    acc_id = acc.id
+    db.close()
+
+    db = TestSession()
+    with pytest.raises(ManualVerdictError, match="nothing to award"):
+        award_manual_verdict(db, acc_id, "CRTV_never_ran", "WIN")
+    db.close()
+
+
+def test_manual_verdict_rejects_when_account_has_no_data_at_all():
+    db = TestSession()
+    acc = _account(db)
+    acc_id = acc.id
+    db.close()
+
+    db = TestSession()
+    with pytest.raises(ManualVerdictError, match="pass `month` explicitly"):
+        award_manual_verdict(db, acc_id, "CRTV_never_ran", "WIN")
+    db.close()
+
+
+def test_manual_verdict_uses_cumulative_totals_through_the_given_month():
+    """Same convention as an automatic award: spend/revenue/clicks are
+    cumulative through month-end, not just that one month's isolated total —
+    and data AFTER the given month must not leak in."""
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_thin", on=MAY, spend=100, revenue=200, clicks=400)
+    _metric(db, acc, ad_name="CRTV_thin", on=JUN, spend=100, revenue=200, clicks=400)
+    _metric(db, acc, ad_name="CRTV_thin", on=JUL, spend=999, revenue=999, clicks=999)  # after the award month
+    acc_id = acc.id
+    db.close()
+
+    db = TestSession()
+    row = award_manual_verdict(db, acc_id, "CRTV_thin", "WIN", month=JUN)
+    db.commit()
+    assert row.month == month_start(JUN)
+    assert float(row.spend) == 200  # May + June only, July excluded
+    assert float(row.revenue) == 400
+    assert row.clicks == 800
+    db.close()
+
+
+def test_manual_verdict_then_freeze_never_re_decides_it():
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_thin", on=MAY, spend=100, revenue=300, clicks=400)
+    acc_id = acc.id
+    db.close()
+
+    db = TestSession()
+    award_manual_verdict(db, acc_id, "CRTV_thin", "WIN")
+    db.commit()
+    db.close()
+
+    freeze_db = TestSession()
+    summary = freeze_winning_months(freeze_db)
+    freeze_db.close()
+
+    db = TestSession()
+    rows = db.query(WinningAdMonth).filter(WinningAdMonth.ad_name == "CRTV_thin").all()
+    db.close()
+
+    assert summary["awarded"] == 0  # freeze didn't touch it — already decided
+    assert len(rows) == 1
+    assert rows[0].verdict_source == "manual"
+
+
+def test_manual_verdict_endpoint_creates_a_manual_row():
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    _metric(db, acc, ad_name="CRTV_thin", on=MAY, spend=100, revenue=300, clicks=400)
+    acc_id = acc.id
+    db.close()
+
+    resp = client.post(
+        "/api/creative/winning-months/manual-verdict",
+        json={"account_id": acc_id, "ad_name": "CRTV_thin", "verdict": "WIN", "notes": "call it"},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"], body["error"]
+    assert body["data"]["verdict"] == "WIN"
+    assert body["data"]["verdict_source"] == "manual"
+    assert body["data"]["month"] == "2026-05"
+
+    # And it shows up through the normal read path, tagged as manual.
+    listed = client.get(
+        "/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers()
+    ).json()["data"]
+    may = next(m for m in listed["months"] if m["month"] == "2026-05")
+    ad = next(a for a in may["ads"] if a["ad_name"] == "CRTV_thin")
+    assert ad["verdict_source"] == "manual"
+    assert ad["verdict_notes"] == "call it"
+
+
+def test_manual_verdict_endpoint_rejects_duplicate_with_400_shaped_error():
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)  # auto-decides
+    acc_id = acc.id
+    db.close()
+
+    freeze_db = TestSession()
+    freeze_winning_months(freeze_db)
+    freeze_db.close()
+
+    resp = client.post(
+        "/api/creative/winning-months/manual-verdict",
+        json={"account_id": acc_id, "ad_name": "CRTV_A", "verdict": "LOSE"},
+        headers=_admin_headers(),
+    )
+    assert resp.status_code == 200  # _api_response always 200; success=False carries the error
+    body = resp.json()
+    assert body["success"] is False
+    assert "already has a WIN verdict" in body["error"]
