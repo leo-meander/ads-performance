@@ -172,13 +172,18 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
         {msg && <span className="text-xs text-gray-500">{msg}</span>}
       </div>
 
-      <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-900 flex flex-wrap items-start gap-x-4 gap-y-1">
-        <span className="font-semibold inline-flex items-center gap-1"><Lock className="w-3.5 h-3.5" /> Frozen verdicts</span>
-        <span>An ad must still be running this month to be a candidate. It wins the month its <strong>cumulative</strong> ROAS (all history to date) clears the branch&apos;s <strong>current</strong> (lifetime-to-date) blended ROAS, once it has enough <strong>cumulative</strong> data: &gt; 2,500 clicks or ≥ 5 bookings, added up across every month it&apos;s run — not any single month&apos;s isolated total. Below that it&apos;s still TEST and isn&apos;t counted at all.</span>
-        <span><strong>Win rate</strong> = winning ads ÷ every ad that cleared the test threshold that month (win + lose), not the whole ad list.</span>
-        <span>An ad is judged <strong>once, ever</strong>: once it has a win/lose verdict in some month, it&apos;s never re-tested in a later month — the Library&apos;s live verdict keeps moving with the benchmark, these rows don&apos;t.</span>
-        <span className="font-semibold">All ads count except ones with &ldquo;KOL&rdquo; in the name (paid amplification of KOL content). Bread is not covered by this KPI.</span>
-        <span className="font-semibold">Totals below cover {data?.year ?? 'this year'} only — the year-to-date view resets every January. The benchmark itself stays lifetime, so narrowing the year never re-judges an ad.</span>
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-900">
+        <div className="font-semibold flex items-center gap-1 mb-2"><Lock className="w-3.5 h-3.5" /> Frozen verdicts</div>
+        <ul className="list-disc pl-5 space-y-1">
+          <li>Only active ads are evaluated.</li>
+          <li>An ad needs <strong>&gt;2,500 clicks</strong> or <strong>≥5 bookings</strong> (cumulative) to be evaluated.</li>
+          <li>ROAS above the branch lifetime benchmark = <strong>WIN</strong>. Otherwise = <strong>LOSE</strong>.</li>
+          <li>TEST ads are not counted.</li>
+          <li>Each ad is judged only once — the WIN/LOSE result is frozen and never re-tested.</li>
+          <li><strong>Win Rate</strong> = WIN ads ÷ (WIN + LOSE ads).</li>
+          <li>Ads with &ldquo;KOL&rdquo; in the name and Bread are excluded.</li>
+          <li>The report resets each year, but the benchmark remains lifetime.</li>
+        </ul>
       </div>
 
       {loading && <p className="text-sm text-gray-400">Loading…</p>}
