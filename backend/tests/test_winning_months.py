@@ -16,9 +16,14 @@ Things that must hold:
   4. An ad's verdict (WIN or LOSE) is decided ONCE, ever, per account — once
      it's decided in some month it is never a candidate again in a later
      month, so win_rate never double-counts a standing winner.
-  5. LOSE only freezes for a month that's CLOSED (strictly before the
+  5. LOSE only FREEZES for a month that's CLOSED (strictly before the
      account's most-recent synced month) — the open month can still add
-     WINs, but never locks in a LOSE it might climb out of before it ends.
+     WINs, but freeze_winning_months never locks in a LOSE it might climb
+     out of before it ends. list_winning_months (the read side) still
+     blends a LIVE, unfrozen LOSE count into the open month's tested/
+     win_rate for reporting — see test_open_month_win_rate_includes_live_lose
+     — so the API doesn't read as an artificial 100% just because nothing
+     froze yet.
 
 MAY and JUN below are both in the past relative to the synced data in most
 tests (JUL/AUG add a third, "still open," month where relevant), so unless a
@@ -363,6 +368,39 @@ def test_lose_verdict_is_not_frozen_for_the_still_open_month():
     assert {(r.ad_name, r.verdict) for r in rows} == {("CRTV_A", "WIN")}
 
 
+def test_open_month_win_rate_includes_live_lose():
+    """list_winning_months (the read side) is not bound by freeze's caution:
+    CRTV_B already crossed the test threshold and scores below benchmark, so
+    it should count as tested right now for reporting, even though nothing
+    was written to WinningAdMonth for it — see the "LIVE LOSE PREVIEW" note
+    on list_winning_months."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    # Only May data exists — May is this account's open month.
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)  # wins
+    _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=100)  # would LOSE
+    freeze_winning_months(db)
+    db.close()
+
+    resp = client.get("/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers())
+    data = resp.json()["data"]
+    may = next(m for m in data["months"] if m["month"] == "2026-05")
+
+    assert may["in_progress"] is True
+    assert may["count"] == 1          # frozen WIN only
+    assert may["lose_count"] == 1     # live, unfrozen preview of CRTV_B
+    assert may["tested"] == 2
+    assert may["win_rate"] == 0.5
+    assert [a["ad_name"] for a in may["ads"]] == ["CRTV_A"]  # live LOSE never joins the ads detail list
+
+    # The live LOSE never got written — freeze's "don't lock in a LOSE it
+    # might climb out of" guarantee is untouched.
+    db2 = TestSession()
+    rows = db2.query(WinningAdMonth).all()
+    db2.close()
+    assert {(r.ad_name, r.verdict) for r in rows} == {("CRTV_A", "WIN")}
+
+
 def test_ad_decided_in_a_closed_month_is_never_retested():
     db = TestSession()
     acc = _account(db)
@@ -424,9 +462,7 @@ def test_new_ads_counts_first_seen_ad_names_per_month():
     _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)  # wins
     _metric(db, acc, ad_name="CRTV_B", on=MAY, spend=100, revenue=50)   # loses
     _metric(db, acc, ad_name="KOL_someone", on=MAY, spend=100, revenue=100)  # excluded
-    # June is the account's open month — a LOSE there wouldn't freeze yet
-    # (see freeze_winning_months), so this needs to be a WIN to get a bucket.
-    _metric(db, acc, ad_name="CRTV_new_jun", on=JUN, spend=100, revenue=300)
+    _metric(db, acc, ad_name="CRTV_new_jun", on=JUN, spend=100, revenue=300)  # wins
     db.close()
 
     resp = client.get("/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers())
@@ -466,11 +502,13 @@ def test_winning_months_endpoint_groups_by_month():
     assert data["months"][0]["by_branch"] == [{"branch_name": "Meander Saigon", "count": 1}]
 
     # June is this account's most-recent synced month — still open, so
-    # CRTV_D's LOSE hasn't frozen yet and June's win_rate is provisional.
+    # CRTV_D's LOSE hasn't frozen (WinningAdMonth stays WIN-only for June),
+    # but list_winning_months still folds it in live for tested/win_rate.
     june = data["months"][0]
     assert june["in_progress"] is True
-    assert june["lose_count"] == 0
-    assert june["tested"] == 1
+    assert june["lose_count"] == 1  # live preview of CRTV_D, not frozen
+    assert june["tested"] == 2
+    assert june["win_rate"] == 0.5
 
     # May is closed (June's data exists): both ads got decided.
     may = data["months"][1]
@@ -695,12 +733,15 @@ def test_year_filter_scopes_the_totals_without_changing_verdicts():
     ytd = client.get("/api/creative/winning-months", params={"year": 2026}, headers=headers).json()["data"]
     all_time = client.get("/api/creative/winning-months", params={"year": 0}, headers=headers).json()["data"]
 
+    # 2026-06 shows up too: CRTV_later already crossed the test threshold and
+    # scores below benchmark, so it's a live (unfrozen) LOSE preview for the
+    # still-open June bucket — see test_open_month_win_rate_includes_live_lose.
     ytd_months = [m["month"] for m in ytd["months"]]
-    assert ytd_months == ["2026-05"]  # 2025 is windowed out
+    assert ytd_months == ["2026-06", "2026-05"]  # 2025 is windowed out
     assert ytd["year"] == 2026
 
     # year=0 opts out of the window entirely and 2025 reappears, unchanged.
-    assert [m["month"] for m in all_time["months"]] == ["2026-05", "2025-06"]
+    assert [m["month"] for m in all_time["months"]] == ["2026-06", "2026-05", "2025-06"]
     assert all_time["year"] is None
     assert all_time["total_wins"] == ytd["total_wins"] + 1
 

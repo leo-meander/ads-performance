@@ -217,7 +217,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
                   : [
                       ...m.by_branch.map(b => `${b.branch_name}: ${b.count}`),
                       `${m.count} win / ${m.tested} tested${m.win_rate != null ? ` (${(m.win_rate * 100).toFixed(0)}%)` : ''}`,
-                      m.in_progress ? 'Still open — win rate provisional' : '',
+                      m.in_progress ? 'Still open — losses counted live, so this can still move' : '',
                       // Reference only — new creatives launched, not part of win/tested.
                       `${m.new_ads} ad${m.new_ads === 1 ? '' : 's'} created this month`,
                     ].filter(Boolean).join('\n')
@@ -264,7 +264,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
                 <span className="text-xs text-gray-500">{current.count} winning ads</span>
                 <span
                   className="text-xs text-gray-500"
-                  title={current.in_progress ? "Month still open — win rate will keep changing until it closes" : undefined}
+                  title={current.in_progress ? "Month still open — ads that already crossed the test threshold count as tested now, including losses that haven't frozen yet, so this keeps changing until the month closes" : undefined}
                 >
                   {current.win_rate != null
                     ? `${(current.win_rate * 100).toFixed(0)}% win rate (${current.count}/${current.tested} tested)`
