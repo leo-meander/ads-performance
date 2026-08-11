@@ -899,9 +899,36 @@ def list_winning_months(
     appeared in ad_daily_metrics that month, same scope as the KPI (non-KOL,
     EXCLUDED_BRANCHES out). It never feeds win_rate or any other number here
     — just display context for whether a month was quiet or busy on output.
-    A month only gets a bucket at all if it has at least one WIN/LOSE row (or
-    a live LOSE preview, see above) — a month with new_ads > 0 but nothing
-    tested/live-tested yet won't appear in `months`.
+
+    A month appears in `months` if it has at least one WIN/LOSE row, a live
+    LOSE preview (see above), OR any new ads. That last case yields a
+    genuine 0-tested bucket: a month where ads shipped but none earned a
+    verdict yet. It exists so `new_ad_list` has somewhere to live — a reader
+    asking "we launched 6 ads in May, why did none of them count?" needs the
+    month present to answer it. `tested: 0` distinguishes it from a month
+    that decided something.
+
+    `new_ad_list` is those same ads, itemised, so "6 ads created this month"
+    can be audited instead of taken on faith — the reader can see WHICH six
+    and why only some reached the win/tested numbers beside it. Each entry
+    carries `status` (WIN / LOSE / TEST) plus `status_source`:
+
+      frozen sources — "auto" / "manual": there is a WinningAdMonth row, and
+        `decided_month` says which month it was decided in. That month is
+        often NOT the creation month (an ad is judged the month its
+        cumulative evidence first clears the bar), which is exactly why a
+        month can show 6 created but only 3 tested.
+      "live" — no frozen row, but cumulative evidence already scores WIN or
+        LOSE. The open month never freezes a LOSE (see above), so this is
+        what those ads look like before the month closes.
+      "test" — not enough cumulative clicks/bookings yet; the ad is not
+        counted in win_rate on either side.
+
+    The money/clicks on each entry are CUMULATIVE-to-date (no lower date
+    bound), matching what classify_verdict judges on, so a reader checking
+    "why is this still TEST" sees the same clicks number the rule used.
+    Like `ads`, the list only ships for the requested `month` when one is
+    given.
     """
     q = db.query(WinningAdMonth)
     if branch_id:
@@ -921,15 +948,59 @@ def list_winning_months(
         )
     rows = q.order_by(WinningAdMonth.month.desc(), WinningAdMonth.roas.desc().nullslast()).all()
 
-    # Reference-only stat: how many NEW ad_names first appeared each month,
-    # scoped the same way as the KPI (non-KOL, EXCLUDED_BRANCHES out) so the
-    # number sits in the same universe as win/tested. Purely informational —
-    # doesn't feed win_rate or any other calculation, just display context for
-    # "was this a quiet month for output or a busy one."
+    acc_names = {
+        a.id: a.account_name
+        for a in db.query(AdAccount.id, AdAccount.account_name).all()
+    }
+
+    # Every account within scope (not just ones with a frozen row already) —
+    # needed below for `in_progress`, the live LOSE preview (which can create a
+    # bucket with no frozen rows at all), and new_ad_list's status column.
+    accounts_in_scope = eligible_accounts(db)
+    if branch_id:
+        accounts_in_scope = [a for a in accounts_in_scope if a.id == branch_id]
+    elif account_ids is not None:
+        wanted = set(account_ids or [])
+        accounts_in_scope = [a for a in accounts_in_scope if a.id in wanted]
+
+    # One lifetime bar per in-scope account, for new_ad_list's status column —
+    # the same bar classify_verdict is given, so the status shown next to an
+    # ad matches the verdict the freeze pass would reach for it.
+    # (live_open_month_loses computes its own; it owns that path.)
+    benchmarks: dict[str, float] = {
+        a.id: compute_lifetime_benchmark(db, a.id) for a in accounts_in_scope
+    }
+
+    # Every frozen verdict for the in-scope accounts, keyed by ad. Deliberately
+    # NOT year-filtered: an ad created in December can be decided the following
+    # March, and new_ad_list must still report that verdict rather than calling
+    # the ad undecided.
+    frozen_by_ad: dict[tuple[str, str], WinningAdMonth] = {
+        (r.account_id, r.ad_name): r
+        for r in db.query(WinningAdMonth).filter(
+            WinningAdMonth.account_id.in_([a.id for a in accounts_in_scope] or ["__no_match__"])
+        ).all()
+    }
+
+    # Every NEW ad_name that first appeared each month, scoped the same way as
+    # the KPI (non-KOL, EXCLUDED_BRANCHES out) so the numbers sit in the same
+    # universe as win/tested. Feeds two things, neither of which touches
+    # win_rate:
+    #   `new_ads`     — the count, display context for "quiet month or busy one"
+    #   `new_ad_list` — the ads themselves, so "6 ads created" is auditable
+    #                   instead of a number the reader has to take on faith.
+    # The sums have no lower date bound, so they are CUMULATIVE-to-date — the
+    # same evidence classify_verdict judges on, which is what makes the status
+    # column here agree with the verdict the freeze pass would reach.
     new_ads_q = db.query(
         AdDailyMetric.account_id,
         AdDailyMetric.ad_name,
         sf.min(AdDailyMetric.date).label("first_date"),
+        sf.max(AdDailyMetric.date).label("last_date"),
+        sf.sum(AdDailyMetric.spend).label("spend"),
+        sf.sum(AdDailyMetric.revenue).label("revenue"),
+        sf.sum(AdDailyMetric.clicks).label("clicks"),
+        sf.sum(AdDailyMetric.conversions).label("conversions"),
     ).filter(
         AdDailyMetric.ad_name.isnot(None),
         ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
@@ -940,27 +1011,54 @@ def list_winning_months(
         new_ads_q = new_ads_q.filter(AdDailyMetric.account_id.in_(account_ids or ["__no_match__"]))
     if excluded:
         new_ads_q = new_ads_q.filter(AdDailyMetric.account_id.notin_(excluded))
+
     new_ads_by_month: dict[str, int] = {}
-    for _acc_id, _ad_name, first_date in new_ads_q.group_by(
-        AdDailyMetric.account_id, AdDailyMetric.ad_name
-    ).all():
-        key = first_date.isoformat()[:7]
+    new_ad_list_by_month: dict[str, list[dict]] = {}
+    for r in new_ads_q.group_by(AdDailyMetric.account_id, AdDailyMetric.ad_name).all():
+        key = r.first_date.isoformat()[:7]
         new_ads_by_month[key] = new_ads_by_month.get(key, 0) + 1
 
-    acc_names = {
-        a.id: a.account_name
-        for a in db.query(AdAccount.id, AdAccount.account_name).all()
-    }
+        spend = float(r.spend or 0)
+        revenue = float(r.revenue or 0)
+        clicks = int(r.clicks or 0)
+        conversions = int(r.conversions or 0)
+        roas = revenue / spend if spend > 0 else None
 
-    # Every account within scope (not just ones with a frozen row already) —
-    # needed below both for `in_progress` and for the live LOSE preview,
-    # which can create a bucket with no frozen rows at all.
-    accounts_in_scope = eligible_accounts(db)
-    if branch_id:
-        accounts_in_scope = [a for a in accounts_in_scope if a.id == branch_id]
-    elif account_ids is not None:
-        wanted = set(account_ids or [])
-        accounts_in_scope = [a for a in accounts_in_scope if a.id in wanted]
+        frozen = frozen_by_ad.get((r.account_id, r.ad_name))
+        if frozen is not None:
+            status, status_source = frozen.verdict, (frozen.verdict_source or "auto")
+            decided_month = frozen.month.isoformat()[:7]
+        else:
+            # No frozen row: report what the ad's cumulative evidence says
+            # RIGHT NOW. TEST means it hasn't earned a verdict yet; a WIN/LOSE
+            # here is live and unfrozen — either the open month (which never
+            # freezes a LOSE) or a month the freeze pass hasn't run over yet.
+            status = classify_verdict(clicks, conversions, roas or 0.0, benchmarks.get(r.account_id, 0.0))
+            status_source = "test" if status == "TEST" else "live"
+            decided_month = None
+
+        new_ad_list_by_month.setdefault(key, []).append({
+            "ad_name": r.ad_name,
+            "account_id": r.account_id,
+            "branch_name": acc_names.get(r.account_id, "—"),
+            "status": status,
+            "status_source": status_source,
+            "decided_month": decided_month,
+            "first_date": r.first_date.isoformat(),
+            "last_date": r.last_date.isoformat() if r.last_date else None,
+            "spend": spend,
+            "revenue": revenue,
+            "clicks": clicks,
+            "conversions": conversions,
+            "roas": roas,
+            "benchmark_roas": benchmarks.get(r.account_id) or None,
+        })
+
+    # Winners first, then losers, then the ads still gathering evidence; within
+    # a group the biggest spender leads, since that's the one worth explaining.
+    _STATUS_ORDER = {"WIN": 0, "LOSE": 1, "TEST": 2}
+    for entries in new_ad_list_by_month.values():
+        entries.sort(key=lambda e: (_STATUS_ORDER.get(e["status"], 3), -e["spend"]))
 
     account_open_month: dict[str, date] = {
         r[0]: month_start(r[1])
@@ -1032,6 +1130,21 @@ def list_winning_months(
         in_progress_keys.add(key)
         live_lose_total += live_lose
 
+    # A month that shipped ads but decided none of them still deserves a
+    # bucket. Without this it vanishes from `months` entirely, taking its
+    # new_ad_list with it — and "we launched 6 ads in May" would have no
+    # place to be shown precisely when the reader most wants to ask why none
+    # of them counted. Such a bucket is a real 0-tested month, not a gap.
+    # Year-scoped explicitly: new_ads_by_month is built without the year
+    # filter that `rows` already went through.
+    for key in new_ad_list_by_month:
+        if year is not None and not key.startswith(f"{year}-"):
+            continue
+        buckets.setdefault(key, {
+            "month": key, "count": 0, "lose_count": 0, "spend": 0.0, "revenue": 0.0,
+            "conversions": 0, "by_branch": {}, "ads": [],
+        })
+
     months = []
     for key in sorted(buckets, reverse=True):
         b = buckets[key]
@@ -1040,12 +1153,16 @@ def list_winning_months(
         b["win_rate"] = (b["count"] / b["tested"]) if b["tested"] > 0 else None
         b["in_progress"] = key in in_progress_keys
         b["new_ads"] = new_ads_by_month.get(key, 0)
+        b["new_ad_list"] = new_ad_list_by_month.get(key, [])
         b["by_branch"] = [
             {"branch_name": n, "count": c}
             for n, c in sorted(b["by_branch"].items(), key=lambda kv: -kv[1])
         ]
         if month and key != month:
+            # Same narrowing the `ads` detail list gets: only the requested
+            # month ships its per-ad rows, so the trend stays cheap.
             b["ads"] = []
+            b["new_ad_list"] = []
         months.append(b)
 
     win_rows = [r for r in rows if r.verdict == "WIN"]
