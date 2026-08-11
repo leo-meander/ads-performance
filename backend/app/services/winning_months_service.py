@@ -297,6 +297,47 @@ def compute_month_verdicts(
     return decided
 
 
+def live_open_month_loses(
+    db: Session,
+    accounts: list[AdAccount],
+    account_open_month: dict[str, date],
+) -> dict[str, tuple[date, int]]:
+    """``{account_id: (open_month, live_lose_count)}`` — the unfrozen LOSEs
+    sitting in each account's still-open month, accounts with none omitted.
+
+    freeze_winning_months deliberately never freezes a LOSE for the open month
+    (an ad still spending could climb out of it before month end), so a read
+    path that only counts frozen rows sees WINs and nothing else and reports
+    100% for the current month no matter how many tested ads are actually
+    losing. Every read path that publishes a win_rate has to fold this number
+    in — list_winning_months for the "Winning by Month" tab, and
+    routers/export.py's /export/winning-ads-monthly for HiD's "% Ads Win"
+    KPI. It lives here, in one place, because the two disagreeing about the
+    open month is exactly the bug this fixes.
+
+    Nothing is persisted, and the number is intentionally volatile: a live
+    LOSE today can flip to WIN and freeze there tomorrow. Callers apply their
+    own month/year window and attribute the count to a branch themselves.
+    """
+    out: dict[str, tuple[date, int]] = {}
+    for acc in accounts:
+        open_m = account_open_month.get(acc.id)
+        if open_m is None:
+            continue
+        already_decided = {
+            r[0] for r in db.query(WinningAdMonth.ad_name)
+            .filter(WinningAdMonth.account_id == acc.id).distinct().all()
+        }
+        benchmark = compute_lifetime_benchmark(db, acc.id)
+        live_lose = sum(
+            1 for d in compute_month_verdicts(db, acc.id, open_m, benchmark, already_decided)
+            if d["verdict"] == "LOSE"
+        )
+        if live_lose:
+            out[acc.id] = (open_m, live_lose)
+    return out
+
+
 def freeze_winning_months(
     db: Session, account_ids: list[str] | None = None, since: date | None = None
 ) -> dict:
@@ -977,20 +1018,10 @@ def list_winning_months(
     # today's real state instead of only counting the WINs that already
     # froze. Can create a bucket that has no frozen rows at all.
     live_lose_total = 0
-    for acc in accounts_in_scope:
-        open_m = account_open_month.get(acc.id)
-        if open_m is None or (year is not None and open_m.year != year):
-            continue
-        already_decided = {
-            r[0] for r in db.query(WinningAdMonth.ad_name)
-            .filter(WinningAdMonth.account_id == acc.id).distinct().all()
-        }
-        benchmark = compute_lifetime_benchmark(db, acc.id)
-        live_lose = sum(
-            1 for d in compute_month_verdicts(db, acc.id, open_m, benchmark, already_decided)
-            if d["verdict"] == "LOSE"
-        )
-        if not live_lose:
+    for _acc_id, (open_m, live_lose) in live_open_month_loses(
+        db, accounts_in_scope, account_open_month
+    ).items():
+        if year is not None and open_m.year != year:
             continue
         key = open_m.isoformat()[:7]
         b = buckets.setdefault(key, {

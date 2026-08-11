@@ -66,7 +66,11 @@ from app.services.export_auth import create_api_key, validate_api_key
 from app.services.winning_months_service import (
     EXCLUDED_BRANCHES as WINNING_EXCLUDED_BRANCHES,
 )
-from app.services.winning_months_service import excluded_account_ids
+from app.services.winning_months_service import (
+    eligible_accounts,
+    excluded_account_ids,
+    live_open_month_loses,
+)
 
 router = APIRouter()
 
@@ -1387,10 +1391,16 @@ def export_winning_ads_monthly(
 
     `by_month[].in_progress` marks a month that still has at least one
     account for which it is the most-recently-synced month. LOSE only
-    freezes once a month is CLOSED for an account, so such a month's
-    win_rate is provisional (usually inflated). Mirrors the freeze
-    algorithm rather than wall-clock "today", which would be wrong for a
-    branch whose sync has silently stalled.
+    freezes once a month is CLOSED for an account, so for such a month the
+    losses are a LIVE preview: recomputed on the fly from today's data
+    (winning_months_service.live_open_month_loses) and folded into
+    `losses`/`tested`/`win_rate`, exactly as the "Winning by Month" tab
+    does. Without that the open month would always report 100%. The number
+    is provisional by nature — an ad at live LOSE today can flip to WIN and
+    freeze there tomorrow — so treat an in_progress month as a moving
+    figure, not a closed result. `in_progress` mirrors the freeze algorithm
+    rather than wall-clock "today", which would be wrong for a branch whose
+    sync has silently stalled.
 
     Scope: every ad is eligible EXCEPT ones whose name contains "KOL" (paid
     amplification of KOL-sourced content), so this feed excludes that one
@@ -1435,6 +1445,7 @@ def export_winning_ads_monthly(
                 })
             q = q.filter(WinningAdMonth.account_id.in_(account_ids))
 
+        start: date | None = None
         if month:
             try:
                 y, m = month.split("-")
@@ -1457,11 +1468,20 @@ def export_winning_ads_monthly(
             for a in db.query(AdAccount.id, AdAccount.account_name).all()
         }
 
+        # Every account this KPI covers, within the requested branch scope —
+        # not just the ones that already have a frozen row, because the open
+        # month's live LOSEs (folded in below) can produce a month bucket that
+        # has no frozen row at all.
+        scope_accounts = eligible_accounts(db)
+        if canonical:
+            wanted = set(account_ids)
+            scope_accounts = [a for a in scope_accounts if a.id in wanted]
+
         # Per account, the month its data currently stops at — that month's
         # LOSEs are not all frozen yet, so its win_rate is provisional.
+        involved = {r.account_id for r in rows} | {a.id for a in scope_accounts}
         account_open_month: dict[str, date] = {}
-        if rows:
-            involved = {r.account_id for r in rows}
+        if involved:
             account_open_month = {
                 a_id: last.replace(day=1)
                 for a_id, last in db.query(
@@ -1537,6 +1557,37 @@ def export_winning_ads_monthly(
             if branch_bucket is not None:
                 branch_bucket["wins"] += 1
 
+        # Live (unfrozen) LOSE preview for the open month — the same rule the
+        # /winning-ads "Winning by Month" tab applies. A LOSE only freezes
+        # once its month closes, so counting frozen rows alone makes the
+        # current month read 100% however many tested ads are actually
+        # losing. Shared with list_winning_months so the tab and this feed
+        # can't drift apart again.
+        live_lose_total = 0
+        for acc_id, (open_m, live_lose) in live_open_month_loses(
+            db, scope_accounts, account_open_month
+        ).items():
+            if start is not None:
+                if open_m != start:
+                    continue
+            elif year and open_m.year != year:
+                continue
+            key = open_m.isoformat()[:7]
+            b = by_month.setdefault(key, {
+                "month": key, "wins": 0, "losses": 0, "spend_vnd": 0.0,
+                "revenue_vnd": 0.0, "conversions": 0, "by_branch": {},
+                "in_progress": False,
+            })
+            b["losses"] += live_lose
+            b["in_progress"] = True
+            branch_key = resolve_branch_for_account_name(accounts.get(acc_id))
+            if branch_key:
+                bb = b["by_branch"].setdefault(
+                    branch_key, {"branch": branch_key, "wins": 0, "losses": 0}
+                )
+                bb["losses"] += live_lose
+            live_lose_total += live_lose
+
         months_out = []
         for key in sorted(by_month, reverse=True):
             b = by_month[key]
@@ -1554,7 +1605,9 @@ def export_winning_ads_monthly(
             months_out.append(b)
 
         win_rows = [r for r in rows if r.verdict == "WIN"]
-        tested = len(rows)
+        # live_lose_total folds the open month's unfrozen LOSEs into the
+        # org-wide totals too, same reasoning as the per-month buckets above.
+        tested = len(rows) + live_lose_total
         overall_win_rate = (len(win_rows) / tested) if tested > 0 else None
 
         return _api_response(data={
@@ -1581,7 +1634,9 @@ def export_winning_ads_monthly(
                 "win_rate = wins / (wins + losses) among ads that crossed the "
                 "test threshold that month; an ad already decided in an "
                 "earlier month is never re-tested. win_rate is a 0-1 fraction; "
-                "win_rate_pct is the same value already scaled to 0-100."
+                "win_rate_pct is the same value already scaled to 0-100. The "
+                "open month's losses are a live (unfrozen) preview — see "
+                "in_progress."
             ),
         })
     except Exception as e:

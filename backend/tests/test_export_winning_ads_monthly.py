@@ -19,6 +19,7 @@ from app.models.ad_daily_metric import AdDailyMetric
 from app.models.api_key import ApiKey
 from app.models.winning_ad_month import WinningAdMonth
 from app.services.export_auth import generate_api_key
+from app.services.winning_months_service import freeze_winning_months
 from tests.db import TestSession
 
 client = TestClient(app)
@@ -313,6 +314,87 @@ def test_in_progress_flags_the_month_a_branch_is_still_syncing():
     assert by_month["2026-08"]["in_progress"] is True
     assert by_month["2026-07"]["in_progress"] is False
     db.close()
+
+
+def test_open_month_folds_in_live_loses_like_the_tab_does():
+    """The open month freezes WINs but not LOSEs, so counting frozen rows
+    alone reported 100% while the /winning-ads tab — which previews the live
+    LOSEs — showed the real rate. HiD's "% Ads Win" KPI read this feed and
+    disagreed with the tab it mirrors; both sides now share
+    live_open_month_loses."""
+    db = TestSession()
+    key = _api_key(db)
+    acc = _account(db, "Meander Saigon", "VND")
+    # Only August data exists → August is this account's open month. CRTV_win
+    # beats the 3.0 blended benchmark, CRTV_lose (roas 1.0) doesn't; both
+    # cleared the test threshold on conversions.
+    for ad_name, revenue in (("CRTV_win", 500), ("CRTV_lose", 100)):
+        db.add(AdDailyMetric(
+            id=str(uuid.uuid4()), account_id=acc.id, ad_id=uuid.uuid4().hex[:8],
+            ad_name=ad_name, date=date(2026, 8, 14), spend=100, revenue=revenue,
+            impressions=1000, clicks=100, conversions=10,
+        ))
+    db.commit()
+    freeze_winning_months(db)
+    db.close()
+
+    data = _get(key, year=2026).json()["data"]
+    aug = next(m for m in data["by_month"] if m["month"] == "2026-08")
+
+    assert aug["in_progress"] is True
+    assert (aug["wins"], aug["losses"], aug["tested"]) == (1, 1, 2)
+    assert aug["win_rate"] == 0.5
+    assert aug["win_rate_pct"] == 50.0
+
+    # The branch bucket carries the same denominator — a per-branch KPI reads
+    # it directly rather than re-deriving one.
+    saigon = next(b for b in aug["by_branch"] if b["branch"] == "Saigon")
+    assert (saigon["wins"], saigon["losses"], saigon["win_rate"]) == (1, 1, 0.5)
+
+    # Org-wide totals fold it in too...
+    assert (data["total_wins"], data["total_losses"], data["total_tested"]) == (1, 1, 2)
+    assert data["overall_win_rate_pct"] == 50.0
+    # ...but a live LOSE is never an award: it stays out of `rows` and out of
+    # the money totals, and nothing was written to the frozen table.
+    assert [r["ad_name"] for r in data["rows"]] == ["CRTV_win"]
+    assert aug["revenue_vnd"] == 500
+
+    db2 = TestSession()
+    assert {(r.ad_name, r.verdict) for r in db2.query(WinningAdMonth).all()} == {("CRTV_win", "WIN")}
+    db2.close()
+
+
+def test_live_loses_respect_the_month_and_branch_filters():
+    """A narrowed request must not pick up the open month's live LOSEs from a
+    month it didn't ask for, or from a branch it didn't ask for."""
+    db = TestSession()
+    key = _api_key(db)
+    acc = _account(db, "Meander Saigon", "VND")
+    other = _account(db, "Meander Osaka", "JPY")
+    # CRTV_top is what lifts Saigon's blended benchmark above CRTV_lose's
+    # 0.1 ROAS; nothing is frozen here, so only the live LOSE can be counted.
+    for ad_name, revenue in (("CRTV_top", 500), ("CRTV_lose", 10)):
+        db.add(AdDailyMetric(
+            id=str(uuid.uuid4()), account_id=acc.id, ad_id=uuid.uuid4().hex[:8],
+            ad_name=ad_name, date=date(2026, 8, 14), spend=100, revenue=revenue,
+            impressions=1000, clicks=100, conversions=10,
+        ))
+    _award(db, other, month=date(2026, 8, 1), ad_name="CRTV_osaka", spend=1, revenue=5, roas=5.0)
+    db.commit()
+    db.close()
+
+    # July asked for: Saigon's open-August LOSE is out of window entirely.
+    assert _get(key, month="2026-07").json()["data"]["by_month"] == []
+
+    # Osaka asked for: Saigon's live LOSE belongs to another branch.
+    osaka = _get(key, branch="osaka", year=2026).json()["data"]
+    aug = next(m for m in osaka["by_month"] if m["month"] == "2026-08")
+    assert (aug["wins"], aug["losses"], aug["win_rate"]) == (1, 0, 1.0)
+
+    # Unfiltered, both show up: 1 win (Osaka) + 1 live loss (Saigon).
+    everything = _get(key, year=2026).json()["data"]
+    assert everything["total_tested"] == 2
+    assert everything["overall_win_rate"] == 0.5
 
 
 def test_same_ad_winning_two_months_counts_once_as_distinct():
