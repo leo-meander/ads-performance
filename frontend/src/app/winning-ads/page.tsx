@@ -61,7 +61,10 @@ export default function WinningAdsPage() {
 
       <div className="flex gap-1 border-b border-gray-200 mb-6 overflow-x-auto">
         {([
-          { key: 'months', label: 'Winning by Month', icon: Trophy, hint: 'The design KPI — KOL-named ads and Bread excluded.' },
+          // The exclusion is in the label, not just the tooltip: side by side
+          // with "Ads Winning (All)" the two tabs otherwise look like the same
+          // report, and the whole reason their numbers differ is this scope.
+          { key: 'months', label: 'Winning by Month (Exclude KOL)', icon: Trophy, hint: 'The design KPI — KOL-named ads and Bread excluded.' },
           { key: 'all-months', label: 'Ads Winning (All)', icon: Globe, hint: 'Same rules over every ad, no exclusions — KOL ads and Bread included. Tracking view, not the KPI.' },
           { key: 'ads', label: 'All Winning Ads', icon: LayoutList, hint: 'Every winning creative, with AI Brief.' },
         ] as const).map(({ key, label, icon: Icon, hint }) => (
