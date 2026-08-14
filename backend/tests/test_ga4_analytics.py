@@ -413,6 +413,118 @@ def test_funnel_missing_step_does_not_break_ratios(monkeypatch):
     assert steps["purchase"]["step_conversion"] == pytest.approx(9 / 900)
 
 
+def _patch_two_windows(monkeypatch, current, previous, cutoff, capture=None):
+    """Serve one row set for the current window and another for the earlier one.
+
+    The shared `_patch` mock ignores dates, which would make every delta zero.
+    """
+    import app.services.ga4_client as ga4_client
+    from datetime import date as _date
+
+    split = _date.fromisoformat(cutoff)
+
+    def _run(property_id, *, date_from, date_to, dimensions, metrics,
+             dimension_filter=None, limit=100_000):
+        if capture is not None:
+            capture.append({"dimensions": tuple(dimensions), "date_from": date_from, "date_to": date_to})
+        data = current if date_from >= split else previous
+        return data.get(tuple(dimensions), [])
+
+    monkeypatch.setattr(ga4_client, "get_metadata", lambda pid: {"dimensions": [], "metrics": METRICS})
+    monkeypatch.setattr(ga4_client, "run_report", _run)
+
+
+PREV_FUNNEL_ROWS = {
+    ("eventName",): [
+        {"eventName": "session_start", "eventCount": 20000, "totalUsers": 16000},
+        {"eventName": "cb_booking_engine_load", "eventCount": 6000, "totalUsers": 4000},
+        {"eventName": "add_to_cart", "eventCount": 1000, "totalUsers": 800},
+        {"eventName": "begin_checkout", "eventCount": 600, "totalUsers": 400},
+        {"eventName": "purchase", "eventCount": 150, "totalUsers": 136},
+        {"eventName": "scroll", "eventCount": 10000, "totalUsers": 7000},
+    ],
+    ("eventName", "deviceCategory"): [
+        {"eventName": "session_start", "deviceCategory": "mobile", "eventCount": 16000, "totalUsers": 13600},
+        {"eventName": "purchase", "deviceCategory": "mobile", "eventCount": 80, "totalUsers": 68},
+        {"eventName": "session_start", "deviceCategory": "desktop", "eventCount": 3000, "totalUsers": 2400},
+        {"eventName": "purchase", "deviceCategory": "desktop", "eventCount": 70, "totalUsers": 68},
+        # a device that stopped converting entirely this period
+        {"eventName": "session_start", "deviceCategory": "tablet", "eventCount": 400, "totalUsers": 300},
+    ],
+}
+
+
+def test_funnel_compares_against_preceding_equal_window(monkeypatch):
+    db = TestSession(); _account(db); db.close()
+    calls = []
+    _patch_two_windows(monkeypatch, ROWS, PREV_FUNNEL_ROWS, "2026-07-03", capture=calls)
+
+    d = _get("/api/ga4/funnel?branch=Taipei&date_from=2026-07-03&date_to=2026-07-30")["data"]
+
+    assert d["previous"]["date_from"] == "2026-06-05"
+    assert d["previous"]["date_to"] == "2026-07-02"
+    # each report is run twice — once per window
+    assert len([c for c in calls if c["dimensions"] == ("eventName",)]) == 2
+
+    steps = {s["event"]: s for s in d["steps"]}
+    assert steps["purchase"]["prev_users"] == 136
+    assert steps["purchase"]["users_change"] == pytest.approx((170 - 136) / 136)
+    # step conversion is compared against the same ratio in the earlier window
+    assert steps["cb_booking_engine_load"]["prev_step_conversion"] == pytest.approx(4000 / 16000)
+    assert steps["cb_booking_engine_load"]["step_conversion_change"] == pytest.approx(
+        ((5309 / 20728) - 0.25) / 0.25
+    )
+
+
+def test_funnel_by_device_carries_deltas_and_keeps_vanished_devices(monkeypatch):
+    db = TestSession(); _account(db); db.close()
+    _patch_two_windows(monkeypatch, ROWS, PREV_FUNNEL_ROWS, "2026-07-03")
+
+    d = _get("/api/ga4/funnel?branch=Taipei&date_from=2026-07-03&date_to=2026-07-30")["data"]
+    by_device = {x["device"]: x for x in d["by_device"]}
+
+    mobile = by_device["mobile"]
+    purchase = next(s for s in mobile["steps"] if s["event"] == "purchase")
+    assert purchase["prev_users"] == 68
+    assert purchase["users_change"] == pytest.approx((90 - 68) / 68)
+    assert mobile["prev_top_to_purchase"] == pytest.approx(68 / 13600)
+    assert mobile["top_to_purchase_change"] == pytest.approx(
+        ((90 / 17000) - (68 / 13600)) / (68 / 13600)
+    )
+
+    # tablet only exists in the earlier window — it must still be reported,
+    # and it sorts below the devices with current traffic
+    assert "tablet" in by_device
+    assert by_device["tablet"]["top_to_purchase"] is None
+    assert [x["device"] for x in d["by_device"]][-1] == "tablet"
+
+    scroll = next(e for e in d["other_events"] if e["event"] == "scroll")
+    assert scroll["prev_count"] == 10000
+    assert scroll["count_change"] == pytest.approx((12619 - 10000) / 10000)
+
+
+def test_funnel_compare_can_be_disabled(monkeypatch):
+    db = TestSession(); _account(db); db.close()
+    calls = []
+    _patch(monkeypatch, capture=calls)
+
+    d = _get("/api/ga4/funnel?branch=Taipei&compare=false")["data"]
+    assert d["previous"] is None
+    assert "prev_users" not in d["steps"][0]
+    assert len(calls) == 2  # no extra reports billed against the quota
+
+
+def test_funnel_delta_is_none_when_previous_window_is_empty(monkeypatch):
+    """A step with no history must read '—', not an infinite growth rate."""
+    db = TestSession(); _account(db); db.close()
+    _patch_two_windows(monkeypatch, ROWS, {}, "2026-07-03")
+
+    d = _get("/api/ga4/funnel?branch=Taipei&date_from=2026-07-03&date_to=2026-07-30")["data"]
+    steps = {s["event"]: s for s in d["steps"]}
+    assert steps["purchase"]["prev_users"] == 0
+    assert steps["purchase"]["users_change"] is None
+
+
 # ── pages ──────────────────────────────────────────────────────────────────
 
 
