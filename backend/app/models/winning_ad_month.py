@@ -23,20 +23,22 @@ class WinningAdMonth(TimestampMixin, Base):
     Rows are INSERT-only.
 
     An ad_name only ever gets ONE row across all of history for a given
-    account, regardless of verdict_source: once it has a decided verdict
-    (WIN or LOSE) in some month, it is excluded from candidacy in every later
-    month — see winning_months_service.freeze_winning_months. This is what
-    makes win_rate = WIN count / (WIN + LOSE count) for a month meaningful
-    instead of double-counting an ad that keeps clearing the bar every month.
+    account AND scope, regardless of verdict_source: once it has a decided
+    verdict (WIN or LOSE) in some month, it is excluded from candidacy in
+    every later month — see winning_months_service.freeze_winning_months.
+    This is what makes win_rate = WIN count / (WIN + LOSE count) for a month
+    meaningful instead of double-counting an ad that keeps clearing the bar
+    every month.
 
-    Scope: every ad EXCEPT ones whose name contains "KOL" — both as
-    candidates AND when computing the month's benchmark, so KOL traffic
-    never skews the bar. Applies to manual awards too.
+    Two independent verdict universes live in this table, told apart by
+    `scope` — see the column comment below.
     """
 
     __tablename__ = "winning_ad_months"
     __table_args__ = (
-        UniqueConstraint("account_id", "month", "ad_name", name="uq_winning_ad_month"),
+        UniqueConstraint(
+            "account_id", "month", "ad_name", "scope", name="uq_winning_ad_month"
+        ),
     )
 
     account_id = Column(
@@ -44,6 +46,18 @@ class WinningAdMonth(TimestampMixin, Base):
     )
     month = Column(Date, nullable=False, index=True)  # first day of the month
     ad_name = Column(String(500), nullable=False, index=True)
+
+    # Which universe of ads this verdict belongs to. The two never mix — an ad
+    # judged in one scope is still a fresh candidate in the other, because the
+    # benchmark it is judged against differs:
+    #
+    #   'kpi' — the design-team KPI (the default, and every pre-existing row).
+    #           Excludes ads with "KOL" in the name and the Bread branch, both
+    #           as candidates and from the account's benchmark.
+    #   'all' — every ad, no exclusions at all: KOL ads in, Bread in, and the
+    #           benchmark is the account's full blended lifetime ROAS. Mason's
+    #           own tracking view; it is deliberately NOT the KPI.
+    scope = Column(String(10), nullable=False, default="kpi", server_default="kpi", index=True)
 
     # WIN or LOSE — the decision this ad received once it crossed the test
     # threshold that month. Every decided ad gets a row now (not just

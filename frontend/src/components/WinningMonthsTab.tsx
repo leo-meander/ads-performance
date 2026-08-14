@@ -71,6 +71,14 @@ interface WinData {
 }
 interface Account { id: string; account_name: string }
 
+// Which verdict set to show. 'kpi' is the design-team KPI (KOL-named ads and
+// Bread excluded); 'all' is the parallel, unfiltered set — every ad, every
+// branch — that Mason tracks separately. They are frozen independently on the
+// backend (winning_ad_months.scope) against different benchmarks, so the same
+// ad can be WIN in one and LOSE in the other. Everything below is identical
+// between them except the copy and the branch list.
+export type WinScope = 'kpi' | 'all'
+
 const FORMAT_META: Record<string, { label: string; Icon: typeof Film }> = {
   video: { label: 'Video', Icon: Film },
   image: { label: 'Image', Icon: ImageIcon },
@@ -121,7 +129,12 @@ const MONTH_LABEL = (m: string) => {
   return `${names[Number(mm) - 1] || mm} ${y}`
 }
 
-export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Account[]; canEdit: boolean }) {
+export default function WinningMonthsTab({
+  accounts,
+  canEdit,
+  scope = 'kpi',
+}: { accounts: Account[]; canEdit: boolean; scope?: WinScope }) {
+  const isAll = scope === 'all'
   const [data, setData] = useState<WinData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -135,7 +148,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
 
   const load = () => {
     setLoading(true); setError('')
-    const p = new URLSearchParams()
+    const p = new URLSearchParams({ scope })
     if (fBranch) p.set('branch_id', fBranch)
     fetch(`${API_BASE}/api/creative/winning-months?${p}`, { credentials: 'include' })
       .then(r => r.json())
@@ -151,7 +164,7 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
 
   const recompute = () => {
     setRefreshing(true); setMsg('')
-    const p = new URLSearchParams()
+    const p = new URLSearchParams({ scope })
     if (fBranch) p.set('branch_id', fBranch)
     fetch(`${API_BASE}/api/creative/winning-months/recompute?${p}`, { method: 'POST', credentials: 'include' })
       .then(r => r.json())
@@ -164,10 +177,11 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
   }
 
   // Branches the backend leaves out of this KPI (winning_months_service
-  // .EXCLUDED_BRANCHES). Listing one would just render an empty tab.
+  // .EXCLUDED_BRANCHES). Listing one would just render an empty tab — except
+  // in the all-ads scope, which covers every branch, Bread included.
   const selectableAccounts = useMemo(
-    () => accounts.filter(a => !/bread/i.test(a.account_name)),
-    [accounts],
+    () => (isAll ? accounts : accounts.filter(a => !/bread/i.test(a.account_name))),
+    [accounts, isAll],
   )
 
   const months = data?.months || []
@@ -222,9 +236,24 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
           <li>TEST ads are not counted.</li>
           <li>Each ad is judged only once — the WIN/LOSE result is frozen and never re-tested.</li>
           <li><strong>Win Rate</strong> = WIN ads ÷ (WIN + LOSE ads).</li>
-          <li>Ads with &ldquo;KOL&rdquo; in the name and Bread are excluded.</li>
+          {isAll ? (
+            <li>
+              <strong>Every ad counts</strong> — nothing is excluded, including
+              &ldquo;KOL&rdquo; ads and Bread. The benchmark is each branch&apos;s full blended
+              lifetime ROAS, so a verdict here can differ from the KPI tab.
+            </li>
+          ) : (
+            <li>Ads with &ldquo;KOL&rdquo; in the name and Bread are excluded.</li>
+          )}
           <li>The report resets each year, but the benchmark remains lifetime.</li>
         </ul>
+        {isAll && (
+          <p className="mt-2 pt-2 border-t border-amber-200 text-[11px]">
+            Tracking view only — the design KPI reported to the team is the
+            <strong> Winning by Month</strong> tab. The two are judged separately and
+            will not match.
+          </p>
+        )}
       </div>
 
       {/* Only the FIRST load blanks the page. Switching branch re-runs the
@@ -239,7 +268,8 @@ export default function WinningMonthsTab({ accounts, canEdit }: { accounts: Acco
           <Trophy className="w-8 h-8 text-gray-200 mx-auto mb-2" />
           <p className="text-sm text-gray-400">No winning months yet.</p>
           <p className="text-xs text-gray-400 mt-1">
-            Needs daily ad metrics (synced from 2026-01-01) and at least one non-KOL ad clearing its month&apos;s benchmark this year.
+            Needs daily ad metrics (synced from 2026-01-01) and at least one
+            {isAll ? ' ad' : ' non-KOL ad'} clearing its month&apos;s benchmark this year.
           </p>
         </div>
       )}

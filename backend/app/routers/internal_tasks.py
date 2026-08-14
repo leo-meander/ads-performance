@@ -446,16 +446,28 @@ def trigger_freeze_winning_ads(
     snapshots it: any non-KOL ad that clears its month's benchmark gets a
     permanent winning_ad_months row. Append-only — it can add awards to a
     month, never rewrite or remove one. Runs inline (pure SQL over
-    ad_daily_metrics, no external API calls)."""
-    from app.services.winning_months_service import freeze_winning_months
+    ad_daily_metrics, no external API calls).
+
+    Both scopes are frozen, in their own independent passes: 'kpi' (the design
+    KPI — no KOL-named ads, no Bread) and 'all' (every ad, no exclusions,
+    judged against the account's full blended benchmark). The 'all' set is
+    Mason's tracking view; freezing it here rather than only on page load
+    keeps its verdicts landing in the month the evidence actually arrived,
+    which is the whole point of freezing. Neither pass can touch the other's
+    rows — see winning_months_service, "TWO SCOPES"."""
+    from app.services.winning_months_service import VALID_SCOPES, freeze_winning_months
 
     _require_secret(x_internal_secret)
     db = SessionLocal()
+    by_scope = {}
     try:
-        summary = freeze_winning_months(db)
+        for s in VALID_SCOPES:
+            by_scope[s] = freeze_winning_months(db, scope=s)
     finally:
         db.close()
-    return _api_response(data={"status": "ok", **summary})
+    # The KPI summary stays at the top level: this response shape predates the
+    # second scope and HiD-side readers still expect awarded/lost there.
+    return _api_response(data={"status": "ok", **by_scope["kpi"], "by_scope": by_scope})
 
 
 @router.post("/internal/tasks/sync-daily-ad-metrics", status_code=200)
@@ -520,6 +532,7 @@ def trigger_winning_ads_data_window(
 def trigger_rebuild_winning_ads(
     x_internal_secret: str | None = Header(default=None),
     confirm: bool = False,
+    scope: str = "kpi",
 ):
     """ONE-OFF, DESTRUCTIVE: wipe winning_ad_months and re-freeze from scratch.
 
@@ -532,6 +545,12 @@ def trigger_rebuild_winning_ads(
 
     Re-stamps every row with TODAY's lifetime benchmark, so previously frozen
     verdicts can change. Requires `?confirm=true`. Never put this on a cron.
+
+    `scope` picks WHICH verdict set to rebuild — 'kpi' (default) or 'all' —
+    and only that one's rows are deleted. Rebuilding both means calling this
+    twice, deliberately: they are separate judgements against separate
+    benchmarks, and wiping the other as collateral would silently re-decide a
+    view nobody asked about.
 
     Runs in a daemon thread: with a full year of ad_daily_metrics the pass
     walks ~8 months x every account and blew past Zeabur's ~225s ingress cap,
@@ -550,23 +569,26 @@ def trigger_rebuild_winning_ads(
                    "frozen verdict and re-judges them against today's benchmark.",
         )
     from app.services.winning_months_service import (
-        describe_data_window, rebuild_winning_months,
+        describe_data_window, normalize_scope, rebuild_winning_months,
     )
+
+    eff_scope = normalize_scope(scope)
 
     # Cheap enough to answer inline, and it's the one thing worth seeing
     # before the rebuild commits to anything.
     db = SessionLocal()
     try:
-        data_seen = describe_data_window(db)
+        data_seen = describe_data_window(db, scope=eff_scope)
     except Exception as e:
         logger.exception("[rebuild-winning-ads] data-window probe failed")
         return _api_response(error=f"{type(e).__name__}: {e}")
     finally:
         db.close()
 
-    _run_in_thread(rebuild_winning_months, "rebuild-winning-ads")
+    _run_in_thread(rebuild_winning_months, "rebuild-winning-ads", scope=eff_scope)
     return _api_response(data={
         "status": "started",
+        "scope": eff_scope,
         "data_seen": data_seen,
         "note": (
             "Rebuild runs in the background — watch the logs for "
