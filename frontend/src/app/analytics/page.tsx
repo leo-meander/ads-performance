@@ -81,11 +81,22 @@ type Devices = Envelope & {
 type FunnelStep = {
   event: string; label: string; users: number; count: number
   pct_of_top: number | null; step_conversion: number | null; dropoff: number | null; present: boolean
+  // Present only when the endpoint was asked to compare (the default).
+  prev_users?: number; prev_count?: number
+  prev_step_conversion?: number | null; prev_pct_of_top?: number | null
+  users_change?: number | null; count_change?: number | null
+  step_conversion_change?: number | null
+}
+type FunnelDeviceStep = { event: string; label: string; users: number; prev_users?: number; users_change?: number | null }
+type FunnelDeviceRow = {
+  device: string; steps: FunnelDeviceStep[]; top_to_purchase: number | null
+  prev_top_to_purchase?: number | null; top_to_purchase_change?: number | null
 }
 type Funnel = Envelope & {
   steps: FunnelStep[]
-  by_device: { device: string; steps: { event: string; label: string; users: number }[]; top_to_purchase: number | null }[]
-  other_events: { event: string; count: number; users: number }[]
+  previous: { date_from: string; date_to: string; steps: FunnelStep[] } | null
+  by_device: FunnelDeviceRow[]
+  other_events: { event: string; count: number; users: number; prev_count?: number; count_change?: number | null }[]
   caveat: string
 }
 
@@ -266,9 +277,12 @@ export default function AnalyticsPage() {
   const prev = overview?.previous
 
   const funnelChartData = useMemo(
-    () => (funnel?.steps || []).map(st => ({ name: st.label, users: st.users })),
+    () => (funnel?.steps || []).map(st => ({
+      name: st.label, users: st.users, prev_users: st.prev_users ?? 0,
+    })),
     [funnel],
   )
+  const funnelPrev = funnel?.previous
 
   // Clicking the pinned row again clears it, so a cross-filter is always one
   // click away from being undone.
@@ -526,17 +540,29 @@ export default function AnalyticsPage() {
       </Section>
 
       {/* ── funnel ──────────────────────────────────────────────────── */}
-      <Section title="Booking funnel" note={funnel?.caveat}>
+      <Section
+        title="Booking funnel"
+        note={funnel?.caveat}
+        right={funnelPrev && (
+          <div className="text-[11px] text-gray-400 text-right shrink-0">
+            vs {funnelPrev.date_from} → {funnelPrev.date_to}
+          </div>
+        )}
+      >
         <div className="grid lg:grid-cols-2 gap-6">
           <div>
             {funnelChartData.length > 0 && (
-              <ResponsiveContainer width="100%" height={240}>
+              <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={funnelChartData} layout="vertical" margin={{ left: 40 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis type="number" tick={{ fontSize: 11 }} />
                   <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 11 }} />
                   <Tooltip contentStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="users" name="Users" fill="#2563eb" radius={[0, 4, 4, 0]} />
+                  {funnelPrev && <Legend wrapperStyle={{ fontSize: 12 }} />}
+                  <Bar dataKey="users" name="Current" fill="#2563eb" radius={[0, 4, 4, 0]} />
+                  {funnelPrev && (
+                    <Bar dataKey="prev_users" name="Previous" fill="#cbd5e1" radius={[0, 4, 4, 0]} />
+                  )}
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -546,6 +572,7 @@ export default function AnalyticsPage() {
               <thead><tr className="bg-gray-50 border-b">
                 <th className={`text-left ${TH}`}>Step</th>
                 <th className={`text-right ${TH}`}>Users</th>
+                {funnelPrev && <th className={`text-right ${TH}`}>Prev users</th>}
                 <th className={`text-right ${TH}`}>Events</th>
                 <th className={`text-right ${TH}`}>vs step above</th>
                 <th className={`text-right ${TH}`}>vs sessions</th>
@@ -557,13 +584,27 @@ export default function AnalyticsPage() {
                       <div className="font-medium">{st.label}</div>
                       <div className="text-[10px] text-gray-400 font-mono">{st.event}</div>
                     </td>
-                    <td className={`${TD} text-right`}>{fmtInt(st.users)}</td>
+                    <td className={`${TD} text-right`}>
+                      <div>{fmtInt(st.users)}</div>
+                      {funnelPrev && <DeltaBadge value={st.users_change ?? null} />}
+                    </td>
+                    {funnelPrev && (
+                      <td className={`${TD} text-right text-gray-400`}>{fmtInt(st.prev_users)}</td>
+                    )}
                     <td className={`${TD} text-right text-gray-400`}>{fmtInt(st.count)}</td>
                     <td className={`${TD} text-right`}>
                       {st.step_conversion === null ? '—' : (
-                        <span className={st.dropoff !== null && st.dropoff > 0.7 ? 'text-rose-600 font-medium' : ''}>
-                          {fmtPct(st.step_conversion)}
-                        </span>
+                        <>
+                          <div className={st.dropoff !== null && st.dropoff > 0.7 ? 'text-rose-600 font-medium' : ''}>
+                            {fmtPct(st.step_conversion)}
+                          </div>
+                          {funnelPrev && (
+                            <div className="text-[10px] text-gray-400">
+                              was {fmtPct(st.prev_step_conversion)}{' '}
+                              <DeltaBadge value={st.step_conversion_change ?? null} />
+                            </div>
+                          )}
+                        </>
                       )}
                     </td>
                     <td className={`${TD} text-right text-gray-500`}>{fmtPct(st.pct_of_top, 2)}</td>
@@ -588,14 +629,26 @@ export default function AnalyticsPage() {
                   key: step.event,
                   label: step.label,
                   align: 'right' as const,
-                  value: (d: typeof funnel.by_device[number]) =>
-                    d.steps.find(s => s.event === step.event)?.users ?? 0,
-                  render: (d: typeof funnel.by_device[number]) =>
-                    fmtInt(d.steps.find(s => s.event === step.event)?.users ?? 0),
+                  value: (d: FunnelDeviceRow) => d.steps.find(s => s.event === step.event)?.users ?? 0,
+                  render: (d: FunnelDeviceRow) => {
+                    const cell = d.steps.find(s => s.event === step.event)
+                    return (
+                      <>
+                        <div>{fmtInt(cell?.users ?? 0)}</div>
+                        {funnelPrev && <DeltaBadge value={cell?.users_change ?? null} />}
+                      </>
+                    )
+                  },
                 })),
                 {
                   key: 'top_to_purchase', label: 'Session → booking', align: 'right',
-                  value: d => d.top_to_purchase, render: d => fmtPct(d.top_to_purchase, 2),
+                  value: d => d.top_to_purchase,
+                  render: d => (
+                    <>
+                      <div>{fmtPct(d.top_to_purchase, 2)}</div>
+                      {funnelPrev && <DeltaBadge value={d.top_to_purchase_change ?? null} />}
+                    </>
+                  ),
                   className: 'font-semibold',
                 },
               ]}
@@ -706,7 +759,21 @@ export default function AnalyticsPage() {
             maxHeight="max-h-[360px]"
             cols={[
               { key: 'event', label: 'Event', value: e => e.event, className: 'font-mono' },
-              { key: 'count', label: 'Events', align: 'right', value: e => e.count, render: e => fmtInt(e.count) },
+              {
+                key: 'count', label: 'Events', align: 'right', value: e => e.count,
+                render: e => (
+                  <>
+                    <div>{fmtInt(e.count)}</div>
+                    {funnelPrev && <DeltaBadge value={e.count_change ?? null} />}
+                  </>
+                ),
+              },
+              ...(funnelPrev ? [{
+                key: 'prev_count', label: 'Prev events', align: 'right' as const,
+                value: (e: { prev_count?: number }) => e.prev_count ?? 0,
+                render: (e: { prev_count?: number }) => fmtInt(e.prev_count),
+                className: 'text-gray-400',
+              }] : []),
               { key: 'users', label: 'Users', align: 'right', value: e => e.users, render: e => fmtInt(e.users) },
             ]}
           />

@@ -395,6 +395,55 @@ def _enrich(rows: list[dict], ctx: _Ctx, key_field: str, label: str,
     return out
 
 
+def _change(current: float | None, previous: float | None) -> float | None:
+    """Relative change vs the previous period. None when there is no base."""
+    if current is None or not previous:
+        return None
+    return (current - previous) / previous
+
+
+def _funnel_steps(rows: list[dict]) -> list[dict[str, Any]]:
+    """SITE_FUNNEL rows built from an eventName report.
+
+    Shared by the current and the previous window so both are derived the
+    same way — the deltas would be meaningless otherwise.
+    """
+    by_event = {r.get("eventName", ""): r for r in rows}
+    steps: list[dict[str, Any]] = []
+    first_users: int | None = None
+    prev_users: int | None = None
+    for spec in SITE_FUNNEL:
+        r = by_event.get(spec["event"], {})
+        users = r.get("totalUsers", 0) or 0
+        count = r.get("eventCount", 0) or 0
+        if first_users is None:
+            first_users = users
+        steps.append({
+            "event": spec["event"],
+            "label": spec["label"],
+            "users": users,
+            "count": count,
+            "pct_of_top": _rate(users, first_users or 0),
+            "step_conversion": _rate(users, prev_users) if prev_users else None,
+            "dropoff": (1 - (users / prev_users)) if prev_users else None,
+            "present": count > 0,
+        })
+        prev_users = users if users else prev_users
+    return steps
+
+
+def _funnel_users_by_device(rows: list[dict]) -> dict[str, dict[str, int]]:
+    """{device: {event: users}} for the funnel events only."""
+    wanted = {s["event"] for s in SITE_FUNNEL}
+    per_device: dict[str, dict[str, int]] = {}
+    for r in rows:
+        ev = r.get("eventName", "")
+        if ev not in wanted:
+            continue
+        per_device.setdefault(r.get("deviceCategory", ""), {})[ev] = r.get("totalUsers", 0) or 0
+    return per_device
+
+
 @router.get("/ga4/properties")
 def list_ga4_properties(
     db: Session = Depends(get_db),
@@ -879,11 +928,12 @@ def ga4_funnel(
     date_from: str | None = _COMMON["date_from"],
     date_to: str | None = _COMMON["date_to"],
     host_scope: str = _COMMON["host_scope"],
+    compare: bool = Query(True, description="Also return the preceding equal-length period"),
     segments: dict = Depends(segment_params),
     db: Session = Depends(get_db),
     user: User = Depends(require_section("analytics")),
 ):
-    """Booking funnel, overall and per device.
+    """Booking funnel, overall and per device, vs the preceding period.
 
     NOTE: the GA4 Data API exposes no sequential-funnel report — Explorations
     are UI-only. These are independent per-step event counts, so a step can
@@ -895,68 +945,104 @@ def ga4_funnel(
         if err:
             return err
 
-        cache_key = ctx.key("funnel")
+        cache_key = ctx.key("funnel", compare)
         cached = _cache_get(cache_key)
         if cached is not None:
             return _api(cached)
 
         wanted = [s["event"] for s in SITE_FUNNEL]
         rows = ctx.run(["eventName"], ["eventCount", "totalUsers"], limit=300)
-        by_event = {r.get("eventName", ""): r for r in rows}
-
-        steps: list[dict[str, Any]] = []
-        first_users = None
-        prev_users = None
-        for spec in SITE_FUNNEL:
-            r = by_event.get(spec["event"], {})
-            users = r.get("totalUsers", 0) or 0
-            count = r.get("eventCount", 0) or 0
-            if first_users is None:
-                first_users = users
-            steps.append({
-                "event": spec["event"],
-                "label": spec["label"],
-                "users": users,
-                "count": count,
-                "pct_of_top": _rate(users, first_users or 0),
-                "step_conversion": _rate(users, prev_users) if prev_users else None,
-                "dropoff": (1 - (users / prev_users)) if prev_users else None,
-                "present": count > 0,
-            })
-            prev_users = users if users else prev_users
-
         device_rows = ctx.run(["eventName", "deviceCategory"], ["eventCount", "totalUsers"], limit=500)
-        per_device: dict[str, dict[str, int]] = {}
-        for r in device_rows:
-            ev = r.get("eventName", "")
-            if ev not in wanted:
-                continue
-            per_device.setdefault(r.get("deviceCategory", ""), {})[ev] = r.get("totalUsers", 0) or 0
 
-        by_device = [
-            {
-                "device": dev,
-                "steps": [
-                    {"event": s["event"], "label": s["label"], "users": counts.get(s["event"], 0)}
-                    for s in SITE_FUNNEL
-                ],
-                "top_to_purchase": _rate(
-                    counts.get("purchase", 0), counts.get("session_start", 0)
-                ),
-            }
-            for dev, counts in sorted(
-                per_device.items(),
-                key=lambda kv: kv[1].get("session_start", 0),
-                reverse=True,
+        steps = _funnel_steps(rows)
+        per_device = _funnel_users_by_device(device_rows)
+
+        previous: dict[str, Any] | None = None
+        prev_steps: dict[str, dict[str, Any]] = {}
+        prev_per_device: dict[str, dict[str, int]] = {}
+        prev_by_event: dict[str, dict] = {}
+        if compare:
+            span = (ctx.date_to - ctx.date_from).days + 1
+            prev_to = ctx.date_from - timedelta(days=1)
+            prev_from = prev_to - timedelta(days=span - 1)
+            p_rows = ctx.run(
+                ["eventName"], ["eventCount", "totalUsers"], limit=300,
+                date_from=prev_from, date_to=prev_to,
             )
-        ]
+            p_device_rows = ctx.run(
+                ["eventName", "deviceCategory"], ["eventCount", "totalUsers"], limit=500,
+                date_from=prev_from, date_to=prev_to,
+            )
+            prev_steps = {s["event"]: s for s in _funnel_steps(p_rows)}
+            prev_per_device = _funnel_users_by_device(p_device_rows)
+            prev_by_event = {r.get("eventName", ""): r for r in p_rows}
+            previous = {
+                "date_from": prev_from.isoformat(),
+                "date_to": prev_to.isoformat(),
+                "steps": list(prev_steps.values()),
+            }
+
+            for st in steps:
+                p = prev_steps.get(st["event"], {})
+                st["prev_users"] = p.get("users", 0)
+                st["prev_count"] = p.get("count", 0)
+                st["prev_step_conversion"] = p.get("step_conversion")
+                st["prev_pct_of_top"] = p.get("pct_of_top")
+                st["users_change"] = _change(st["users"], p.get("users"))
+                st["count_change"] = _change(st["count"], p.get("count"))
+                st["step_conversion_change"] = _change(
+                    st["step_conversion"], p.get("step_conversion")
+                )
+
+        # A device that disappeared this period still deserves a row — it is a
+        # finding, not an absence. Current-period volume decides the order, so
+        # those rows sink to the bottom.
+        devices_seen = list(per_device) + [d for d in prev_per_device if d not in per_device]
+        by_device: list[dict[str, Any]] = []
+        for dev in devices_seen:
+            now = per_device.get(dev, {})
+            was = prev_per_device.get(dev, {})
+            step_cells: list[dict[str, Any]] = []
+            for s in SITE_FUNNEL:
+                cell = {"event": s["event"], "label": s["label"], "users": now.get(s["event"], 0)}
+                if compare:
+                    cell["prev_users"] = was.get(s["event"], 0)
+                    cell["users_change"] = _change(cell["users"], cell["prev_users"])
+                step_cells.append(cell)
+
+            row: dict[str, Any] = {
+                "device": dev,
+                "steps": step_cells,
+                "top_to_purchase": _rate(now.get("purchase", 0), now.get("session_start", 0)),
+            }
+            if compare:
+                row["prev_top_to_purchase"] = _rate(was.get("purchase", 0), was.get("session_start", 0))
+                row["top_to_purchase_change"] = _change(
+                    row["top_to_purchase"], row["prev_top_to_purchase"]
+                )
+            by_device.append(row)
+
+        by_device.sort(
+            key=lambda d: per_device.get(d["device"], {}).get("session_start", 0),
+            reverse=True,
+        )
 
         # Everything else the property emits, so a new event someone adds in
         # GTM shows up here instead of being silently invisible.
         other_events = sorted(
             (
-                {"event": r.get("eventName", ""), "count": r.get("eventCount", 0),
-                 "users": r.get("totalUsers", 0)}
+                {
+                    "event": r.get("eventName", ""),
+                    "count": r.get("eventCount", 0),
+                    "users": r.get("totalUsers", 0),
+                    **({
+                        "prev_count": prev_by_event.get(r.get("eventName", ""), {}).get("eventCount", 0),
+                        "count_change": _change(
+                            r.get("eventCount", 0),
+                            prev_by_event.get(r.get("eventName", ""), {}).get("eventCount", 0),
+                        ),
+                    } if compare else {}),
+                }
                 for r in rows if r.get("eventName") not in wanted
             ),
             key=lambda r: r["count"], reverse=True,
@@ -964,6 +1050,7 @@ def ga4_funnel(
 
         payload = ctx.envelope({
             "steps": steps,
+            "previous": previous,
             "by_device": by_device,
             "other_events": other_events,
             "caveat": (
