@@ -62,6 +62,29 @@ month's tested/win_rate for reporting, without writing anything to
 WinningAdMonth. That number can move day to day as live LOSEs flip to WIN
 and freeze there instead — see list_winning_months for the mechanics.
 
+TWO SCOPES
+----------
+Everything above describes SCOPE_KPI, the design-team KPI, and it is the
+default everywhere in this module. SCOPE_ALL is a second, independent verdict
+universe added per Mason (2026-08-14) for his own tracking: "tab này sẽ tính
+tất cả các ads (tính cả Bread luôn)". The mechanics are identical — same
+thresholds, same cumulative accounting, same freeze rules — and only the
+universe of ads differs:
+
+    SCOPE_KPI  ad name must not contain "KOL"; EXCLUDED_BRANCHES (Bread) out.
+    SCOPE_ALL  no exclusions whatsoever — every ad, every branch.
+
+The exclusions apply to candidates AND to the lifetime benchmark, so the two
+scopes measure against genuinely different bars (SCOPE_ALL's includes KOL
+spend). That is exactly why they cannot share rows: the same ad can honestly
+be WIN under one bar and LOSE under the other. winning_ad_months.scope keeps
+them apart, and "an ad is judged once, ever" means once PER SCOPE — a scope's
+freeze pass never looks at, writes, or deletes the other's rows.
+
+SCOPE_KPI is what /export/winning-ads-monthly and every KPI consumer read;
+nothing here changes for them. SCOPE_ALL is read-only reporting — deliberately
+not the KPI, and not exported to HiD.
+
 Scope: every ad EXCEPT ones whose name contains "KOL" (paid amplification of
 KOL-sourced content — testing someone else's creative, not the design team's).
 Everything else — CRTV-tagged or not — counts. The filter applies to
@@ -101,37 +124,74 @@ _KOL_LIKE = f"%{KOL_TOKEN}%"
 # patterns stay in one place.
 EXCLUDED_BRANCHES = {"Bread"}
 
+# The two verdict universes — see "TWO SCOPES" in the module docstring. Stored
+# verbatim in winning_ad_months.scope, so these strings are persisted data:
+# renaming one would orphan every row already frozen under the old name.
+SCOPE_KPI = "kpi"
+SCOPE_ALL = "all"
+VALID_SCOPES = (SCOPE_KPI, SCOPE_ALL)
+
+
+def normalize_scope(scope: str | None) -> str:
+    """Coerce a caller-supplied scope to a known one, defaulting to the KPI.
+
+    Router-facing: an unrecognised value silently becoming SCOPE_ALL would
+    quietly publish un-excluded numbers as the KPI, so anything unknown falls
+    back to the narrower, safer scope instead.
+    """
+    s = (scope or "").strip().lower()
+    return s if s in VALID_SCOPES else SCOPE_KPI
+
 
 def is_kol(ad_name: str | None) -> bool:
     return bool(ad_name) and KOL_TOKEN in ad_name.upper()
 
 
-def is_excluded_branch(account_name: str | None) -> bool:
+def is_excluded_branch(account_name: str | None, scope: str = SCOPE_KPI) -> bool:
+    if scope == SCOPE_ALL:
+        return False  # no branch is out of scope when the scope is "everything"
     return resolve_branch_for_account_name(account_name or "") in EXCLUDED_BRANCHES
 
 
-def excluded_account_ids(db: Session) -> set[str]:
+def ad_name_filters(scope: str = SCOPE_KPI) -> list:
+    """The ad_name predicates defining this scope's universe, for `.filter(*…)`.
+
+    Every aggregate in this module has to apply the SAME predicates to the
+    benchmark and to the candidates, or an ad gets judged against a bar
+    computed over a different population. Keeping them in one place is what
+    stops the two from drifting apart.
+    """
+    if scope == SCOPE_ALL:
+        return [AdDailyMetric.ad_name.isnot(None)]
+    return [AdDailyMetric.ad_name.isnot(None), ~AdDailyMetric.ad_name.ilike(_KOL_LIKE)]
+
+
+def excluded_account_ids(db: Session, scope: str = SCOPE_KPI) -> set[str]:
     """Every account id belonging to an EXCLUDED_BRANCHES branch.
 
     Used to keep already-frozen rows for those branches out of the read paths
     too — the table is append-only, so an award frozen before a branch was
     excluded can only be hidden, never deleted.
+
+    Empty for SCOPE_ALL, which excludes nothing.
     """
+    if scope == SCOPE_ALL:
+        return set()
     return {
         a.id
         for a in db.query(AdAccount.id, AdAccount.account_name).all()
-        if is_excluded_branch(a.account_name)
+        if is_excluded_branch(a.account_name, scope)
     }
 
 
-def eligible_accounts(db: Session) -> list[AdAccount]:
-    """Active Meta accounts this KPI covers, minus EXCLUDED_BRANCHES."""
+def eligible_accounts(db: Session, scope: str = SCOPE_KPI) -> list[AdAccount]:
+    """Active Meta accounts this scope covers (SCOPE_KPI drops EXCLUDED_BRANCHES)."""
     accounts = (
         db.query(AdAccount)
         .filter(AdAccount.platform == "meta", AdAccount.is_active.is_(True))
         .all()
     )
-    return [a for a in accounts if not is_excluded_branch(a.account_name)]
+    return [a for a in accounts if not is_excluded_branch(a.account_name, scope)]
 
 
 def month_start(d: date) -> date:
@@ -156,7 +216,7 @@ def months_between(first: date, last: date) -> list[date]:
     return out
 
 
-def compute_lifetime_benchmark(db: Session, account_id: str) -> float:
+def compute_lifetime_benchmark(db: Session, account_id: str, scope: str = SCOPE_KPI) -> float:
     """The account's all-time blended (non-KOL) ROAS — the "current" benchmark.
 
     Per Mason: "hiện tại" (current) means lifetime-to-date, not that one
@@ -170,10 +230,12 @@ def compute_lifetime_benchmark(db: Session, account_id: str) -> float:
     list_winning_months, on the REPORTING side only — it never touches how a
     verdict is decided.
     """
-    return compute_lifetime_benchmarks(db, [account_id]).get(account_id, 0.0)
+    return compute_lifetime_benchmarks(db, [account_id], scope).get(account_id, 0.0)
 
 
-def compute_lifetime_benchmarks(db: Session, account_ids: list[str]) -> dict[str, float]:
+def compute_lifetime_benchmarks(
+    db: Session, account_ids: list[str], scope: str = SCOPE_KPI
+) -> dict[str, float]:
     """compute_lifetime_benchmark for many accounts in ONE query.
 
     Same number, same rules — this exists only because the read path needs a
@@ -193,8 +255,7 @@ def compute_lifetime_benchmarks(db: Session, account_ids: list[str]) -> dict[str
         )
         .filter(
             AdDailyMetric.account_id.in_(account_ids),
-            AdDailyMetric.ad_name.isnot(None),
-            ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
+            *ad_name_filters(scope),
         )
         .group_by(AdDailyMetric.account_id)
         .all()
@@ -212,6 +273,7 @@ def compute_month_verdicts(
     month: date,
     benchmark: float,
     already_decided: set[str] | None = None,
+    scope: str = SCOPE_KPI,
 ) -> list[dict]:
     """Decide every candidate STILL RUNNING this month, using its CUMULATIVE
     history through this month's end.
@@ -254,12 +316,12 @@ def compute_month_verdicts(
     """
     start = month_start(month)
     return compute_month_verdicts_by_month(
-        db, account_id, [start], benchmark, already_decided
+        db, account_id, [start], benchmark, already_decided, scope=scope
     ).get(start, [])
 
 
 def monthly_ad_totals(
-    db: Session, account_ids: list[str]
+    db: Session, account_ids: list[str], scope: str = SCOPE_KPI
 ) -> dict[str, dict[str, dict[date, dict]]]:
     """``{account_id: {ad_name: {month_start: that month's own raw totals}}}``.
 
@@ -290,8 +352,7 @@ def monthly_ad_totals(
         )
         .filter(
             AdDailyMetric.account_id.in_(account_ids),
-            AdDailyMetric.ad_name.isnot(None),
-            ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
+            *ad_name_filters(scope),
         )
         .group_by(AdDailyMetric.account_id, AdDailyMetric.ad_name, y, m)
         .all()
@@ -315,6 +376,7 @@ def compute_month_verdicts_by_month(
     benchmark: float,
     already_decided: set[str] | None = None,
     totals: dict[str, dict[date, dict]] | None = None,
+    scope: str = SCOPE_KPI,
 ) -> dict[date, list[dict]]:
     """compute_month_verdicts for a whole run of months, in ONE query.
 
@@ -337,7 +399,7 @@ def compute_month_verdicts_by_month(
     """
     decided_names = set(already_decided or ())
     if totals is None:
-        totals = monthly_ad_totals(db, [account_id]).get(account_id, {})
+        totals = monthly_ad_totals(db, [account_id], scope).get(account_id, {})
     if not totals:
         return {}
 
@@ -389,6 +451,7 @@ def live_open_month_loses(
     account_open_month: dict[str, date],
     benchmarks: dict[str, float] | None = None,
     decided_by_account: dict[str, set[str]] | None = None,
+    scope: str = SCOPE_KPI,
 ) -> dict[str, tuple[date, int]]:
     """``{account_id: (open_month, live_lose_count)}`` — the unfrozen LOSEs
     sitting in each account's still-open month, accounts with none omitted.
@@ -413,9 +476,9 @@ def live_open_month_loses(
     """
     out: dict[str, tuple[date, int]] = {}
     if benchmarks is None:
-        benchmarks = compute_lifetime_benchmarks(db, [a.id for a in accounts])
+        benchmarks = compute_lifetime_benchmarks(db, [a.id for a in accounts], scope)
     open_ids = [a.id for a in accounts if account_open_month.get(a.id) is not None]
-    totals_by_account = monthly_ad_totals(db, open_ids)
+    totals_by_account = monthly_ad_totals(db, open_ids, scope)
     for acc in accounts:
         open_m = account_open_month.get(acc.id)
         if open_m is None:
@@ -425,12 +488,14 @@ def live_open_month_loses(
         else:
             already_decided = {
                 r[0] for r in db.query(WinningAdMonth.ad_name)
-                .filter(WinningAdMonth.account_id == acc.id).distinct().all()
+                .filter(
+                    WinningAdMonth.account_id == acc.id, WinningAdMonth.scope == scope
+                ).distinct().all()
             }
         benchmark = benchmarks.get(acc.id, 0.0)
         decided = compute_month_verdicts_by_month(
             db, acc.id, [open_m], benchmark, already_decided,
-            totals=totals_by_account.get(acc.id, {}),
+            totals=totals_by_account.get(acc.id, {}), scope=scope,
         ).get(month_start(open_m), [])
         live_lose = sum(1 for d in decided if d["verdict"] == "LOSE")
         if live_lose:
@@ -439,7 +504,10 @@ def live_open_month_loses(
 
 
 def freeze_winning_months(
-    db: Session, account_ids: list[str] | None = None, since: date | None = None
+    db: Session,
+    account_ids: list[str] | None = None,
+    since: date | None = None,
+    scope: str = SCOPE_KPI,
 ) -> dict:
     """Decide (and permanently freeze) monthly verdicts across every Meta account.
 
@@ -466,11 +534,14 @@ def freeze_winning_months(
     close. Once a later month's data shows up, this month is closed on the
     next freeze pass and its still-undecided ads get their final verdict.
 
-    Accounts belonging to an EXCLUDED_BRANCHES branch are skipped entirely —
-    no new rows are ever written for them.
+    Under SCOPE_KPI, accounts belonging to an EXCLUDED_BRANCHES branch are
+    skipped entirely — no new rows are ever written for them. SCOPE_ALL covers
+    every account and every ad; it reads and writes only its own rows, so the
+    two passes never see each other's verdicts (see "TWO SCOPES" in the module
+    docstring).
     """
     accounts = [
-        a for a in eligible_accounts(db)
+        a for a in eligible_accounts(db, scope)
         if account_ids is None or a.id in set(account_ids or [])
     ]
 
@@ -495,8 +566,8 @@ def freeze_winning_months(
     # One "current" bar per account for every month processed this run — the
     # account's lifetime-to-date blended non-KOL ROAS, not a per-month
     # recomputation. See compute_lifetime_benchmark.
-    benchmarks = compute_lifetime_benchmarks(db, acc_ids)
-    totals_by_account = monthly_ad_totals(db, acc_ids)
+    benchmarks = compute_lifetime_benchmarks(db, acc_ids, scope)
+    totals_by_account = monthly_ad_totals(db, acc_ids, scope)
     # ad_name → combo, so an award can deep-link into the Creative Library.
     combo_by_account: dict[str, dict[str, AdCombo]] = {}
     for c in db.query(AdCombo).filter(AdCombo.branch_id.in_(acc_ids or ["__no_match__"])).all():
@@ -508,7 +579,10 @@ def freeze_winning_months(
     existing_by_account: dict[str, dict[date, set[str]]] = {}
     for r in db.query(
         WinningAdMonth.account_id, WinningAdMonth.month, WinningAdMonth.ad_name
-    ).filter(WinningAdMonth.account_id.in_(acc_ids or ["__no_match__"])).all():
+    ).filter(
+        WinningAdMonth.account_id.in_(acc_ids or ["__no_match__"]),
+        WinningAdMonth.scope == scope,
+    ).all():
         decided_by_account.setdefault(r[0], set()).add(r[2])
         existing_by_account.setdefault(r[0], {}).setdefault(r[1], set()).add(r[2])
 
@@ -536,7 +610,7 @@ def freeze_winning_months(
         # in June is no longer a candidate in July, same as the per-month loop.
         verdicts_by_month = compute_month_verdicts_by_month(
             db, acc.id, months_between(first, last), benchmark, decided_ad_names,
-            totals=totals_by_account.get(acc.id, {}),
+            totals=totals_by_account.get(acc.id, {}), scope=scope,
         )
         existing_by_month = existing_by_account.get(acc.id, {})
 
@@ -559,6 +633,7 @@ def freeze_winning_months(
                     account_id=acc.id,
                     month=m,
                     ad_name=d["ad_name"],
+                    scope=scope,
                     verdict=d["verdict"],
                     combo_id=combo.combo_id if combo else None,
                     target_audience=combo.target_audience if combo else None,
@@ -579,9 +654,10 @@ def freeze_winning_months(
                     summary["lost"] += 1
 
     db.commit()
+    summary["scope"] = scope
     logger.info(
-        "[winning-months] %d newly awarded, %d newly lost, %d already frozen across %d accounts",
-        summary["awarded"], summary["lost"], summary["already_frozen"], summary["accounts"],
+        "[winning-months] scope=%s: %d newly awarded, %d newly lost, %d already frozen across %d accounts",
+        scope, summary["awarded"], summary["lost"], summary["already_frozen"], summary["accounts"],
     )
     return summary
 
@@ -600,6 +676,7 @@ def award_manual_verdict(
     verdict: str,
     notes: str | None = None,
     month: date | None = None,
+    scope: str = SCOPE_KPI,
 ) -> WinningAdMonth:
     """Human override for an ad stuck in TEST that will never accumulate
     enough clicks/bookings on its own to get an automatic verdict.
@@ -616,12 +693,14 @@ def award_manual_verdict(
     tell the difference when it builds `decided_ad_names`:
 
     - `verdict` must be WIN or LOSE — never TEST, which just means "no row".
-    - The account must not be in EXCLUDED_BRANCHES and `ad_name` must not be
-      KOL-tagged — same scope as every automatic award, so a manual override
-      can't smuggle an out-of-scope ad into the KPI.
-    - The ad_name must not already have a row for this account (checked
-      against ALL verdict_source values) — "decided once, ever" holds
-      regardless of who or what decided it.
+    - Under SCOPE_KPI the account must not be in EXCLUDED_BRANCHES and
+      `ad_name` must not be KOL-tagged — same scope as every automatic award,
+      so a manual override can't smuggle an out-of-scope ad into the KPI.
+      SCOPE_ALL excludes nothing, so neither check applies there.
+    - The ad_name must not already have a row for this account IN THIS SCOPE
+      (checked against ALL verdict_source values) — "decided once, ever" holds
+      regardless of who or what decided it. The other scope's row is a
+      different judgement against a different bar and doesn't block this one.
     - The ad must have at least one real ad_daily_metrics row — otherwise
       there's nothing to award and it's almost certainly a typo'd ad_name.
 
@@ -644,16 +723,20 @@ def award_manual_verdict(
     account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
     if not account:
         raise ManualVerdictError(f"no such account: {account_id}")
-    if is_excluded_branch(account.account_name):
+    if is_excluded_branch(account.account_name, scope):
         raise ManualVerdictError(
             f"{account.account_name} is not covered by this KPI (EXCLUDED_BRANCHES)"
         )
-    if is_kol(ad_name):
+    if scope != SCOPE_ALL and is_kol(ad_name):
         raise ManualVerdictError(f'"{ad_name}" contains "KOL" — out of scope for this KPI')
 
     already = (
         db.query(WinningAdMonth)
-        .filter(WinningAdMonth.account_id == account_id, WinningAdMonth.ad_name == ad_name)
+        .filter(
+            WinningAdMonth.account_id == account_id,
+            WinningAdMonth.ad_name == ad_name,
+            WinningAdMonth.scope == scope,
+        )
         .first()
     )
     if already:
@@ -697,7 +780,7 @@ def award_manual_verdict(
         )
     revenue = float(totals[1] or 0)
     roas = revenue / spend if spend > 0 else 0.0
-    benchmark = compute_lifetime_benchmark(db, account_id)
+    benchmark = compute_lifetime_benchmark(db, account_id, scope)
 
     combo = (
         db.query(AdCombo)
@@ -708,6 +791,7 @@ def award_manual_verdict(
         account_id=account_id,
         month=month,
         ad_name=ad_name,
+        scope=scope,
         verdict=verdict,
         combo_id=combo.combo_id if combo else None,
         target_audience=combo.target_audience if combo else None,
@@ -726,13 +810,16 @@ def award_manual_verdict(
     db.add(row)
     db.flush()
     logger.warning(
-        "[winning-months] MANUAL %s awarded to %s / %s (%s), roas=%.2f vs benchmark=%.2f — %s",
-        verdict, account.account_name, ad_name, month.isoformat()[:7], roas, benchmark, notes or "no notes",
+        "[winning-months] MANUAL %s awarded to %s / %s (%s, scope=%s), roas=%.2f vs benchmark=%.2f — %s",
+        verdict, account.account_name, ad_name, month.isoformat()[:7], scope, roas, benchmark,
+        notes or "no notes",
     )
     return row
 
 
-def describe_data_window(db: Session, accounts: list[AdAccount] | None = None) -> list[dict]:
+def describe_data_window(
+    db: Session, accounts: list[AdAccount] | None = None, scope: str = SCOPE_KPI
+) -> list[dict]:
     """Per account, the ad_daily_metrics window currently on disk.
 
     The pre-flight check for a rebuild. /ad-performance/sync runs in a daemon
@@ -742,7 +829,7 @@ def describe_data_window(db: Session, accounts: list[AdAccount] | None = None) -
     the data actually go" answerable in one cheap call, per account so one
     lagging branch can't hide behind the others.
     """
-    accounts = accounts if accounts is not None else eligible_accounts(db)
+    accounts = accounts if accounts is not None else eligible_accounts(db, scope)
     out = []
     for acc in accounts:
         # Distinct months counted in Python, not via date_trunc — that's
@@ -762,7 +849,9 @@ def describe_data_window(db: Session, accounts: list[AdAccount] | None = None) -
     return sorted(out, key=lambda e: (e["from"] or "9999", e["account_name"] or ""))
 
 
-def rebuild_winning_months(db: Session, account_ids: list[str] | None = None) -> dict:
+def rebuild_winning_months(
+    db: Session, account_ids: list[str] | None = None, scope: str = SCOPE_KPI
+) -> dict:
     """DESTRUCTIVE repair: wipe every frozen verdict and re-freeze from scratch.
 
     WHY THIS EXISTS. The "an ad is decided once, ever" rule keys off whether a
@@ -790,14 +879,19 @@ def rebuild_winning_months(db: Session, account_ids: list[str] | None = None) ->
 
     Scope note: EXCLUDED_BRANCHES accounts are not re-created, and their
     pre-existing rows are deleted, so a rebuild also cleans them out for good.
+
+    A rebuild only ever touches ONE `scope`'s rows — the other scope's frozen
+    verdicts are a separate judgement against a separate benchmark, and wiping
+    them as collateral would silently re-decide a view the caller never asked
+    about (see "TWO SCOPES" in the module docstring).
     """
     accounts = [
-        a for a in eligible_accounts(db)
+        a for a in eligible_accounts(db, scope)
         if account_ids is None or a.id in set(account_ids or [])
     ]
     keep_ids = {a.id for a in accounts}
 
-    q = db.query(WinningAdMonth)
+    q = db.query(WinningAdMonth).filter(WinningAdMonth.scope == scope)
     if account_ids is not None:
         # Also drop excluded-branch rows that the caller asked about, so a
         # scoped rebuild still clears them rather than stranding them.
@@ -805,7 +899,9 @@ def rebuild_winning_months(db: Session, account_ids: list[str] | None = None) ->
     deleted = q.delete(synchronize_session=False)
     db.flush()
 
-    summary = freeze_winning_months(db, account_ids=sorted(keep_ids) if keep_ids else [])
+    summary = freeze_winning_months(
+        db, account_ids=sorted(keep_ids) if keep_ids else [], scope=scope
+    )
     summary["deleted"] = deleted
     # The window the rebuild actually SAW. A rebuild run while a backfill is
     # still writing silently produces the very skew it exists to fix — the
@@ -813,10 +909,10 @@ def rebuild_winning_months(db: Session, account_ids: list[str] | None = None) ->
     # locks their ads into whatever later month did have data. Reporting the
     # range makes that visible in the response instead of weeks later on the
     # chart. Per account, so one lagging branch can't hide behind the others.
-    summary["data_seen"] = describe_data_window(db, accounts)
+    summary["data_seen"] = describe_data_window(db, accounts, scope)
     logger.warning(
-        "[winning-months] REBUILD deleted %d frozen rows, re-froze %d wins / %d losses; data_seen=%s",
-        deleted, summary["awarded"], summary["lost"], summary["data_seen"],
+        "[winning-months] REBUILD scope=%s deleted %d frozen rows, re-froze %d wins / %d losses; data_seen=%s",
+        scope, deleted, summary["awarded"], summary["lost"], summary["data_seen"],
     )
     return summary
 
@@ -882,7 +978,8 @@ def diagnose_winning_by_month(db: Session) -> dict:
 
     frozen_awards = (
         db.query(sf.count()).select_from(WinningAdMonth)
-        .filter(WinningAdMonth.verdict == "WIN").scalar()
+        .filter(WinningAdMonth.verdict == "WIN", WinningAdMonth.scope == SCOPE_KPI)
+        .scalar()
     ) or 0
 
     return {
@@ -970,8 +1067,15 @@ def list_winning_months(
     branch_id: str | None = None,
     month: str | None = None,
     year: int | None = None,
+    scope: str = SCOPE_KPI,
 ) -> dict:
     """Frozen verdicts grouped by month, newest month first.
+
+    `scope` selects which verdict universe to report — SCOPE_KPI (the design
+    KPI, excluding KOL ads and Bread) or SCOPE_ALL (every ad, no exclusions).
+    It filters the frozen rows, the accounts in scope, the benchmark, and the
+    new-ad roster alike, so a scope's numbers never borrow from the other's.
+    See "TWO SCOPES" in the module docstring.
 
     `account_ids=None` means "no scoping" (admin). `month` (YYYY-MM) narrows
     the ad list to one month; the per-month counts always cover every month
@@ -1049,7 +1153,7 @@ def list_winning_months(
     Like `ads`, the list only ships for the requested `month` when one is
     given.
     """
-    q = db.query(WinningAdMonth)
+    q = db.query(WinningAdMonth).filter(WinningAdMonth.scope == scope)
     if branch_id:
         q = q.filter(WinningAdMonth.account_id == branch_id)
     elif account_ids is not None:
@@ -1057,7 +1161,7 @@ def list_winning_months(
     # Rows are append-only, so awards frozen for a branch BEFORE it was
     # excluded still exist — hide them here rather than leaving them to skew
     # the totals.
-    excluded = excluded_account_ids(db)
+    excluded = excluded_account_ids(db, scope)
     if excluded:
         q = q.filter(WinningAdMonth.account_id.notin_(excluded))
     if year is not None:
@@ -1075,7 +1179,7 @@ def list_winning_months(
     # Every account within scope (not just ones with a frozen row already) —
     # needed below for `in_progress`, the live LOSE preview (which can create a
     # bucket with no frozen rows at all), and new_ad_list's status column.
-    accounts_in_scope = eligible_accounts(db)
+    accounts_in_scope = eligible_accounts(db, scope)
     if branch_id:
         accounts_in_scope = [a for a in accounts_in_scope if a.id == branch_id]
     elif account_ids is not None:
@@ -1087,7 +1191,7 @@ def list_winning_months(
     # ad matches the verdict the freeze pass would reach for it.
     # (live_open_month_loses computes its own; it owns that path.)
     benchmarks: dict[str, float] = compute_lifetime_benchmarks(
-        db, [a.id for a in accounts_in_scope]
+        db, [a.id for a in accounts_in_scope], scope
     )
 
     # Every frozen verdict for the in-scope accounts, keyed by ad. Deliberately
@@ -1097,7 +1201,8 @@ def list_winning_months(
     frozen_by_ad: dict[tuple[str, str], WinningAdMonth] = {
         (r.account_id, r.ad_name): r
         for r in db.query(WinningAdMonth).filter(
-            WinningAdMonth.account_id.in_([a.id for a in accounts_in_scope] or ["__no_match__"])
+            WinningAdMonth.account_id.in_([a.id for a in accounts_in_scope] or ["__no_match__"]),
+            WinningAdMonth.scope == scope,
         ).all()
     }
 
@@ -1120,10 +1225,7 @@ def list_winning_months(
         sf.sum(AdDailyMetric.revenue).label("revenue"),
         sf.sum(AdDailyMetric.clicks).label("clicks"),
         sf.sum(AdDailyMetric.conversions).label("conversions"),
-    ).filter(
-        AdDailyMetric.ad_name.isnot(None),
-        ~AdDailyMetric.ad_name.ilike(_KOL_LIKE),
-    )
+    ).filter(*ad_name_filters(scope))
     if branch_id:
         new_ads_q = new_ads_q.filter(AdDailyMetric.account_id == branch_id)
     elif account_ids is not None:
@@ -1242,7 +1344,7 @@ def list_winning_months(
     for acc_id, ad_name in frozen_by_ad:
         decided_by_account.setdefault(acc_id, set()).add(ad_name)
     for _acc_id, (open_m, live_lose) in live_open_month_loses(
-        db, accounts_in_scope, account_open_month, benchmarks, decided_by_account
+        db, accounts_in_scope, account_open_month, benchmarks, decided_by_account, scope
     ).items():
         if year is not None and open_m.year != year:
             continue
@@ -1305,10 +1407,18 @@ def list_winning_months(
         # Distinct creatives — one ad can only win once now (see module docstring).
         "distinct_ads": len({(r.account_id, r.ad_name) for r in win_rows}),
         "year": year,
+        "scope": scope,
         "scope_note": (
-            f'All ads count except ones whose name contains "{KOL_TOKEN}". '
-            f"Branches not covered: {', '.join(sorted(EXCLUDED_BRANCHES))}. "
-            "win_rate = WIN / (WIN + LOSE) among ads that crossed the test "
+            (
+                "Every ad counts — no exclusions at all, including KOL-named ads "
+                f"and {', '.join(sorted(EXCLUDED_BRANCHES))}. Tracking view, not the "
+                "design KPI: the benchmark here is the account's full blended "
+                "lifetime ROAS, so a verdict can differ from the KPI tab's. "
+                if scope == SCOPE_ALL
+                else f'All ads count except ones whose name contains "{KOL_TOKEN}". '
+                     f"Branches not covered: {', '.join(sorted(EXCLUDED_BRANCHES))}. "
+            )
+            + "win_rate = WIN / (WIN + LOSE) among ads that crossed the test "
             "threshold that month, within the selected year; an ad already "
             "decided in an earlier month is never re-tested. The open "
             "month's LOSE count is a live (unfrozen) preview — see in_progress."

@@ -28,6 +28,7 @@ from app.services.creative_service import (
 from app.services.parse_utils import parse_campaign_metadata
 from app.services.winning_months_service import (
     ManualVerdictError, award_manual_verdict, freeze_winning_months, list_winning_months,
+    normalize_scope,
 )
 
 router = APIRouter()
@@ -1189,6 +1190,7 @@ def winning_months(
     month: str | None = None,
     year: int | None = Query(None, description="4-digit year. Defaults to the current year (YTD). Pass year=0 for the untruncated all-time view."),
     refresh: bool = True,
+    scope: str = Query("kpi", description="'kpi' (default) = the design KPI, excluding KOL-named ads and Bread. 'all' = every ad, no exclusions — Mason's tracking view, judged against a different benchmark."),
     current_user: User = Depends(require_section("meta_ads")),
     db: Session = Depends(get_db),
 ):
@@ -1207,12 +1209,19 @@ def winning_months(
     that just crossed the line shows up without anyone clicking a button. It
     can only ADD verdicts — never rewrite or remove one.
 
-    Scope: all ads except ones whose name contains "KOL". The "% win rate"
-    totals are YEAR-TO-DATE by default (current calendar year only) — pass
-    `year=0` for the all-time view, or an explicit `year=YYYY` for a past
-    year. This windowing is REPORTING only: each verdict was decided against
-    the account's lifetime-to-date blended ROAS and is frozen, so narrowing
-    the year never re-judges anything.
+    Scope (`scope=kpi`, the default): all ads except ones whose name contains
+    "KOL", and the Bread branch is out entirely. `scope=all` reports the
+    parallel, unfiltered verdict set instead — every ad, every branch, judged
+    against the account's FULL blended lifetime ROAS, per Mason's own tracking
+    ask. The two are frozen independently (winning_ad_months.scope) and an ad
+    is judged once per scope, so the same ad can be WIN in one and LOSE in the
+    other; only `kpi` feeds the design KPI and HiD.
+
+    The "% win rate" totals are YEAR-TO-DATE by default (current calendar year
+    only) — pass `year=0` for the all-time view, or an explicit `year=YYYY`
+    for a past year. This windowing is REPORTING only: each verdict was
+    decided against the account's lifetime-to-date blended ROAS and is frozen,
+    so narrowing the year never re-judges anything.
     """
     try:
         ok, scoped_ids, err = scoped_account_ids(
@@ -1221,13 +1230,15 @@ def winning_months(
         if not ok:
             return _api_response(error=err)
 
+        eff_scope = normalize_scope(scope)
         frozen = None
         if refresh:
-            frozen = freeze_winning_months(db, account_ids=scoped_ids)
+            frozen = freeze_winning_months(db, account_ids=scoped_ids, scope=eff_scope)
 
         effective_year = date.today().year if year is None else (year or None)
         data = list_winning_months(
-            db, account_ids=scoped_ids, branch_id=branch_id, month=month, year=effective_year
+            db, account_ids=scoped_ids, branch_id=branch_id, month=month,
+            year=effective_year, scope=eff_scope,
         )
         data["refreshed"] = frozen
         return _api_response(data=data)
@@ -1239,6 +1250,7 @@ def winning_months(
 @router.post("/creative/winning-months/recompute")
 def recompute_winning_months(
     branch_id: str | None = None,
+    scope: str = Query("kpi", description="Which verdict set to freeze — 'kpi' (default) or 'all'. A pass only ever writes its own scope's rows."),
     current_user: User = Depends(require_section("meta_ads", "edit")),
     db: Session = Depends(get_db),
 ):
@@ -1250,7 +1262,9 @@ def recompute_winning_months(
         if not ok:
             return _api_response(error=err)
         ids = [branch_id] if branch_id else scoped_ids
-        return _api_response(data=freeze_winning_months(db, account_ids=ids))
+        return _api_response(
+            data=freeze_winning_months(db, account_ids=ids, scope=normalize_scope(scope))
+        )
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))
@@ -1262,6 +1276,10 @@ class ManualWinningVerdictBody(BaseModel):
     verdict: str  # WIN | LOSE
     notes: str | None = None
     month: str | None = None  # YYYY-MM; defaults to the account's most-recently-synced month
+    # Which verdict set this override lands in — 'kpi' (default) or 'all'.
+    # A manual verdict in one scope leaves the other free to judge the ad on
+    # its own, same as an automatic award.
+    scope: str = "kpi"
 
 
 @router.post("/creative/winning-months/manual-verdict")
@@ -1297,7 +1315,7 @@ def manual_winning_verdict(
 
         row = award_manual_verdict(
             db, body.account_id, body.ad_name, body.verdict,
-            notes=body.notes, month=month,
+            notes=body.notes, month=month, scope=normalize_scope(body.scope),
         )
         db.commit()
         return _api_response(data={

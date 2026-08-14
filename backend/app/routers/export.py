@@ -67,6 +67,7 @@ from app.services.winning_months_service import (
     EXCLUDED_BRANCHES as WINNING_EXCLUDED_BRANCHES,
 )
 from app.services.winning_months_service import (
+    SCOPE_KPI,
     eligible_accounts,
     excluded_account_ids,
     live_open_month_loses,
@@ -1427,7 +1428,11 @@ def export_winning_ads_monthly(
 
         # Every verdict is fetched (not just WIN) so the month counters can
         # carry the denominator; `rows` is filtered down to winners below.
-        q = db.query(WinningAdMonth)
+        # The KPI scope only. winning_ad_months also holds the unfiltered
+        # "all ads" verdicts (KOL + Bread included) that back Mason's own
+        # tracking tab; those are deliberately not the KPI and must never
+        # reach HiD's "% Ads Win".
+        q = db.query(WinningAdMonth).filter(WinningAdMonth.scope == SCOPE_KPI)
 
         # Same branch scope as the /winning-ads tab — otherwise the HiD
         # dashboard and the page would report different win rates. Rows are

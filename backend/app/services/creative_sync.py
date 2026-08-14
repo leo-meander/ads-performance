@@ -221,12 +221,14 @@ def apply_ad_renames(
         if material is not None and material.description == old_name:
             material.description = new_name
 
-        # Winning-by-Month rows are keyed by (account, month, ad_name); keep the
-        # monthly tab reading the same name as the library. Skip any month that
-        # already has a row under the new name (unique constraint).
-        taken_months = {
-            m
-            for (m,) in db.query(WinningAdMonth.month)
+        # Winning-by-Month rows are keyed by (account, month, ad_name, scope);
+        # keep both monthly tabs reading the same name as the library. Skip any
+        # (month, scope) that already has a row under the new name (unique
+        # constraint) — scope is part of the key, so a KPI row is free to move
+        # even when the all-ads scope already occupies that month.
+        taken = {
+            (m, s)
+            for (m, s) in db.query(WinningAdMonth.month, WinningAdMonth.scope)
             .filter(
                 WinningAdMonth.account_id == account.id,
                 WinningAdMonth.ad_name == new_name,
@@ -242,7 +244,7 @@ def apply_ad_renames(
             .all()
         )
         for row in won_rows:
-            if row.month not in taken_months:
+            if (row.month, row.scope) not in taken:
                 row.ad_name = new_name
 
         log_change(
