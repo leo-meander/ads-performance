@@ -456,6 +456,18 @@ function DashboardInner() {
     setSelectedBranches(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name])
   }
 
+  // Dropdown variant: an empty selection means "all branches", so every box is
+  // shown ticked and unticking one narrows to "everything except this one".
+  // Ticking every box back (or unticking the last one) returns to the canonical [].
+  const toggleBranchFilter = (name: string) => {
+    const allNames = branches.map(b => b.name)
+    setSelectedBranches(prev => {
+      const base = prev.length > 0 ? prev : allNames
+      const next = base.includes(name) ? base.filter(b => b !== name) : [...base, name]
+      return next.length === 0 || next.length === allNames.length ? [] : next
+    })
+  }
+
   // -------------------- aggregated KPIs --------------------
   const selectedKpi = useMemo(() => {
     if (country) return kpiItems.find(k => k.country_code === country) || null
@@ -694,11 +706,11 @@ function DashboardInner() {
                   <button
                     onClick={() => setSelectedBranches([])}
                     className="w-full px-3 py-1.5 text-xs text-blue-600 hover:bg-gray-50 text-left"
-                  >Clear all</button>
+                  >Select all</button>
                 )}
                 {branches.map(b => (
                   <label key={b.name} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm">
-                    <input type="checkbox" checked={selectedBranches.includes(b.name)} onChange={() => toggleBranch(b.name)}
+                    <input type="checkbox" checked={selectedBranches.length === 0 || selectedBranches.includes(b.name)} onChange={() => toggleBranchFilter(b.name)}
                       className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
                     <span>{b.name}</span>
                     <span className="text-gray-400 text-xs ml-auto">{b.currency}</span>
