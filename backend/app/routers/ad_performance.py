@@ -10,14 +10,21 @@ Backs the /ad-performance frontend page:
                                  compare) — by ad_id, or by ad_name to match
                                  the pivot
   - POST /ad-performance/sync    manual "Sync from Meta" button (runs in a
-                                 background thread, returns 202 immediately)
+                                 background thread, returns 202 immediately) —
+                                 pulls daily metrics AND refreshes each ad's
+                                 current status / preview link
 
 Metrics are stored as RAW counts in ad_daily_metrics; derived rates (roas,
 ctr, cpp, cost_per_lead, hook_rate, ...) are computed here at read time so a
 date-window sum is always correct.
+
+Each row also carries the ad's live delivery state (effective_status +
+preview_url) from meta_ad_states — a "right now" snapshot joined on at read
+time, never mixed into the per-day rows.
 """
 import logging
 import threading
+from collections import Counter
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
@@ -28,8 +35,10 @@ from app.core.permissions import scoped_account_ids
 from app.database import SessionLocal, get_db
 from app.dependencies.auth import require_section
 from app.models.ad_daily_metric import AdDailyMetric
+from app.models.meta_ad_state import MetaAdState
 from app.models.user import User
 from app.services.daily_ad_metrics_sync import DEFAULT_SINCE, sync_all_daily_ad_metrics
+from app.services.meta_ad_state_sync import sync_all_meta_ad_states
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -111,6 +120,88 @@ _SORTABLE = {
 # same ad name across branches would sum VND onto TWD.
 def _name_key(account_id, ad_name: str | None) -> str:
     return f"{account_id}::{ad_name or ''}"
+
+
+# ── Live ad state (status + preview link) ────────────────────────────────────
+# meta_ad_states holds one row per ad as it is NOW. It is joined on in Python
+# rather than in SQL because a pivoted row covers several ads, whose statuses
+# have to be folded into one answer ("2 of 3 still running").
+
+_NO_STATE = {
+    "effective_status": None,
+    "active_count": 0,
+    "state_count": 0,
+    "preview_url": None,
+}
+
+
+def _state_summary(states: list) -> dict:
+    """Fold the states of the ads behind one table row into one verdict.
+
+    A row is "on" if ANY of its ads is still delivering — that is the question
+    being asked of a pivoted row. The preview link prefers a live ad, so the
+    link opens something that is actually running.
+    """
+    if not states:
+        return dict(_NO_STATE)
+    active = [s for s in states if s.effective_status == "ACTIVE"]
+    if active:
+        status = "ACTIVE"
+    else:
+        status = Counter(
+            s.effective_status for s in states if s.effective_status
+        ).most_common(1)
+        status = status[0][0] if status else None
+    preview = next((s.preview_url for s in active if s.preview_url), None) or next(
+        (s.preview_url for s in states if s.preview_url), None
+    )
+    return {
+        "effective_status": status,
+        "active_count": len(active),
+        "state_count": len(states),
+        "preview_url": preview,
+    }
+
+
+def _attach_states(db: Session, items: list[dict], pivot: bool) -> None:
+    """Add effective_status / active_count / preview_url to each row in place.
+
+    Ads that spent inside the window but have since been deleted from the
+    account have no state row — those keep the _NO_STATE defaults and render
+    as "—" rather than being dropped.
+    """
+    for item in items:
+        item.update(_NO_STATE)
+    if not items:
+        return
+
+    account_ids = {i["account_id"] for i in items}
+    q = db.query(
+        MetaAdState.account_id,
+        MetaAdState.ad_id,
+        MetaAdState.ad_name,
+        MetaAdState.effective_status,
+        MetaAdState.preview_url,
+    ).filter(MetaAdState.account_id.in_(account_ids))
+
+    if pivot:
+        names = {i["ad_name"] for i in items if i["ad_name"]}
+        if not names:
+            return
+        q = q.filter(MetaAdState.ad_name.in_(names))
+    else:
+        ids = {i["ad_id"] for i in items if i["ad_id"]}
+        if not ids:
+            return
+        q = q.filter(MetaAdState.ad_id.in_(ids))
+
+    grouped: dict[str, list] = {}
+    for r in q.all():
+        key = _name_key(r.account_id, r.ad_name) if pivot else r.ad_id
+        grouped.setdefault(key, []).append(r)
+
+    for item in items:
+        item.update(_state_summary(grouped.get(item["key"], [])))
 
 
 @router.get("/ad-performance")
@@ -208,6 +299,8 @@ def list_ad_performance(
                 })
             row.update(_derive(r))
             items.append(row)
+
+        _attach_states(db, items, pivot)
 
         key = sort_by if sort_by in _SORTABLE else "spend"
         items.sort(key=lambda x: x.get(key) or 0, reverse=(sort_dir != "asc"))
@@ -322,7 +415,9 @@ def sync_ad_performance(
     db: Session = Depends(get_db),
 ):
     """Manual 'Sync from Meta' button. Pulls daily ad metrics over
-    [since, until] (since default 2026-01-01, until default today).
+    [since, until] (since default 2026-01-01, until default today), then
+    refreshes each ad's current status + preview link (meta_ad_states — a
+    "right now" snapshot, so it ignores the date window).
 
     When `branch_id` is given only that branch is synced; otherwise every Meta
     account the user can edit. The window matches the page's active filters so a
@@ -363,6 +458,14 @@ def sync_ad_performance(
             )
         except Exception:
             logger.exception("[ad-daily] manual sync failed")
+            # Leave no half-open transaction behind for the state sync below.
+            bg.rollback()
+        # Status + preview link are refreshed even when the metrics pull blew
+        # up — they are a separate Meta call and independently useful.
+        try:
+            sync_all_meta_ad_states(bg, account_ids=scoped_ids)
+        except Exception:
+            logger.exception("[ad-state] manual sync failed")
         finally:
             bg.close()
 

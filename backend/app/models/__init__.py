@@ -40,6 +40,7 @@ from app.models.google_asset import GoogleAsset
 from app.models.google_recommendation import GoogleRecommendation
 from app.models.google_seasonality_event import GoogleSeasonalityEvent
 from app.models.google_search_term_pattern import GoogleSearchTermPattern
+from app.models.meta_ad_state import MetaAdState
 from app.models.meta_recommendation import MetaRecommendation
 from app.models.landing_page import LandingPage
 from app.models.landing_page_version import LandingPageVersion
@@ -95,6 +96,7 @@ __all__ = [
     "LandingPageAdLink",
     "LandingPageClaritySnapshot",
     "LandingPageGA4Snapshot",
+    "MetaAdState",
     "MetaRecommendation",
     "MetricsCache",
     "Notification",
