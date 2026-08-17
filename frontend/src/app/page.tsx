@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import {
   ChevronRight, Search, X,
   TrendingUp, AlertTriangle, Target, Activity, ArrowRight,
-  Filter as FilterIcon,
+  Filter as FilterIcon, Info, CheckCircle2,
 } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import FunnelRecommendations from '@/components/FunnelRecommendations'
@@ -531,7 +531,28 @@ function DashboardInner() {
     [campaignSearch, campaignFunnel, funnel],
   )
 
-  const funnelDiagAN = useMemo(() => diagnoseConversionFunnel(displayFunnel), [displayFunnel])
+  // Days in the selected window — keeps the diagnosis from saying "this week"
+  // when the user is looking at 30 days.
+  const periodDays = useMemo(() => {
+    const from = new Date(resolvedRange.from)
+    const to = new Date(resolvedRange.to)
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) return null
+    return Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1
+  }, [resolvedRange])
+
+  // Diagnose against the baseline the panel is actually showing, and hand the
+  // analyzer the Activity Log so a pixel edit / LP swap / new campaign mix in
+  // this window is ruled out before the funnel gets blamed.
+  const funnelDiagAN = useMemo(
+    () =>
+      diagnoseConversionFunnel(displayFunnel, {
+        mode: comparisonMode,
+        benchmark: benchmarkFunnel,
+        periodDays,
+        activity: changelog,
+      }),
+    [displayFunnel, comparisonMode, benchmarkFunnel, periodDays, changelog],
+  )
 
   const nextActions = useMemo(() => buildNextActions(filteredInsights, funnelDiagAN), [filteredInsights, funnelDiagAN])
 
@@ -1187,8 +1208,13 @@ function DashboardInner() {
                 {funnelData.map((stage, i) => {
                   const widthPct = Math.max((stage.value / funnelMax) * 100, 4)
                   // Match to FunnelStep for leak highlighting
-                  const funnelStep = funnel.find((s) => s.label === stage.name)
-                  const isLeak = funnelDiagAN?.stepKey != null && funnelStep?.key === funnelDiagAN.stepKey
+                  const funnelStep = displayFunnel.find((s) => s.label === stage.name)
+                  const isDiagStep = funnelDiagAN?.stepKey != null && funnelStep?.key === funnelDiagAN.stepKey
+                  // Only paint it red when the diagnosis actually holds up.
+                  const isLeak = isDiagStep && funnelDiagAN?.kind === 'worsened'
+                  // A step reporting 0 while later steps have volume is a tracking
+                  // gap — its 100% drop-off is not a real leak, so don't show one.
+                  const isUntracked = funnelStep != null && (funnelDiagAN?.untrackedSteps.includes(funnelStep.key) ?? false)
                   const bmStep = benchmarkFunnel.find((b) => b.label === stage.name)
                   const bmDelta = comparisonMode === 'benchmark' && stage.drop_off != null && bmStep?.drop_off != null
                     ? stage.drop_off - bmStep.drop_off
@@ -1198,35 +1224,48 @@ function DashboardInner() {
                       {i > 0 && (
                         <div className="flex items-center gap-2 ml-4 mb-1">
                           <ChevronRight className="w-3 h-3 text-gray-300" />
-                          {stage.drop_off !== null && (
-                            <span className="text-xs text-gray-400">
-                              {(stage.drop_off * 100).toFixed(1)}% drop-off
+                          {isUntracked ? (
+                            <span className="text-[10px] font-semibold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                              not tracked — reporting gap, not a leak
                             </span>
+                          ) : (
+                            <>
+                              {stage.drop_off !== null && (
+                                <span className="text-xs text-gray-400">
+                                  {(stage.drop_off * 100).toFixed(1)}% drop-off
+                                </span>
+                              )}
+                              {comparisonMode === 'prev' ? (
+                                <DropOffDeltaTag current={stage.drop_off} prev={stage.drop_off_prev} />
+                              ) : bmDelta != null ? (
+                                <span className={`text-[11px] font-medium ${bmDelta > 0.005 ? 'text-red-500' : bmDelta < -0.005 ? 'text-emerald-600' : 'text-gray-400'}`}>
+                                  {bmDelta > 0 ? '+' : ''}{(bmDelta * 100).toFixed(1)}pp vs avg
+                                </span>
+                              ) : benchmarkLoading ? (
+                                <span className="text-[11px] text-gray-300">loading…</span>
+                              ) : null}
+                            </>
                           )}
-                          {comparisonMode === 'prev' ? (
-                            <DropOffDeltaTag current={stage.drop_off} prev={stage.drop_off_prev} />
-                          ) : bmDelta != null ? (
-                            <span className={`text-[11px] font-medium ${bmDelta > 0.005 ? 'text-red-500' : bmDelta < -0.005 ? 'text-emerald-600' : 'text-gray-400'}`}>
-                              {bmDelta > 0 ? '+' : ''}{(bmDelta * 100).toFixed(1)}pp vs avg
-                            </span>
-                          ) : benchmarkLoading ? (
-                            <span className="text-[11px] text-gray-300">loading…</span>
-                          ) : null}
                           {isLeak && (
                             <span className="text-[10px] font-semibold text-red-600 bg-red-50 px-1.5 py-0.5 rounded">worst leak</span>
+                          )}
+                          {isDiagStep && !isLeak && funnelDiagAN?.kind !== 'healthy' && (
+                            <span className="text-[10px] font-semibold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                              {funnelDiagAN?.kind === 'low_volume' ? 'thin data' : 'weakest step'}
+                            </span>
                           )}
                         </div>
                       )}
                       <div className="flex items-center gap-4">
                         <div
-                          className={`rounded-lg py-3 px-4 flex items-center justify-between transition-all ${isLeak ? 'bg-red-100 ring-2 ring-inset ring-red-300' : campaignType === 'lead' ? 'bg-orange-100' : campaignType === 'engagement' ? 'bg-purple-100' : 'bg-blue-100'}`}
+                          className={`rounded-lg py-3 px-4 flex items-center justify-between transition-all ${isLeak ? 'bg-red-100 ring-2 ring-inset ring-red-300' : isUntracked ? 'bg-gray-100' : campaignType === 'lead' ? 'bg-orange-100' : campaignType === 'engagement' ? 'bg-purple-100' : 'bg-blue-100'}`}
                           style={{ width: `${widthPct}%`, minWidth: '180px' }}
                         >
                           <span className="text-xs text-gray-600">{stage.name}</span>
                           <span className="text-lg font-bold text-gray-900 ml-2">{fmtNum(stage.value)}</span>
                         </div>
                         <ChangeTag change={stage.change} />
-                        {comparisonMode === 'benchmark' && bmStep?.drop_off != null && i > 0 && (
+                        {comparisonMode === 'benchmark' && bmStep?.drop_off != null && i > 0 && !isUntracked && (
                           <span className="text-[10px] text-gray-400 whitespace-nowrap">
                             avg drop: {(bmStep.drop_off * 100).toFixed(1)}%
                           </span>
@@ -1240,11 +1279,35 @@ function DashboardInner() {
                 {funnelDiagAN ? (
                   <div className={`rounded-lg border p-4 ${SEVERITY_STYLES[funnelDiagAN.severity]}`}>
                     <div className="flex items-center gap-2 mb-2">
-                      <AlertTriangle className="w-4 h-4" />
-                      <span className="text-sm font-semibold">{funnelDiagAN.transition}</span>
+                      {funnelDiagAN.kind === 'worsened' ? (
+                        <AlertTriangle className="w-4 h-4" />
+                      ) : funnelDiagAN.kind === 'healthy' ? (
+                        <CheckCircle2 className="w-4 h-4" />
+                      ) : (
+                        <Info className="w-4 h-4" />
+                      )}
+                      <span className="text-sm font-semibold">
+                        {funnelDiagAN.kind === 'healthy' ? 'No abnormal leak' : funnelDiagAN.transition}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-white/70 border border-gray-200 font-semibold">
+                        {funnelDiagAN.kind === 'worsened'
+                          ? 'worsened'
+                          : funnelDiagAN.kind === 'standing'
+                          ? 'weakest step'
+                          : funnelDiagAN.kind === 'low_volume'
+                          ? 'not enough data'
+                          : 'healthy'}
+                      </span>
                     </div>
-                    <p className="text-xs text-gray-700 mb-3">{funnelDiagAN.reason}</p>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1">How to fix</p>
+                    <p className="text-xs text-gray-700 mb-2">{funnelDiagAN.reason}</p>
+                    {funnelDiagAN.dataNote && (
+                      <p className="text-[11px] text-gray-500 bg-white/60 rounded px-2 py-1.5 mb-3">
+                        {funnelDiagAN.dataNote}
+                      </p>
+                    )}
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                      {funnelDiagAN.kind === 'worsened' ? 'How to fix' : 'What to do'}
+                    </p>
                     <ul className="space-y-1">
                       {funnelDiagAN.fixes.map((f, idx) => (
                         <li key={idx} className="text-xs text-gray-700 flex gap-1.5">
@@ -1253,9 +1316,29 @@ function DashboardInner() {
                         </li>
                       ))}
                     </ul>
+                    {funnelDiagAN.activity.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-gray-200">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                          Changes logged in this period ({funnelDiagAN.activity.length})
+                        </p>
+                        <ul className="space-y-0.5">
+                          {funnelDiagAN.activity.map((a) => (
+                            <li key={a.id} className="text-[11px] text-gray-600 flex gap-1.5">
+                              <span className="text-gray-400 shrink-0">
+                                {new Date(a.occurred_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
+                              </span>
+                              <span className="truncate" title={a.description || a.title}>
+                                {a.title}
+                                {a.campaign_name && <span className="text-gray-400"> · {a.campaign_name}</span>}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 ) : (
-                  <p className="text-sm text-gray-400">Funnel looks healthy — no single step is leaking notably.</p>
+                  <p className="text-sm text-gray-400">Not enough funnel data in this window to diagnose.</p>
                 )}
               </div>
             </div>
