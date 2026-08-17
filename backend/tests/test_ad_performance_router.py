@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models.account import AdAccount
 from app.models.ad_daily_metric import AdDailyMetric
+from app.models.meta_ad_state import MetaAdState
 from app.models.user import User
 from app.services.auth_service import create_access_token, hash_password
 from tests.db import TestSession
@@ -60,6 +61,14 @@ def _metric(db, acc, *, ad_id, ad_name, campaign_id="c1", adset_id="s1", on=D1,
         ad_id=ad_id, ad_name=ad_name, date=on,
         spend=spend, revenue=revenue, impressions=impressions, clicks=clicks,
         conversions=conversions, leads=leads,
+    ))
+    db.commit()
+
+
+def _state(db, acc, *, ad_id, ad_name, effective_status="ACTIVE", preview=None):
+    db.add(MetaAdState(
+        id=str(uuid.uuid4()), account_id=acc.id, ad_id=ad_id, ad_name=ad_name,
+        status=effective_status, effective_status=effective_status, preview_url=preview,
     ))
     db.commit()
 
@@ -148,6 +157,96 @@ class TestPivotByAdName:
         assert len(items) == 1
         assert items[0]["spend"] == 100
         assert items[0]["ad_count"] == 1
+
+
+class TestAdStateColumns:
+    """Status + preview link come from meta_ad_states, a 'right now' snapshot
+    joined onto the windowed metrics."""
+
+    def test_per_ad_rows_carry_status_and_preview(self):
+        db = TestSession()
+        acc = _account(db)
+        _metric(db, acc, ad_id="a1", ad_name="Ad One", spend=100, revenue=500)
+        _metric(db, acc, ad_id="a2", ad_name="Ad Two", spend=50)
+        _state(db, acc, ad_id="a1", ad_name="Ad One", preview="https://fb.com/p/a1")
+        _state(db, acc, ad_id="a2", ad_name="Ad Two", effective_status="PAUSED")
+        db.close()
+
+        items = {i["ad_id"]: i for i in _get(f"date_from={FROM}&date_to={TO}")["items"]}
+        assert items["a1"]["effective_status"] == "ACTIVE"
+        assert items["a1"]["preview_url"] == "https://fb.com/p/a1"
+        assert items["a1"]["active_count"] == 1
+        assert items["a2"]["effective_status"] == "PAUSED"
+        assert items["a2"]["active_count"] == 0
+        assert items["a2"]["preview_url"] is None
+
+    def test_ad_with_no_state_row_still_listed(self):
+        # An ad deleted from the account after it spent has no state row — it
+        # must keep its metrics, not vanish or crash the join.
+        db = TestSession()
+        acc = _account(db)
+        _metric(db, acc, ad_id="a1", ad_name="Ad One", spend=100, revenue=500)
+        db.close()
+
+        items = _get(f"date_from={FROM}&date_to={TO}")["items"]
+        assert len(items) == 1
+        assert items[0]["spend"] == 100
+        assert items[0]["effective_status"] is None
+        assert items[0]["preview_url"] is None
+        assert items[0]["state_count"] == 0
+
+    def test_pivot_row_is_active_when_any_ad_is(self):
+        db = TestSession()
+        acc = _account(db)
+        _metric(db, acc, ad_id="a1", ad_name="Ad One", campaign_id="c1", spend=100)
+        _metric(db, acc, ad_id="a2", ad_name="Ad One", campaign_id="c2", spend=300)
+        _state(db, acc, ad_id="a1", ad_name="Ad One", effective_status="PAUSED",
+               preview="https://fb.com/p/a1")
+        _state(db, acc, ad_id="a2", ad_name="Ad One", effective_status="ACTIVE",
+               preview="https://fb.com/p/a2")
+        db.close()
+
+        items = _get(f"date_from={FROM}&date_to={TO}&group_by=ad_name")["items"]
+        assert len(items) == 1
+        row = items[0]
+        assert row["effective_status"] == "ACTIVE"
+        assert row["active_count"] == 1
+        assert row["state_count"] == 2
+        # The link points at the ad that is actually running.
+        assert row["preview_url"] == "https://fb.com/p/a2"
+
+    def test_pivot_row_all_paused_reports_the_common_status(self):
+        db = TestSession()
+        acc = _account(db)
+        _metric(db, acc, ad_id="a1", ad_name="Ad One", campaign_id="c1", spend=100)
+        _metric(db, acc, ad_id="a2", ad_name="Ad One", campaign_id="c2", spend=300)
+        _state(db, acc, ad_id="a1", ad_name="Ad One", effective_status="PAUSED")
+        _state(db, acc, ad_id="a2", ad_name="Ad One", effective_status="PAUSED",
+               preview="https://fb.com/p/a2")
+        db.close()
+
+        row = _get(f"date_from={FROM}&date_to={TO}&group_by=ad_name")["items"][0]
+        assert row["effective_status"] == "PAUSED"
+        assert row["active_count"] == 0
+        assert row["preview_url"] == "https://fb.com/p/a2"
+
+    def test_state_never_bleeds_across_branches(self):
+        # Same ad name in two branches — each row keeps its own branch's state.
+        db = TestSession()
+        sgn = _account(db, "Saigon", "VND")
+        tpe = _account(db, "Taipei", "TWD")
+        _metric(db, sgn, ad_id="a1", ad_name="Ad One", spend=100)
+        _metric(db, tpe, ad_id="b1", ad_name="Ad One", spend=10)
+        _state(db, sgn, ad_id="a1", ad_name="Ad One", effective_status="ACTIVE")
+        _state(db, tpe, ad_id="b1", ad_name="Ad One", effective_status="PAUSED")
+        sgn_id = sgn.id
+        db.close()
+
+        items = _get(f"date_from={FROM}&date_to={TO}&group_by=ad_name")["items"]
+        assert len(items) == 2
+        for i in items:
+            assert i["state_count"] == 1
+            assert i["effective_status"] == ("ACTIVE" if i["account_id"] == sgn_id else "PAUSED")
 
 
 class TestDailyByAdName:
