@@ -5,12 +5,14 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts'
 import { ArrowUpDown, ExternalLink, RefreshCw } from 'lucide-react'
+import AdStatusPill, { AdState } from '@/components/AdStatusPill'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
 // One table row. In "Ad name" pivot mode `key` is branch+name and ad_id is
-// null; in per-ad mode `key` is the ad_id.
-interface AdRow {
+// null; in per-ad mode `key` is the ad_id. AdState carries the ad's live
+// delivery state — "right now", NOT the selected date window.
+interface AdRow extends AdState {
   key: string
   account_id: string
   ad_id: string | null
@@ -35,12 +37,6 @@ interface AdRow {
   hook_rate: number | null
   thruplay_rate: number | null
   video_complete_rate: number | null
-  // Live state from meta_ad_states — "right now", not the date window. A
-  // pivoted row folds several ads: active_count of state_count are delivering.
-  effective_status: string | null
-  active_count: number
-  state_count: number
-  preview_url: string | null
 }
 interface DailyRow {
   date: string; key: string; ad_id: string | null; ad_name: string | null
@@ -108,24 +104,6 @@ const METRICS: Record<MetricKey, { label: string; pct?: boolean; money?: boolean
 
 const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#6366f1']
 
-// Meta effective_status -> what to show. It already folds in the parent ad
-// set / campaign switch, so an ad can be ON while its ad set is off — worth
-// naming, since that's why a live-looking ad stopped spending.
-const STATUS_UI: Record<string, { label: string; dot: string; text: string }> = {
-  ACTIVE: { label: 'Active', dot: 'bg-emerald-500', text: 'text-emerald-700' },
-  PAUSED: { label: 'Paused', dot: 'bg-gray-400', text: 'text-gray-500' },
-  ADSET_PAUSED: { label: 'Ad set off', dot: 'bg-gray-400', text: 'text-gray-500' },
-  CAMPAIGN_PAUSED: { label: 'Campaign off', dot: 'bg-gray-400', text: 'text-gray-500' },
-  ARCHIVED: { label: 'Archived', dot: 'bg-gray-300', text: 'text-gray-400' },
-  DELETED: { label: 'Deleted', dot: 'bg-gray-300', text: 'text-gray-400' },
-  DISAPPROVED: { label: 'Rejected', dot: 'bg-red-500', text: 'text-red-600' },
-  WITH_ISSUES: { label: 'Issues', dot: 'bg-amber-500', text: 'text-amber-600' },
-  PENDING_REVIEW: { label: 'In review', dot: 'bg-amber-400', text: 'text-amber-600' },
-  PREAPPROVED: { label: 'Pre-approved', dot: 'bg-amber-400', text: 'text-amber-600' },
-  PENDING_BILLING_INFO: { label: 'Billing', dot: 'bg-amber-500', text: 'text-amber-600' },
-  IN_PROCESS: { label: 'Processing', dot: 'bg-blue-400', text: 'text-blue-600' },
-}
-
 // Row grain. "ad_name" pivots every ad sharing a name (within one branch —
 // spend is in the branch's native currency, so names are never merged across
 // branches) into a single row.
@@ -134,24 +112,6 @@ const GROUPS: { key: GroupKey; label: string }[] = [
   { key: 'ad', label: 'Each ad' },
   { key: 'ad_name', label: 'Ad name (pivot)' },
 ]
-
-// One status pill. A pivoted row covers several ads, so it also shows how many
-// of them are still delivering ("Active 2/3") rather than picking one answer.
-const StatusCell = ({ row }: { row: AdRow }) => {
-  if (!row.effective_status) {
-    return (
-      <span className="text-xs text-gray-300" title="No live ad found — deleted from the account, or not synced yet">—</span>
-    )
-  }
-  const ui = STATUS_UI[row.effective_status] ||
-    { label: row.effective_status, dot: 'bg-gray-400', text: 'text-gray-500' }
-  return (
-    <span className={`inline-flex items-center gap-1.5 text-xs whitespace-nowrap ${ui.text}`} title={row.effective_status}>
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ui.dot}`} />
-      {ui.label}{row.state_count > 1 && ` ${row.active_count}/${row.state_count}`}
-    </span>
-  )
-}
 
 export default function AdPerformancePage() {
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -479,7 +439,7 @@ export default function AdPerformancePage() {
                         <span className="text-xs text-gray-300" title="No preview link — re-run Sync from Meta">—</span>
                       )}
                     </td>
-                    <td className="py-2 px-2"><StatusCell row={r} /></td>
+                    <td className="py-2 px-2"><AdStatusPill state={r} /></td>
                     <td className="py-2 px-2 text-xs text-gray-600">{accName(r.account_id)}</td>
                     {pivot && <td className="py-2 px-2 text-right text-xs text-gray-600">{r.ad_count}</td>}
                     <td className="py-2 px-2 text-right text-xs">{money(r.spend, accountCurrency[r.account_id])}</td>

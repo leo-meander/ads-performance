@@ -24,6 +24,7 @@ from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
 from app.models.approval import ComboApproval
 from app.models.creative_visual_tag import CreativeVisualTag
+from app.models.meta_ad_state import MetaAdState
 from app.models.user import User
 from app.services.auth_service import create_access_token, hash_password
 from tests.db import TestSession
@@ -197,6 +198,48 @@ def test_detail_surfaces_latest_working_file_from_approval():
     resp = client.get("/api/creative/combos/CMB-WIN/detail", headers=_auth(admin))
     wf = resp.json()["data"]["working_file"]
     assert wf == {"url": "https://drive.google.com/new", "label": "v2"}
+
+
+def test_detail_meta_ad_unknown_without_state_rows():
+    # Nothing synced (or the ad was deleted / renamed on Meta) — the drawer
+    # must still open, just without a status or link.
+    _seed()
+    admin = _admin()
+    resp = client.get("/api/creative/combos/CMB-WIN/detail", headers=_auth(admin))
+    meta_ad = resp.json()["data"]["meta_ad"]
+    assert meta_ad["effective_status"] is None
+    assert meta_ad["preview_url"] is None
+    assert meta_ad["state_count"] == 0
+
+
+def test_detail_matches_live_ad_by_branch_and_name():
+    _seed()
+    admin = _admin()
+    db = TestSession()
+    combo = db.query(AdCombo).filter(AdCombo.combo_id == "CMB-WIN").first()
+    branch_id = combo.branch_id
+    # Two live ads share the combo's name; a third is a different creative.
+    db.add(MetaAdState(
+        id=str(uuid.uuid4()), account_id=branch_id, ad_id="a1", ad_name="Winner Ad",
+        effective_status="PAUSED", preview_url="https://fb.com/p/a1",
+    ))
+    db.add(MetaAdState(
+        id=str(uuid.uuid4()), account_id=branch_id, ad_id="a2", ad_name="Winner Ad",
+        effective_status="ACTIVE", preview_url="https://fb.com/p/a2",
+    ))
+    db.add(MetaAdState(
+        id=str(uuid.uuid4()), account_id=branch_id, ad_id="b1", ad_name="Loser Ad",
+        effective_status="ACTIVE", preview_url="https://fb.com/p/b1",
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/api/creative/combos/CMB-WIN/detail", headers=_auth(admin))
+    meta_ad = resp.json()["data"]["meta_ad"]
+    assert meta_ad["effective_status"] == "ACTIVE"
+    assert meta_ad["active_count"] == 1
+    assert meta_ad["state_count"] == 2  # the other creative's ad is not counted
+    assert meta_ad["preview_url"] == "https://fb.com/p/a2"  # the live one
 
 
 def test_detail_unknown_combo_errors():
