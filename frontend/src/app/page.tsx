@@ -136,6 +136,9 @@ function DashboardInner() {
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
+  // Display-only: renders the "all branches" state with every box empty instead of
+  // every box ticked. Never affects the query — see toggleBranchFilter.
+  const [branchBoxesCleared, setBranchBoxesCleared] = useState(false)
   const [breakdownMetric, setBreakdownMetric] = useState<'spend' | 'roas' | 'conversions'>('spend')
 
   // Campaign search combobox
@@ -456,17 +459,32 @@ function DashboardInner() {
     setSelectedBranches(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name])
   }
 
-  // Dropdown variant: an empty selection means "all branches", so every box is
-  // shown ticked and unticking one narrows to "everything except this one".
-  // Ticking every box back (or unticking the last one) returns to the canonical [].
+  // Dropdown variant. An empty selection always means "all branches" to the API,
+  // but the boxes can render that state two ways: every box ticked (the default —
+  // untick to exclude) or every box empty (after "Clear all" — tick to include).
+  // branchBoxesCleared only drives the checkboxes; the query stays unfiltered either way.
+  const branchBoxesChecked = (name: string) =>
+    selectedBranches.length > 0 ? selectedBranches.includes(name) : !branchBoxesCleared
+
   const toggleBranchFilter = (name: string) => {
     const allNames = branches.map(b => b.name)
-    setSelectedBranches(prev => {
-      const base = prev.length > 0 ? prev : allNames
-      const next = base.includes(name) ? base.filter(b => b !== name) : [...base, name]
-      return next.length === 0 || next.length === allNames.length ? [] : next
-    })
+    const base = selectedBranches.length > 0
+      ? selectedBranches
+      : (branchBoxesCleared ? [] : allNames)
+    const next = base.includes(name) ? base.filter(b => b !== name) : [...base, name]
+    if (next.length === allNames.length) {
+      // Everything ticked — collapse to the canonical "all branches" selection.
+      setSelectedBranches([]); setBranchBoxesCleared(false)
+    } else if (next.length === 0) {
+      // Unticked the last one — keep the boxes empty rather than snapping back to all.
+      setSelectedBranches([]); setBranchBoxesCleared(true)
+    } else {
+      setSelectedBranches(next); setBranchBoxesCleared(false)
+    }
   }
+
+  const selectAllBranches = () => { setSelectedBranches([]); setBranchBoxesCleared(false) }
+  const clearAllBranches = () => { setSelectedBranches([]); setBranchBoxesCleared(true) }
 
   // -------------------- aggregated KPIs --------------------
   const selectedKpi = useMemo(() => {
@@ -512,7 +530,7 @@ function DashboardInner() {
 
   const resetAll = () => {
     setCountry(''); setPlatform(''); setFunnelStage('')
-    setSelectedBranches([])
+    setSelectedBranches([]); setBranchBoxesCleared(false)
   }
 
   // -------------------- analysis memos --------------------
@@ -702,15 +720,21 @@ function DashboardInner() {
             </button>
             {branchDropdownOpen && (
               <div className="absolute z-50 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg py-1 right-0">
-                {selectedBranches.length > 0 && (
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-100 mb-1">
                   <button
-                    onClick={() => setSelectedBranches([])}
-                    className="w-full px-3 py-1.5 text-xs text-blue-600 hover:bg-gray-50 text-left"
+                    onClick={selectAllBranches}
+                    disabled={selectedBranches.length === 0 && !branchBoxesCleared}
+                    className="text-xs text-blue-600 hover:underline disabled:text-gray-300 disabled:no-underline disabled:cursor-default"
                   >Select all</button>
-                )}
+                  <button
+                    onClick={clearAllBranches}
+                    disabled={selectedBranches.length === 0 && branchBoxesCleared}
+                    className="text-xs text-blue-600 hover:underline disabled:text-gray-300 disabled:no-underline disabled:cursor-default"
+                  >Clear all</button>
+                </div>
                 {branches.map(b => (
                   <label key={b.name} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm">
-                    <input type="checkbox" checked={selectedBranches.length === 0 || selectedBranches.includes(b.name)} onChange={() => toggleBranchFilter(b.name)}
+                    <input type="checkbox" checked={branchBoxesChecked(b.name)} onChange={() => toggleBranchFilter(b.name)}
                       className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
                     <span>{b.name}</span>
                     <span className="text-gray-400 text-xs ml-auto">{b.currency}</span>
