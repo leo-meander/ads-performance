@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Plus, ArrowUpDown, X, Search, Sparkles, Film, Image as ImageIcon, LayoutGrid, ExternalLink } from 'lucide-react'
 import KeypointDoubleCheckModal from '@/components/KeypointDoubleCheckModal'
+import AdStatusPill, { AdState } from '@/components/AdStatusPill'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -699,6 +700,9 @@ interface ComboDetail {
   branch_context: any
   insight: { headline: string; reasons: { key: string; label: string; value: string; reference: string; sentiment: string; text: string }[]; positive: number; negative: number }
   working_file: { url: string; label: string | null } | null
+  // The live Meta ad behind this combo, matched by (branch, ad_name). Null-ish
+  // (state_count 0) when the ad was deleted or renamed on Meta.
+  meta_ad: AdState | null
 }
 
 const SENTIMENT_CLS: Record<string, string> = {
@@ -854,6 +858,8 @@ function ComboDrawer({ comboId, onClose }: { comboId: string; onClose: () => voi
               <span className="text-[10px] font-mono text-gray-400">{comboId}</span>
               {c && <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${VERDICT_COLORS[c.verdict] || ''}`}>{c.verdict}</span>}
               {data?.material && <span className="text-[10px] text-gray-500 inline-flex items-center gap-1">{FORMAT_META[data.material.material_type]?.label || data.material.material_type}</span>}
+              {/* Is the ad with this name still delivering on Meta? */}
+              {data?.meta_ad?.effective_status && <AdStatusPill state={data.meta_ad} />}
             </div>
           </div>
           <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 text-gray-400"><X className="w-5 h-5" /></button>
@@ -901,6 +907,22 @@ function ComboDrawer({ comboId, onClose }: { comboId: string; onClose: () => voi
               <section>
                 <h3 className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-2">Creative</h3>
                 <CreativePreview material={data.material} workingFile={data.working_file} />
+                {/* Meta's own render of the whole ad (creative + copy + CTA),
+                    as opposed to the raw asset "Open original creative" gives.
+                    Matched by ad name, so it can be absent for older combos. */}
+                {data.meta_ad?.preview_url && (
+                  <a
+                    href={data.meta_ad.preview_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline mt-1.5"
+                    title={data.meta_ad.state_count > 1
+                      ? `Opens one of the ${data.meta_ad.state_count} live ads using this name`
+                      : 'Opens the live ad on Meta (needs access to the ad account)'}
+                  >
+                    <ExternalLink className="w-3 h-3" /> Open ad on Meta
+                  </a>
+                )}
                 {data.material?.description && <p className="text-xs text-gray-500 mt-1.5">{data.material.description}</p>}
               </section>
 
