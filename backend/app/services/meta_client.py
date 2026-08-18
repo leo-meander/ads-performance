@@ -51,6 +51,14 @@ AD_FIELDS = [
     Ad.Field.campaign_id,
     Ad.Field.name,
     Ad.Field.status,
+    # What Meta actually delivers: folds the parent ad set / campaign switch and
+    # the review state into one value (ACTIVE, PAUSED, ADSET_PAUSED,
+    # CAMPAIGN_PAUSED, DISAPPROVED, ...). `status` alone is only the ad's own
+    # switch, so an ad reads ACTIVE while its ad set is off.
+    Ad.Field.effective_status,
+    # Meta's own render of the whole ad (creative + copy + CTA). Long-lived,
+    # unlike the CDN asset URLs, but only openable with account access.
+    Ad.Field.preview_shareable_link,
     Ad.Field.creative,
     Ad.Field.created_time,
 ]
@@ -371,6 +379,8 @@ def fetch_ads(account_id: str, access_token: str) -> list[dict]:
                 "platform_campaign_id": a[Ad.Field.campaign_id],
                 "name": a[Ad.Field.name],
                 "status": a[Ad.Field.status],
+                "effective_status": a.get(Ad.Field.effective_status),
+                "preview_url": a.get(Ad.Field.preview_shareable_link),
                 "creative_id": creative.get("id") if creative else None,
                 "platform_created_at": _parse_datetime(a.get(Ad.Field.created_time)),
                 "raw_data": _to_json_safe(dict(a)),

@@ -108,6 +108,7 @@ from app.models.account import AdAccount
 from app.models.ad_combo import AdCombo
 from app.models.ad_daily_metric import AdDailyMetric
 from app.models.winning_ad_month import WinningAdMonth
+from app.services.ad_state import live_ad_fields, states_by_ad_name
 from app.services.creative_service import classify_verdict
 
 logger = logging.getLogger(__name__)
@@ -1147,6 +1148,15 @@ def list_winning_months(
       "test" — not enough cumulative clicks/bookings yet; the ad is not
         counted in win_rate on either side.
 
+    Every ad entry (both `ads` and `new_ad_list`) also carries the LIVE state
+    of the Meta ad behind it, matched by (branch, ad_name): `preview_url`
+    opens Meta's own render of the ad, `live_status` / `live_active_count` /
+    `live_ad_count` say whether it is still delivering and how many ads share
+    that name. They are prefixed `live_` because they answer a different
+    question from the frozen verdict beside them — "is it still running now",
+    not "did it win". A missing link (archived/deleted on Meta, or a branch not
+    synced since the columns landed) is normal and never hides the award.
+
     The money/clicks on each entry are CUMULATIVE-to-date (no lower date
     bound), matching what classify_verdict judges on, so a reader checking
     "why is this still TEST" sees the same clicks number the rule used.
@@ -1185,6 +1195,11 @@ def list_winning_months(
     elif account_ids is not None:
         wanted = set(account_ids or [])
         accounts_in_scope = [a for a in accounts_in_scope if a.id in wanted]
+
+    # Live delivery state (is the ad still running, and its Meta preview link),
+    # one bulk query for every in-scope branch — the page renders every award
+    # of every month at once, so a per-row lookup would be a query per row.
+    ad_states = states_by_ad_name(db, [a.id for a in accounts_in_scope])
 
     # One lifetime bar per in-scope account, for new_ad_list's status column —
     # the same bar classify_verdict is given, so the status shown next to an
@@ -1273,6 +1288,7 @@ def list_winning_months(
             "conversions": conversions,
             "roas": roas,
             "benchmark_roas": benchmarks.get(r.account_id) or None,
+            **live_ad_fields(ad_states, r.account_id, r.ad_name),
         })
 
     # Winners first, then losers, then the ads still gathering evidence; within
@@ -1326,6 +1342,7 @@ def list_winning_months(
                 "frozen_at": r.frozen_at.isoformat() if r.frozen_at else None,
                 "verdict_source": r.verdict_source,
                 "verdict_notes": r.verdict_notes,
+                **live_ad_fields(ad_states, r.account_id, r.ad_name),
             })
         else:
             b["lose_count"] += 1

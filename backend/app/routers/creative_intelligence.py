@@ -31,6 +31,11 @@ from app.models.creative_visual_tag import CreativeVisualTag
 from app.models.figma import FigmaJob
 from app.models.keypoint import BranchKeypoint
 from app.models.user import User
+from app.services.ad_state import (
+    live_ad_fields,
+    state_for_ad_name,
+    states_by_ad_name,
+)
 
 router = APIRouter()
 
@@ -390,8 +395,14 @@ def tag_search(
             .all()
         )
 
+        # Live delivery state + Meta preview link, one bulk query for the
+        # branches actually on this page.
+        ad_states = states_by_ad_name(db, list({c.branch_id for c, *_ in rows}))
         items = [
-            _serialize_combo_row(combo, copy, material, branch)
+            _serialize_combo_row(
+                combo, copy, material, branch,
+                extra=live_ad_fields(ad_states, combo.branch_id, combo.ad_name),
+            )
             for combo, copy, material, branch in rows
         ]
         return _api_response(data={
@@ -827,8 +838,9 @@ def get_combo_detail(
     """Everything the right-hand drawer renders for one combo.
 
     Bundles the linked copy + material (with visual tags), angle, keypoints,
-    full metrics, the branch reference figures, and a rule-based 'why this
-    verdict' insight — so the drawer opens with one request and no model call.
+    full metrics, the branch reference figures, a rule-based 'why this verdict'
+    insight, and the live ad's status + Meta preview link — so the drawer opens
+    with one request and no model call.
     """
     try:
         combo = db.query(AdCombo).filter(AdCombo.combo_id == combo_id).first()
@@ -887,6 +899,11 @@ def get_combo_detail(
             if wf else None
         )
 
+        # Is the live ad still running, and where can it be viewed on Meta?
+        # Matched by (branch, ad_name) — see services/ad_state.py for why that
+        # is name-based and what it costs.
+        meta_ad = state_for_ad_name(db, combo.branch_id, combo.ad_name)
+
         return _api_response(data={
             "combo": {
                 "id": combo.id, "combo_id": combo.combo_id, "branch_id": combo.branch_id,
@@ -925,6 +942,7 @@ def get_combo_detail(
             "branch_context": ctx,
             "insight": insight,
             "working_file": working_file,
+            "meta_ad": meta_ad,
         })
     except Exception as e:
         return _api_response(error=str(e))

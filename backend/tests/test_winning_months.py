@@ -51,6 +51,7 @@ from app.services.winning_months_service import (
     describe_data_window,
     freeze_winning_months,
     is_kol,
+    list_winning_months,
     month_end,
     month_start,
     months_between,
@@ -1042,3 +1043,105 @@ def test_manual_verdict_endpoint_rejects_duplicate_with_400_shaped_error():
     body = resp.json()
     assert body["success"] is False
     assert "already has a WIN verdict" in body["error"]
+
+
+# ── live ad state on the rows (preview link + is-it-still-running) ─────────
+
+
+def _live_ad(db, acc, ad_id, ad_name, effective_status, preview=None):
+    """A row in `ads` — what the platform sync writes. The winning-months rows
+    match it by (branch, ad_name)."""
+    from app.models.ad import Ad
+    from app.models.ad_set import AdSet
+    from app.models.campaign import Campaign
+
+    camp = Campaign(
+        id=str(uuid.uuid4()), account_id=acc.id, platform="meta",
+        platform_campaign_id=f"c_{ad_id}", name="Camp", objective="OUTCOME_SALES",
+        status="ACTIVE",
+    )
+    db.add(camp)
+    aset = AdSet(
+        id=str(uuid.uuid4()), campaign_id=camp.id, account_id=acc.id, platform="meta",
+        platform_adset_id=f"s_{ad_id}", name="Set", status="ACTIVE",
+    )
+    db.add(aset)
+    db.flush()
+    db.add(Ad(
+        id=str(uuid.uuid4()), ad_set_id=aset.id, campaign_id=camp.id, account_id=acc.id,
+        platform="meta", platform_ad_id=ad_id, name=ad_name,
+        status=effective_status, effective_status=effective_status, preview_url=preview,
+    ))
+    db.commit()
+
+
+def _winner_rows(db, acc, month):
+    """The awarded-winners list for one month."""
+    data = list_winning_months(db, account_ids=[acc.id], month=month)
+    bucket = next(m for m in data["months"] if m["month"] == month)
+    return bucket["ads"]
+
+
+def test_winner_rows_carry_the_meta_preview_link():
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_Winner", on=date(2026, 3, 5),
+            spend=1_000_000, revenue=6_000_000, clicks=3000, conversions=20)
+    _metric(db, acc, ad_name="CRTV_Filler", on=date(2026, 3, 5),
+            spend=1_000_000, revenue=1_000_000, clicks=3000, conversions=5)
+    freeze_winning_months(db, account_ids=[acc.id])
+    # Same creative shipped into two campaigns: one paused, one still live.
+    _live_ad(db, acc, "a1", "CRTV_Winner", "PAUSED", "https://fb.com/p/a1")
+    _live_ad(db, acc, "a2", "CRTV_Winner", "ACTIVE", "https://fb.com/p/a2")
+
+    ads = _winner_rows(db, acc, "2026-03")
+    win = next(a for a in ads if a["ad_name"] == "CRTV_Winner")
+    assert win["preview_url"] == "https://fb.com/p/a2"  # links the live one
+    assert win["live_status"] == "ACTIVE"
+    assert win["live_active_count"] == 1
+    assert win["live_ad_count"] == 2
+    # The verdict fields are untouched — live state must not be read as one.
+    assert win["roas"] is not None
+    db.close()
+
+
+def test_winner_row_without_a_live_ad_still_renders():
+    # Nothing synced yet, or the ad was archived on Meta after it won. The
+    # award must survive; only the link goes missing.
+    db = TestSession()
+    acc = _account(db)
+    _metric(db, acc, ad_name="CRTV_Winner", on=date(2026, 3, 5),
+            spend=1_000_000, revenue=6_000_000, clicks=3000, conversions=20)
+    _metric(db, acc, ad_name="CRTV_Filler", on=date(2026, 3, 5),
+            spend=1_000_000, revenue=1_000_000, clicks=3000, conversions=5)
+    freeze_winning_months(db, account_ids=[acc.id])
+
+    win = next(a for a in _winner_rows(db, acc, "2026-03") if a["ad_name"] == "CRTV_Winner")
+    assert win["preview_url"] is None
+    assert win["live_status"] is None
+    assert win["live_ad_count"] == 0
+    db.close()
+
+
+def test_live_state_never_crosses_branches():
+    # Two branches running an identically-named creative: each row must read
+    # its own branch's ad, not the other's.
+    db = TestSession()
+    sgn = _account(db, "Saigon")
+    tpe = _account(db, "Taipei")
+    for acc in (sgn, tpe):
+        _metric(db, acc, ad_name="CRTV_Same", on=date(2026, 3, 5),
+                spend=1_000_000, revenue=6_000_000, clicks=3000, conversions=20)
+        _metric(db, acc, ad_name="CRTV_Filler", on=date(2026, 3, 5),
+                spend=1_000_000, revenue=1_000_000, clicks=3000, conversions=5)
+    freeze_winning_months(db, account_ids=[sgn.id, tpe.id])
+    _live_ad(db, sgn, "s1", "CRTV_Same", "ACTIVE", "https://fb.com/p/sgn")
+    _live_ad(db, tpe, "t1", "CRTV_Same", "PAUSED", "https://fb.com/p/tpe")
+
+    sgn_win = next(a for a in _winner_rows(db, sgn, "2026-03") if a["ad_name"] == "CRTV_Same")
+    tpe_win = next(a for a in _winner_rows(db, tpe, "2026-03") if a["ad_name"] == "CRTV_Same")
+    assert sgn_win["preview_url"] == "https://fb.com/p/sgn"
+    assert sgn_win["live_status"] == "ACTIVE"
+    assert tpe_win["preview_url"] == "https://fb.com/p/tpe"
+    assert tpe_win["live_status"] == "PAUSED"
+    db.close()

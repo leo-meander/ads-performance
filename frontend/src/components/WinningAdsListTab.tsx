@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Sparkles } from 'lucide-react'
+import { Sparkles, ExternalLink } from 'lucide-react'
 import { fmtMoney } from '@/lib/recHighlights'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
@@ -23,6 +23,13 @@ interface WinningAd {
   cta: string | null
   material_id: string | null
   file_url: string | null
+  // Live delivery state, matched by (branch, ad_name). `preview_url` opens
+  // Meta's own render of the ad; prefixed `live_` so it is never read as the
+  // WIN/LOSE verdict beside it.
+  preview_url: string | null
+  live_status: string | null
+  live_active_count: number
+  live_ad_count: number
 }
 
 interface Account { id: string; account_name: string }
@@ -142,6 +149,21 @@ export default function WinningAdsListTab({ accounts }: { accounts: Account[] })
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${VERDICT_COLORS[ad.verdict] || 'bg-gray-100 text-gray-700'}`}>
                       {ad.verdict}
                     </span>
+                    {/* Meta's render of the live ad. Hidden when it has been
+                        archived/deleted there, rather than shown dead. */}
+                    {ad.preview_url && (
+                      <a
+                        href={ad.preview_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[10px] text-blue-600 hover:underline bg-blue-50 rounded px-1.5 py-0.5"
+                        title={ad.live_ad_count > 1
+                          ? `Preview on Meta — ${ad.live_active_count} of ${ad.live_ad_count} ads with this name are still running`
+                          : (ad.live_active_count > 0 ? 'Preview on Meta — still running' : 'Preview on Meta — not running now')}
+                      >
+                        <ExternalLink className="w-3 h-3" /> Preview
+                      </a>
+                    )}
                   </div>
                   <div className="text-xs text-gray-500 mt-0.5 line-clamp-1">{ad.headline}</div>
                 </td>
