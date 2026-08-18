@@ -13,7 +13,9 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.models.account import AdAccount
 from app.models.ad_daily_metric import AdDailyMetric
-from app.models.meta_ad_state import MetaAdState
+from app.models.ad import Ad
+from app.models.ad_set import AdSet
+from app.models.campaign import Campaign
 from app.models.user import User
 from app.services.auth_service import create_access_token, hash_password
 from tests.db import TestSession
@@ -65,9 +67,24 @@ def _metric(db, acc, *, ad_id, ad_name, campaign_id="c1", adset_id="s1", on=D1,
     db.commit()
 
 
-def _state(db, acc, *, ad_id, ad_name, effective_status="ACTIVE", preview=None):
-    db.add(MetaAdState(
-        id=str(uuid.uuid4()), account_id=acc.id, ad_id=ad_id, ad_name=ad_name,
+def _live_ad(db, acc, *, ad_id, ad_name, effective_status="ACTIVE", preview=None):
+    """A row in `ads` — what the platform sync writes, and where Status /
+    Preview are read from."""
+    camp = Campaign(
+        id=str(uuid.uuid4()), account_id=acc.id, platform="meta",
+        platform_campaign_id=f"c_{ad_id}", name="Camp", objective="OUTCOME_SALES",
+        status="ACTIVE",
+    )
+    db.add(camp)
+    aset = AdSet(
+        id=str(uuid.uuid4()), campaign_id=camp.id, account_id=acc.id, platform="meta",
+        platform_adset_id=f"s_{ad_id}", name="Set", status="ACTIVE",
+    )
+    db.add(aset)
+    db.flush()
+    db.add(Ad(
+        id=str(uuid.uuid4()), ad_set_id=aset.id, campaign_id=camp.id, account_id=acc.id,
+        platform="meta", platform_ad_id=ad_id, name=ad_name,
         status=effective_status, effective_status=effective_status, preview_url=preview,
     ))
     db.commit()
@@ -160,16 +177,16 @@ class TestPivotByAdName:
 
 
 class TestAdStateColumns:
-    """Status + preview link come from meta_ad_states, a 'right now' snapshot
-    joined onto the windowed metrics."""
+    """Status + preview link come from the `ads` table — a 'right now'
+    snapshot joined onto the windowed metrics."""
 
     def test_per_ad_rows_carry_status_and_preview(self):
         db = TestSession()
         acc = _account(db)
         _metric(db, acc, ad_id="a1", ad_name="Ad One", spend=100, revenue=500)
         _metric(db, acc, ad_id="a2", ad_name="Ad Two", spend=50)
-        _state(db, acc, ad_id="a1", ad_name="Ad One", preview="https://fb.com/p/a1")
-        _state(db, acc, ad_id="a2", ad_name="Ad Two", effective_status="PAUSED")
+        _live_ad(db, acc, ad_id="a1", ad_name="Ad One", preview="https://fb.com/p/a1")
+        _live_ad(db, acc, ad_id="a2", ad_name="Ad Two", effective_status="PAUSED")
         db.close()
 
         items = {i["ad_id"]: i for i in _get(f"date_from={FROM}&date_to={TO}")["items"]}
@@ -181,8 +198,8 @@ class TestAdStateColumns:
         assert items["a2"]["preview_url"] is None
 
     def test_ad_with_no_state_row_still_listed(self):
-        # An ad deleted from the account after it spent has no state row — it
-        # must keep its metrics, not vanish or crash the join.
+        # An ad archived or deleted on Meta after it spent has no `ads` row —
+        # it must keep its metrics, not vanish or crash the join.
         db = TestSession()
         acc = _account(db)
         _metric(db, acc, ad_id="a1", ad_name="Ad One", spend=100, revenue=500)
@@ -200,9 +217,9 @@ class TestAdStateColumns:
         acc = _account(db)
         _metric(db, acc, ad_id="a1", ad_name="Ad One", campaign_id="c1", spend=100)
         _metric(db, acc, ad_id="a2", ad_name="Ad One", campaign_id="c2", spend=300)
-        _state(db, acc, ad_id="a1", ad_name="Ad One", effective_status="PAUSED",
+        _live_ad(db, acc, ad_id="a1", ad_name="Ad One", effective_status="PAUSED",
                preview="https://fb.com/p/a1")
-        _state(db, acc, ad_id="a2", ad_name="Ad One", effective_status="ACTIVE",
+        _live_ad(db, acc, ad_id="a2", ad_name="Ad One", effective_status="ACTIVE",
                preview="https://fb.com/p/a2")
         db.close()
 
@@ -220,8 +237,8 @@ class TestAdStateColumns:
         acc = _account(db)
         _metric(db, acc, ad_id="a1", ad_name="Ad One", campaign_id="c1", spend=100)
         _metric(db, acc, ad_id="a2", ad_name="Ad One", campaign_id="c2", spend=300)
-        _state(db, acc, ad_id="a1", ad_name="Ad One", effective_status="PAUSED")
-        _state(db, acc, ad_id="a2", ad_name="Ad One", effective_status="PAUSED",
+        _live_ad(db, acc, ad_id="a1", ad_name="Ad One", effective_status="PAUSED")
+        _live_ad(db, acc, ad_id="a2", ad_name="Ad One", effective_status="PAUSED",
                preview="https://fb.com/p/a2")
         db.close()
 
@@ -237,8 +254,8 @@ class TestAdStateColumns:
         tpe = _account(db, "Taipei", "TWD")
         _metric(db, sgn, ad_id="a1", ad_name="Ad One", spend=100)
         _metric(db, tpe, ad_id="b1", ad_name="Ad One", spend=10)
-        _state(db, sgn, ad_id="a1", ad_name="Ad One", effective_status="ACTIVE")
-        _state(db, tpe, ad_id="b1", ad_name="Ad One", effective_status="PAUSED")
+        _live_ad(db, sgn, ad_id="a1", ad_name="Ad One", effective_status="ACTIVE")
+        _live_ad(db, tpe, ad_id="b1", ad_name="Ad One", effective_status="PAUSED")
         sgn_id = sgn.id
         db.close()
 

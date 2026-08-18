@@ -23,8 +23,10 @@ from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
 from app.models.ad_material import AdMaterial
 from app.models.approval import ComboApproval
+from app.models.ad import Ad
+from app.models.ad_set import AdSet
+from app.models.campaign import Campaign
 from app.models.creative_visual_tag import CreativeVisualTag
-from app.models.meta_ad_state import MetaAdState
 from app.models.user import User
 from app.services.auth_service import create_access_token, hash_password
 from tests.db import TestSession
@@ -101,6 +103,29 @@ def _seed():
     ))
     db.commit()
     db.close()
+
+
+def _live_ad(db, branch_id, ad_id, ad_name, effective_status, preview):
+    """A row in `ads` — what sync_meta_account writes, and where the drawer
+    reads Status / Preview from."""
+    camp = Campaign(
+        id=str(uuid.uuid4()), account_id=branch_id, platform="meta",
+        platform_campaign_id=f"c_{ad_id}", name="Camp", objective="OUTCOME_SALES",
+        status="ACTIVE",
+    )
+    db.add(camp)
+    aset = AdSet(
+        id=str(uuid.uuid4()), campaign_id=camp.id, account_id=branch_id, platform="meta",
+        platform_adset_id=f"s_{ad_id}", name="Set", status="ACTIVE",
+    )
+    db.add(aset)
+    db.flush()
+    db.add(Ad(
+        id=str(uuid.uuid4()), ad_set_id=aset.id, campaign_id=camp.id,
+        account_id=branch_id, platform="meta", platform_ad_id=ad_id, name=ad_name,
+        status=effective_status, effective_status=effective_status,
+        preview_url=preview,
+    ))
 
 
 def test_combos_list_carries_material_format():
@@ -200,7 +225,7 @@ def test_detail_surfaces_latest_working_file_from_approval():
     assert wf == {"url": "https://drive.google.com/new", "label": "v2"}
 
 
-def test_detail_meta_ad_unknown_without_state_rows():
+def test_detail_meta_ad_unknown_without_live_ad():
     # Nothing synced (or the ad was deleted / renamed on Meta) — the drawer
     # must still open, just without a status or link.
     _seed()
@@ -219,18 +244,9 @@ def test_detail_matches_live_ad_by_branch_and_name():
     combo = db.query(AdCombo).filter(AdCombo.combo_id == "CMB-WIN").first()
     branch_id = combo.branch_id
     # Two live ads share the combo's name; a third is a different creative.
-    db.add(MetaAdState(
-        id=str(uuid.uuid4()), account_id=branch_id, ad_id="a1", ad_name="Winner Ad",
-        effective_status="PAUSED", preview_url="https://fb.com/p/a1",
-    ))
-    db.add(MetaAdState(
-        id=str(uuid.uuid4()), account_id=branch_id, ad_id="a2", ad_name="Winner Ad",
-        effective_status="ACTIVE", preview_url="https://fb.com/p/a2",
-    ))
-    db.add(MetaAdState(
-        id=str(uuid.uuid4()), account_id=branch_id, ad_id="b1", ad_name="Loser Ad",
-        effective_status="ACTIVE", preview_url="https://fb.com/p/b1",
-    ))
+    _live_ad(db, branch_id, "a1", "Winner Ad", "PAUSED", "https://fb.com/p/a1")
+    _live_ad(db, branch_id, "a2", "Winner Ad", "ACTIVE", "https://fb.com/p/a2")
+    _live_ad(db, branch_id, "b1", "Loser Ad", "ACTIVE", "https://fb.com/p/b1")
     db.commit()
     db.close()
 

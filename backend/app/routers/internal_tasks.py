@@ -246,23 +246,6 @@ def _do_sync_daily_ad_metrics(db, days_back: int = 14):
             len(totals["errors"]), "; ".join(totals["errors"])[:2000],
         )
 
-    # Piggyback the per-ad status + preview-link refresh on the same nightly
-    # run: it reads the same accounts with the same token, and a status is only
-    # useful next to the spend it explains. It is a snapshot of NOW, so
-    # days_back does not apply.
-    from app.services.meta_ad_state_sync import sync_all_meta_ad_states
-
-    try:
-        states = sync_all_meta_ad_states(db)
-    except Exception:
-        logger.exception("[ad-state-cron] refresh failed")
-        states = {"accounts": 0, "rows_written": 0, "errors": ["crashed"]}
-    if states.get("errors"):
-        logger.error(
-            "[ad-state-cron] %d account(s) failed: %s",
-            len(states["errors"]), "; ".join(states["errors"])[:2000],
-        )
-    totals["ad_states"] = states
     return totals
 
 
@@ -506,9 +489,6 @@ def trigger_sync_daily_ad_metrics(
     cheap; the window is delete-then-reinserted per account, so overlapping
     runs never double-count and Meta's late attribution still gets picked up.
     Backfilling older history stays a manual, explicitly-scoped job.
-
-    Also refreshes meta_ad_states (each ad's current status + preview link) —
-    a snapshot of NOW, so `days_back` does not apply to it.
 
     Runs async in a thread (one paginated Meta call per account)."""
     _require_secret(x_internal_secret)
