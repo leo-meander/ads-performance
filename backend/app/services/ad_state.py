@@ -74,3 +74,41 @@ def state_for_ad_name(db: Session, account_id: str | None, ad_name: str | None) 
         .all()
     )
     return summarize_states(rows)
+
+
+def states_by_ad_name(
+    db: Session, account_ids: list[str] | None
+) -> dict[tuple[str, str], dict]:
+    """One fold per (account_id, ad_name) across a set of branches.
+
+    For list screens: a per-row call would be one query per row, and the
+    winning-months page renders every award of every month at once.
+    """
+    if not account_ids:
+        return {}
+    grouped: dict[tuple[str, str], list] = {}
+    rows = (
+        db.query(Ad)
+        .filter(Ad.account_id.in_(account_ids), Ad.platform == "meta")
+        .all()
+    )
+    for a in rows:
+        if not a.name:
+            continue
+        grouped.setdefault((a.account_id, a.name), []).append(a)
+    return {k: summarize_states(v) for k, v in grouped.items()}
+
+
+def live_ad_fields(
+    states: dict[tuple[str, str], dict], account_id: str | None, ad_name: str | None
+) -> dict:
+    """The subset a list row shows, prefixed `live_` so it cannot be confused
+    with a WIN/LOSE verdict — this is delivery state, not performance."""
+    st = states.get((account_id, ad_name)) if account_id and ad_name else None
+    st = st or NO_AD_STATE
+    return {
+        "preview_url": st["preview_url"],
+        "live_status": st["effective_status"],
+        "live_active_count": st["active_count"],
+        "live_ad_count": st["state_count"],
+    }

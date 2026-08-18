@@ -31,7 +31,11 @@ from app.models.creative_visual_tag import CreativeVisualTag
 from app.models.figma import FigmaJob
 from app.models.keypoint import BranchKeypoint
 from app.models.user import User
-from app.services.ad_state import state_for_ad_name
+from app.services.ad_state import (
+    live_ad_fields,
+    state_for_ad_name,
+    states_by_ad_name,
+)
 
 router = APIRouter()
 
@@ -391,8 +395,14 @@ def tag_search(
             .all()
         )
 
+        # Live delivery state + Meta preview link, one bulk query for the
+        # branches actually on this page.
+        ad_states = states_by_ad_name(db, list({c.branch_id for c, *_ in rows}))
         items = [
-            _serialize_combo_row(combo, copy, material, branch)
+            _serialize_combo_row(
+                combo, copy, material, branch,
+                extra=live_ad_fields(ad_states, combo.branch_id, combo.ad_name),
+            )
             for combo, copy, material, branch in rows
         ]
         return _api_response(data={

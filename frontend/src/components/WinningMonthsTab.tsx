@@ -1,11 +1,22 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Trophy, RefreshCw, Film, Image as ImageIcon, LayoutGrid, Lock, ChevronRight } from 'lucide-react'
+import { Trophy, RefreshCw, Film, Image as ImageIcon, LayoutGrid, Lock, ChevronRight, ExternalLink } from 'lucide-react'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
-interface WinAd {
+// Live delivery state of the ad behind a row, matched by (branch, ad_name).
+// `preview_url` opens Meta's own render of the ad. Prefixed `live_` so it is
+// never confused with the WIN/LOSE verdict beside it — this is whether the ad
+// is still running, not how it performed.
+interface LiveAd {
+  preview_url: string | null
+  live_status: string | null
+  live_active_count: number
+  live_ad_count: number
+}
+
+interface WinAd extends LiveAd {
   id: string
   ad_name: string
   account_id: string
@@ -27,7 +38,7 @@ interface WinAd {
 // not the same question as "did it win this month": an ad is judged the month
 // its cumulative evidence clears the bar, so `decided_month` is often later
 // than the month it launched.
-interface NewAd {
+interface NewAd extends LiveAd {
   ad_name: string
   account_id: string
   branch_name: string
@@ -127,6 +138,28 @@ const MONTH_LABEL = (m: string) => {
   const [y, mm] = m.split('-')
   const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
   return `${names[Number(mm) - 1] || mm} ${y}`
+}
+
+// "Look at the ad" — opens Meta's render. Absent when the ad has been
+// archived/deleted on Meta or the branch has not synced since the columns
+// landed, in which case nothing is drawn rather than a dead link.
+function AdPreviewLink({ ad }: { ad: LiveAd }) {
+  if (!ad.preview_url) return null
+  const live = ad.live_active_count > 0
+  return (
+    <a
+      href={ad.preview_url}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      className="inline-flex items-center gap-1 text-[10px] text-blue-600 hover:underline rounded px-1.5 py-0.5 bg-blue-50"
+      title={ad.live_ad_count > 1
+        ? `Preview on Meta — ${ad.live_active_count} of ${ad.live_ad_count} ads with this name are still running`
+        : (live ? 'Preview on Meta — still running' : 'Preview on Meta — not running now')}
+    >
+      <ExternalLink className="w-3 h-3" /> Preview
+    </a>
+  )
 }
 
 export default function WinningMonthsTab({
@@ -395,6 +428,7 @@ export default function WinningMonthsTab({
                             <span className="inline-flex items-center gap-1 text-[10px] text-gray-500 bg-gray-100 rounded px-1.5 py-0.5">
                               <Icon className="w-3 h-3" /> {fmt.label}
                             </span>
+                            <AdPreviewLink ad={a} />
                             {/* TA/Country are secondary here — the ROAS column already
                                 reflects the total summed across all of them; these are
                                 just the dominant values for context, not a breakdown. */}
@@ -488,9 +522,12 @@ export default function WinningMonthsTab({
                               <tr key={`${a.account_id}-${a.ad_name}`} className="border-b border-gray-50 hover:bg-gray-50/60">
                                 <td className="py-2 px-2">
                                   <p className="text-sm text-gray-900 max-w-[280px] truncate" title={a.ad_name}>{a.ad_name}</p>
-                                  <span className="inline-flex items-center gap-1 text-[10px] text-gray-500 bg-gray-100 rounded px-1.5 py-0.5 mt-0.5">
-                                    <Icon className="w-3 h-3" /> {fmt.label}
-                                  </span>
+                                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                    <span className="inline-flex items-center gap-1 text-[10px] text-gray-500 bg-gray-100 rounded px-1.5 py-0.5">
+                                      <Icon className="w-3 h-3" /> {fmt.label}
+                                    </span>
+                                    <AdPreviewLink ad={a} />
+                                  </div>
                                 </td>
                                 <td className="py-2 px-2 text-xs text-gray-600">{a.branch_name}</td>
                                 <td className="py-2 px-2">
