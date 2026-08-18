@@ -311,7 +311,8 @@ export default function AdPerformancePage() {
           <p className="text-xs text-gray-500 mt-1">
             Track each ad by day — pulled from Meta (only ads with spend).
             {pivot && ' Pivoted: ads sharing a name are merged per branch.'}
-            {' '}Status and Preview show the ad as it is now, not inside the date range.
+            {' '}Status and Preview show the ad as it is now (refreshed by the twice-daily
+            platform sync), not inside the date range.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -436,7 +437,7 @@ export default function AdPerformancePage() {
                           <ExternalLink className="w-3.5 h-3.5" />
                         </a>
                       ) : (
-                        <span className="text-xs text-gray-300" title="No preview link — re-run Sync from Meta">—</span>
+                        <span className="text-xs text-gray-300" title="No preview link — the ad is archived, deleted, or not synced yet">—</span>
                       )}
                     </td>
                     <td className="py-2 px-2"><AdStatusPill state={r} /></td>

@@ -497,6 +497,8 @@ def sync_meta_account(
                 rename_pairs.add((old_name, raw_name))
             existing.name = raw["name"]
             existing.status = raw["status"]
+            existing.effective_status = raw.get("effective_status")
+            existing.preview_url = raw.get("preview_url")
             existing.creative_id = raw["creative_id"]
             existing.raw_data = raw["raw_data"]
             existing.updated_at = datetime.now(timezone.utc)
@@ -511,6 +513,8 @@ def sync_meta_account(
                 platform_ad_id=raw["platform_ad_id"],
                 name=raw["name"],
                 status=raw["status"],
+                effective_status=raw.get("effective_status"),
+                preview_url=raw.get("preview_url"),
                 creative_id=raw["creative_id"],
                 raw_data=raw["raw_data"],
             )
