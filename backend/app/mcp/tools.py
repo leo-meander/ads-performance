@@ -5,6 +5,18 @@ from typing import Any
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
+from app.models.ad_angle import AdAngle
+from app.models.ad_combo import AdCombo
+from app.models.keypoint import BranchKeypoint
+from app.models.winning_ad_month import WinningAdMonth
+from app.services.winning_months_service import (
+    SCOPE_KPI,
+    compute_lifetime_benchmarks,
+    is_excluded_branch,
+    is_kol,
+    normalize_scope,
+)
+
 
 def _default_dates() -> tuple[str, str]:
     today = date.today()
@@ -222,6 +234,70 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "get_winning_ads",
+        "description": (
+            "List individual ADS (creatives) with their performance and WIN/LOSE/TEST "
+            "verdict — the ad-level detail behind get_ad_count, which only returns counts. "
+            "One row per (branch, ad_name) over the date window: spend, impressions, clicks, "
+            "conversions (bookings), revenue, ROAS, CTR, cost-per-conversion, plus the "
+            "combo's angle / keypoints / target audience / country when the ad is mapped in "
+            "the Creative Library. Meta only (ad_daily_metrics is the sole ad-grain table). "
+            "The verdict is the FROZEN one from winning_ad_months — awarded once, ever, the "
+            "month the ad first crossed the test threshold, judged against the account's "
+            "lifetime blended ROAS; ads never decided come back as TEST. Always check the "
+            "returned `coverage` block before trusting totals: ad-level ingest is a rolling "
+            "window, so a requested range can be only partly populated."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date_from": {
+                    "type": "string",
+                    "description": "Start date YYYY-MM-DD (default: 30 days ago)",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "End date YYYY-MM-DD (default: today)",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name substring, e.g. 'Saigon', 'Oani', 'Osaka'",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["kpi", "all"],
+                    "description": (
+                        "Verdict universe (default 'kpi'). 'kpi' = the design-team KPI: "
+                        "drops ads with KOL in the name and the Bread branch. 'all' = every "
+                        "ad, no exclusions. The two are judged against different benchmarks "
+                        "and never mix."
+                    ),
+                },
+                "verdict": {
+                    "type": "string",
+                    "enum": ["WIN", "LOSE", "TEST"],
+                    "description": "Only return ads with this verdict",
+                },
+                "min_spend": {
+                    "type": "number",
+                    "description": (
+                        "Only return ads whose TOTAL spend over the window exceeds this "
+                        "(default 0 = any spend at all). Native account currency."
+                    ),
+                },
+                "sort_by": {
+                    "type": "string",
+                    "enum": ["roas", "spend", "conversions", "revenue"],
+                    "description": "Sort key, always descending (default 'roas')",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max ads to return (default 50, max 200)",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -237,6 +313,7 @@ def call_tool(name: str, arguments: dict, db: Session) -> Any:
         "get_budget_status": _get_budget_status,
         "get_branches": _get_branches,
         "get_ad_count": _get_ad_count,
+        "get_winning_ads": _get_winning_ads,
     }
     handler = handlers.get(name)
     if not handler:
@@ -718,4 +795,244 @@ def _get_branches(args: dict, db: Session) -> dict:
             }
             for r in rows
         ]
+    }
+
+
+def _get_winning_ads(args: dict, db: Session) -> dict:
+    """List ads (creatives) with their metrics and frozen WIN/LOSE/TEST verdict.
+
+    This is get_ad_count's missing half: same source table, same grain, but it
+    returns the ads themselves instead of counting them. Grain is (account,
+    ad_name) — NOT ad_id — because a verdict is awarded per ad_name (an ad
+    duplicated across adsets is one creative, judged once); `ad_count` says how
+    many platform ad_ids collapsed into the row.
+
+    Three lookups hang off the aggregate, all keyed in Python so the SQL stays
+    portable (SQLite in tests, Postgres in prod):
+      * winning_ad_months -> the FROZEN verdict. Written once, ever, the month
+        the ad first crossed the test threshold; absent = never decided = TEST.
+      * ad_combos (+ ad_angles, branch_keypoints) -> angle / keypoints / TA /
+        country, best-effort: an ad with no combo row simply has nulls.
+      * compute_lifetime_benchmarks -> the bar itself, so a still-TEST ad can be
+        read against the same number a frozen verdict was judged on.
+
+    `coverage` is not decoration: ad_daily_metrics is refreshed by a rolling
+    14-day cron (sync-daily-ad-metrics), and older days exist only where a
+    manual backfill put them. A window can therefore be silently half-empty,
+    which reads as "these ads underspent" rather than "we never ingested those
+    days" — so every response carries the days actually present per branch.
+    """
+    date_from, date_to = _default_dates()
+    date_from = args.get("date_from", date_from)
+    date_to = args.get("date_to", date_to)
+    branch = args.get("branch")
+    scope = normalize_scope(args.get("scope"))
+    verdict_filter = (args.get("verdict") or "").strip().upper() or None
+    min_spend = float(args.get("min_spend", 0) or 0)
+    sort_by = args.get("sort_by") or "roas"
+    limit = min(int(args.get("limit", 50) or 50), 200)
+
+    filters = ["m.date BETWEEN :date_from AND :date_to", "m.ad_name IS NOT NULL"]
+    params: dict = {"date_from": date_from, "date_to": date_to, "min_spend": min_spend}
+    if branch:
+        # LOWER(...) LIKE LOWER(...) instead of ILIKE so the query runs on both
+        # Postgres (prod) and SQLite (tests).
+        filters.append("LOWER(a.account_name) LIKE LOWER(:branch)")
+        params["branch"] = f"%{branch}%"
+    where = " AND ".join(filters)
+
+    sql = text(f"""
+        SELECT
+            m.account_id                    AS account_id,
+            a.account_name                  AS branch,
+            m.ad_name                       AS ad_name,
+            COUNT(DISTINCT m.ad_id)         AS ad_count,
+            MIN(m.ad_id)                    AS ad_id,
+            COUNT(DISTINCT m.date)          AS days_with_spend,
+            CAST(SUM(m.spend) AS FLOAT)     AS spend,
+            SUM(m.impressions)              AS impressions,
+            SUM(m.clicks)                   AS clicks,
+            SUM(m.conversions)              AS conversions,
+            CAST(SUM(m.revenue) AS FLOAT)   AS revenue
+        FROM ad_daily_metrics m
+        JOIN ad_accounts a ON a.id = m.account_id
+        WHERE {where}
+        GROUP BY m.account_id, a.account_name, m.ad_name
+        HAVING SUM(m.spend) > :min_spend
+    """)
+    rows = [dict(r) for r in db.execute(sql, params).mappings().all()]
+
+    # Scope exclusions mirror winning_months_service exactly: judging a KOL ad
+    # against the KPI bar (which its own spend was kept out of) would measure it
+    # against a benchmark it never belonged to.
+    rows = [
+        r for r in rows
+        if not (
+            scope == SCOPE_KPI
+            and (is_kol(r["ad_name"]) or is_excluded_branch(r["branch"], scope))
+        )
+    ]
+
+    account_ids = sorted({str(r["account_id"]) for r in rows})
+
+    # Frozen verdicts. An ad_name is decided once per (account, scope); if two
+    # rows somehow exist, the earliest month is the real decision.
+    frozen: dict[tuple, Any] = {}
+    if account_ids:
+        for wam in (
+            db.query(WinningAdMonth)
+            .filter(
+                WinningAdMonth.scope == scope,
+                WinningAdMonth.account_id.in_(account_ids),
+            )
+            .order_by(WinningAdMonth.month.asc())
+            .all()
+        ):
+            frozen.setdefault((str(wam.account_id), wam.ad_name), wam)
+
+    # Creative Library mapping. Filtered by branch only, then matched on ad_name
+    # in Python — an IN() over every ad_name would blow SQLite's parameter cap.
+    combos: dict[tuple, Any] = {}
+    angle_types: dict[str, Any] = {}
+    keypoint_ids: set[str] = set()
+    if account_ids:
+        for combo, angle in (
+            db.query(AdCombo, AdAngle)
+            .outerjoin(AdAngle, AdAngle.angle_id == AdCombo.angle_id)
+            .filter(AdCombo.branch_id.in_(account_ids), AdCombo.ad_name.isnot(None))
+            .all()
+        ):
+            combos.setdefault((str(combo.branch_id), combo.ad_name), combo)
+            if angle is not None:
+                angle_types[combo.angle_id] = angle.angle_type
+            for kp_id in (combo.keypoint_ids or []):
+                keypoint_ids.add(str(kp_id))
+
+    keypoint_titles: dict[str, str] = {}
+    if keypoint_ids:
+        for kp in (
+            db.query(BranchKeypoint)
+            .filter(BranchKeypoint.id.in_(sorted(keypoint_ids)))
+            .all()
+        ):
+            keypoint_titles[str(kp.id)] = kp.title
+
+    benchmarks = compute_lifetime_benchmarks(db, account_ids, scope)
+
+    ads = []
+    for r in rows:
+        acc_id = str(r["account_id"])
+        key = (acc_id, r["ad_name"])
+        spend = float(r["spend"] or 0)
+        impressions = int(r["impressions"] or 0)
+        clicks = int(r["clicks"] or 0)
+        conversions = int(r["conversions"] or 0)
+        revenue = float(r["revenue"] or 0)
+        roas = round(revenue / spend, 2) if spend > 0 else None
+
+        wam = frozen.get(key)
+        combo = combos.get(key)
+        benchmark = benchmarks.get(acc_id)
+
+        ad = {
+            "branch": r["branch"],
+            "ad_name": r["ad_name"],
+            "ad_id": r["ad_id"],
+            "ad_count": int(r["ad_count"] or 0),
+            "days_with_spend": int(r["days_with_spend"] or 0),
+            "spend": round(spend, 2),
+            "impressions": impressions,
+            "clicks": clicks,
+            "conversions": conversions,
+            "revenue": round(revenue, 2),
+            "roas": roas,
+            "ctr_pct": round(clicks / impressions * 100, 2) if impressions > 0 else None,
+            "cost_per_conversion": round(spend / conversions, 2) if conversions > 0 else None,
+            # Frozen verdict — never recomputed from the numbers above.
+            "verdict": wam.verdict if wam else "TEST",
+            "verdict_month": wam.month.strftime("%Y-%m") if wam else None,
+            "verdict_source": wam.verdict_source if wam else None,
+            "verdict_roas": float(wam.roas) if wam and wam.roas is not None else None,
+            "verdict_benchmark_roas": (
+                float(wam.benchmark_roas) if wam and wam.benchmark_roas is not None else None
+            ),
+            # The bar as of RIGHT NOW, for reading a still-TEST ad against.
+            "benchmark_roas_now": round(benchmark, 2) if benchmark else None,
+            "above_benchmark_now": (
+                (roas >= benchmark) if roas is not None and benchmark else None
+            ),
+            # Creative Library — null when the ad has no combo row.
+            "combo_id": combo.combo_id if combo else None,
+            "target_audience": combo.target_audience if combo else None,
+            "country": combo.country if combo else None,
+            "angle_id": combo.angle_id if combo else None,
+            "angle_type": angle_types.get(combo.angle_id) if combo else None,
+            "keypoints": (
+                [
+                    keypoint_titles[str(k)]
+                    for k in (combo.keypoint_ids or [])
+                    if str(k) in keypoint_titles
+                ]
+                if combo else []
+            ),
+        }
+        if verdict_filter and ad["verdict"] != verdict_filter:
+            continue
+        ads.append(ad)
+
+    sort_key = {
+        "roas": lambda a: a["roas"] or 0,
+        "spend": lambda a: a["spend"] or 0,
+        "conversions": lambda a: a["conversions"] or 0,
+        "revenue": lambda a: a["revenue"] or 0,
+    }.get(sort_by, lambda a: a["roas"] or 0)
+    ads.sort(key=sort_key, reverse=True)
+
+    # What the ad-level table actually holds for this window, per branch — the
+    # tell for a half-ingested range (see the docstring).
+    cov_sql = text(f"""
+        SELECT
+            a.account_name          AS branch,
+            COUNT(DISTINCT m.date)  AS days_with_data,
+            MIN(m.date)             AS first_day,
+            MAX(m.date)             AS last_day
+        FROM ad_daily_metrics m
+        JOIN ad_accounts a ON a.id = m.account_id
+        WHERE {where}
+        GROUP BY a.account_name
+        ORDER BY a.account_name
+    """)
+    cov_params = {k: v for k, v in params.items() if k != "min_spend"}
+    days_requested = (date.fromisoformat(date_to) - date.fromisoformat(date_from)).days + 1
+    coverage = []
+    for c in db.execute(cov_sql, cov_params).mappings().all():
+        days_with_data = int(c["days_with_data"] or 0)
+        coverage.append({
+            "branch": c["branch"],
+            "days_with_data": days_with_data,
+            "days_requested": days_requested,
+            "coverage_pct": (
+                round(days_with_data / days_requested * 100, 1) if days_requested else None
+            ),
+            "first_day": str(c["first_day"]),
+            "last_day": str(c["last_day"]),
+        })
+
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "scope": scope,
+        "filters": {"branch": branch, "verdict": verdict_filter, "min_spend": min_spend},
+        "note": (
+            "Meta ad-level only (ad_daily_metrics); Google/TikTok are not tracked at this "
+            "grain. One row per (branch, ad_name). Verdict is the frozen winning_ad_months "
+            "decision — TEST means never decided, not 'currently below the bar'. Spend and "
+            "revenue are in each account's native currency, so do NOT sum across branches. "
+            "Check `coverage`: any branch below ~100% means the window is only partly "
+            "ingested and its totals understate reality."
+        ),
+        "coverage": coverage,
+        "total_matching": len(ads),
+        "returned": min(len(ads), limit),
+        "ads": ads[:limit],
     }
