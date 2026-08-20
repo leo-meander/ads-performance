@@ -1,11 +1,12 @@
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.branches import resolve_branch_for_account_name
 from app.database import SessionLocal, get_db
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
@@ -222,6 +223,76 @@ def sync_status():
     """Return the state of the most recent /sync/trigger call."""
     with _sync_lock:
         return _api_response(data=dict(_sync_state))
+
+
+@router.get("/sync/health")
+def sync_health(db: Session = Depends(get_db)):
+    """Per-account sync freshness — the fastest answer to "why is a branch
+    missing from the dashboard?".
+
+    Returns, for every active ad account, the newest metrics_cache date it has
+    and how many days behind yesterday that is. An account the sync loop stopped
+    reaching shows up as stale here long before anyone notices a hole in a pie
+    chart, and unlike the cron's HTTP 202 it cannot report success while doing
+    nothing.
+    """
+    from sqlalchemy import func
+
+    from app.models.account import AdAccount
+    from app.models.metrics import MetricsCache
+
+    try:
+        # Newest metric date + write time per account, campaign-level rows only
+        # (metrics_cache mixes campaign/adset/ad levels; the level doesn't matter
+        # for freshness, so take the max across all of them).
+        rows = (
+            db.query(
+                Campaign.account_id.label("account_id"),
+                func.max(MetricsCache.date).label("last_date"),
+                func.max(MetricsCache.updated_at).label("last_written"),
+            )
+            .select_from(MetricsCache)
+            .join(Campaign, Campaign.id == MetricsCache.campaign_id)
+            .group_by(Campaign.account_id)
+            .all()
+        )
+        by_account = {str(r.account_id): r for r in rows}
+
+        yesterday = date.today() - timedelta(days=1)
+        accounts = (
+            db.query(AdAccount)
+            .filter(AdAccount.is_active.is_(True))
+            .order_by(AdAccount.platform, AdAccount.account_name)
+            .all()
+        )
+
+        items = []
+        for acc in accounts:
+            row = by_account.get(str(acc.id))
+            last_date = row.last_date if row else None
+            if isinstance(last_date, str):
+                last_date = date.fromisoformat(last_date)
+            items.append({
+                "account_name": acc.account_name,
+                "platform": acc.platform,
+                "branch": resolve_branch_for_account_name(acc.account_name),
+                "has_token": bool(acc.access_token_enc),
+                "last_metric_date": last_date.isoformat() if last_date else None,
+                "last_written_at": row.last_written.isoformat() if row and row.last_written else None,
+                "days_behind": (yesterday - last_date).days if last_date else None,
+                "stale": last_date is None or last_date < yesterday,
+            })
+
+        stale = [i for i in items if i["stale"]]
+        return _api_response(data={
+            "as_of": yesterday.isoformat(),
+            "accounts_total": len(items),
+            "accounts_stale": len(stale),
+            "stale_accounts": [i["account_name"] for i in stale],
+            "accounts": items,
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
 
 
 @router.get("/sync/tiktok/diag")

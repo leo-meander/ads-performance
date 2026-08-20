@@ -67,7 +67,14 @@ def _run_in_thread(target, label: str, **kwargs):
 
 def _do_sync_all_platforms(db):
     from app.services.sync_engine import sync_all_platforms
-    sync_all_platforms(db)
+    results = sync_all_platforms(db)
+    # The cron only ever sees HTTP 202 — a per-account failure is invisible
+    # unless we log the roll call here.
+    ok = [r for r in results if not r.get("errors")]
+    logger.info(
+        "[sync-all-platforms] %d/%d accounts synced cleanly", len(ok), len(results),
+    )
+    return results
 
 
 # Meta Marketing API insights paginate well up to ~90-day windows but get slow
@@ -108,7 +115,14 @@ def _do_sync_backfill(
         start = end - timedelta(days=months_back * 30)
 
     logger.info("[backfill] step 1: refreshing entities via sync_all_platforms")
-    sync_all_platforms(db)
+    try:
+        sync_all_platforms(db)
+    except Exception:
+        # Step 1 is a convenience refresh, not a precondition for every
+        # account. Letting it kill the thread meant a single bad account also
+        # cost us the historical re-pull that would have repaired the gap.
+        db.rollback()
+        logger.exception("[backfill] step 1 failed; continuing to the chunked pull")
 
     accounts = db.query(AdAccount).filter(AdAccount.is_active.is_(True)).all()
     logger.info(
@@ -137,6 +151,10 @@ def _do_sync_backfill(
                     res["metrics_synced"], res["ad_country_rows"], len(res["errors"]),
                 )
             except Exception:
+                # Roll back before the next account: a failed transaction poisons
+                # the session, so without this one bad chunk fails every chunk
+                # that follows it.
+                db.rollback()
                 logger.exception(
                     "[backfill] chunk failed account=%s window=%s..%s",
                     account.account_name, chunk_start, chunk_end,
