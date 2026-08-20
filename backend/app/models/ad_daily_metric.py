@@ -1,7 +1,9 @@
 from sqlalchemy import (
     Column, Date, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint,
 )
+from sqlalchemy.orm import validates
 
+from app.core.name_fit import fit_name
 from app.models.base import Base, TimestampMixin, UUIDType
 
 
@@ -52,3 +54,10 @@ class AdDailyMetric(TimestampMixin, Base):
     video_3s = Column(Integer, nullable=True)  # actions:video_view — 3-second plays (hook_rate numerator)
     thruplay = Column(Integer, nullable=True)
     video_p100 = Column(Integer, nullable=True)
+
+    # Platform-supplied names can exceed the column width (TikTok Smart+ builds
+    # ad_name out of the whole caption). Postgres raises instead of truncating,
+    # and that error aborts the entire sync transaction — see core/name_fit.py.
+    @validates("campaign_name", "adset_name", "ad_name")
+    def _fit_name_columns(self, key, value):
+        return fit_name(value)
