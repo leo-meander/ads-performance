@@ -9,6 +9,9 @@ here as well as Postgres in prod. These tests lock in:
   * scope: 'kpi' drops KOL ads + Bread, 'all' keeps everything,
   * combo enrichment (angle / keypoints / TA / country) when the ad is mapped,
   * the coverage block, which is what exposes a half-ingested date window,
+  * the video funnel (engagement / hook / thruplay / hold / completion) pooled
+    from summed counts, and null — never 0 — for an ad with no video,
+  * click-to-book and the Ads Manager deep link,
   * branch / verdict / min_spend filters and sorting.
 """
 from __future__ import annotations
@@ -67,21 +70,32 @@ def seeded(db):
     db.add_all([sgn, osk, bread])
     db.flush()
 
-    def metric(acc, ad_id, ad_name, day, spend, revenue=0, clicks=10, conversions=0):
+    def metric(acc, ad_id, ad_name, day, spend, revenue=0, clicks=10, conversions=0,
+               engagement=None, video_plays=None, video_3s=None, thruplay=None,
+               video_p100=None):
         db.add(AdDailyMetric(
             account_id=acc.id, ad_id=ad_id, ad_name=ad_name, date=day,
             spend=spend, revenue=revenue, impressions=1000, clicks=clicks,
-            conversions=conversions,
+            conversions=conversions, engagement=engagement, video_plays=video_plays,
+            video_3s=video_3s, thruplay=thruplay, video_p100=video_p100,
         ))
 
     # Saigon — "Hero Ad" is one creative running on two ad_ids across two days.
-    metric(sgn, "ad1", "Hero Ad", date(2026, 5, 1), 100, revenue=600, conversions=2)
-    metric(sgn, "ad2", "Hero Ad", date(2026, 5, 2), 100, revenue=600, conversions=2)
-    metric(sgn, "ad3", "Quiet Ad", date(2026, 5, 1), 50, revenue=50, conversions=1)
+    # Its two days have deliberately lopsided video funnels so a pooled rate
+    # (sum, then divide) cannot be mistaken for an average of the daily rates:
+    # thruplay is 50% on day 1 and 10% on day 2, but 42% pooled.
+    metric(sgn, "ad1", "Hero Ad", date(2026, 5, 1), 100, revenue=600, conversions=2,
+           engagement=200, video_plays=800, video_3s=600, thruplay=400, video_p100=200)
+    metric(sgn, "ad2", "Hero Ad", date(2026, 5, 2), 100, revenue=600, conversions=2,
+           engagement=100, video_plays=200, video_3s=100, thruplay=20, video_p100=10)
+    # "Quiet Ad" is an image ad — engagement, but no video funnel at all.
+    metric(sgn, "ad3", "Quiet Ad", date(2026, 5, 1), 50, revenue=50, conversions=1,
+           engagement=50)
     metric(sgn, "ad4", "KOL Collab May", date(2026, 5, 1), 80, revenue=800, conversions=3)
     metric(sgn, "ad1", "Hero Ad", date(2026, 4, 10), 999, revenue=9999)  # outside May
     # Osaka
-    metric(osk, "ad5", "Osaka Ad", date(2026, 5, 3), 200, revenue=100, conversions=1)
+    metric(osk, "ad5", "Osaka Ad", date(2026, 5, 3), 200, revenue=100, conversions=1,
+           engagement=80, video_plays=500, video_3s=100, thruplay=50, video_p100=25)
     # Bread
     metric(bread, "ad6", "Bread Ad", date(2026, 5, 3), 40, revenue=400, conversions=4)
 
@@ -142,6 +156,58 @@ def test_lists_ads_at_ad_name_grain(db, seeded):
     assert hero["conversions"] == 4
     assert hero["cost_per_conversion"] == 50.0
     assert hero["ctr_pct"] == 1.0         # 20 clicks / 2000 impressions
+
+
+def test_video_funnel_rates_are_pooled_not_averaged(db, seeded):
+    """Hook / thruplay / completion come from SUMMED counts, per Ads Manager.
+
+    hook = 3s plays / impressions (700 / 2000); thruplay and completion are
+    shares of PLAYS, not impressions (420 / 1000, 210 / 1000) — and 42% is the
+    pooled figure, not the 30% you would get averaging the two daily rates.
+    """
+    hero = _by_name(_get_winning_ads({**MAY, "branch": "Saigon"}, db))["Hero Ad"]
+    assert hero["video_plays"] == 1000
+    assert hero["video_3s"] == 700
+    assert hero["thruplay"] == 420
+    assert hero["video_p100"] == 210
+    assert hero["engagement"] == 300
+    assert hero["engagement_rate_pct"] == 15.0        # 300 / 2000
+    assert hero["hook_rate_pct"] == 35.0              # 700 / 2000 impressions
+    assert hero["thruplay_rate_pct"] == 42.0          # 420 / 1000 plays
+    assert hero["video_complete_rate_pct"] == 21.0    # 210 / 1000 plays
+    assert hero["hold_rate_pct"] == 60.0              # 420 / 700 3s plays
+
+
+def test_click_to_book_and_ads_manager_link(db, seeded):
+    """click_to_book keeps 4 decimals, and every ad carries its Meta deep link."""
+    hero = _by_name(_get_winning_ads({**MAY, "branch": "Saigon"}, db))["Hero Ad"]
+    assert hero["click_to_book_pct"] == 20.0          # 4 bookings / 20 clicks
+    assert hero["ads_manager_url"] == (
+        "https://adsmanager.facebook.com/adsmanager/manage/ads"
+        "?act=act_sgn&selected_ad_ids=ad1"
+    )
+
+
+def test_ad_without_video_has_null_rates_not_zero(db, seeded):
+    """An image ad has no funnel — 0% would read as 'nobody watched'."""
+    quiet = _by_name(_get_winning_ads({**MAY, "branch": "Saigon"}, db))["Quiet Ad"]
+    assert quiet["hook_rate_pct"] is None
+    assert quiet["thruplay_rate_pct"] is None
+    assert quiet["video_complete_rate_pct"] is None
+    assert quiet["hold_rate_pct"] is None
+    assert quiet["video_plays"] == 0
+    assert quiet["engagement_rate_pct"] == 5.0        # engagement still works
+
+
+def test_video_only_and_video_sorting(db, seeded):
+    res = _get_winning_ads({**MAY, "video_only": True}, db)
+    assert set(_by_name(res)) == {"Hero Ad", "Osaka Ad"}   # Quiet Ad has no plays
+    assert res["filters"]["video_only"] is True
+
+    by_hook = _get_winning_ads({**MAY, "sort_by": "hook_rate"}, db)["ads"]
+    assert [a["ad_name"] for a in by_hook] == ["Hero Ad", "Osaka Ad", "Quiet Ad"]
+    by_comp = _get_winning_ads({**MAY, "sort_by": "video_complete_rate"}, db)["ads"]
+    assert [a["video_complete_rate_pct"] for a in by_comp] == [21.0, 5.0, None]
 
 
 def test_frozen_verdict_is_passed_through(db, seeded):

@@ -23,6 +23,22 @@ def _default_dates() -> tuple[str, str]:
     return (today - timedelta(days=30)).isoformat(), today.isoformat()
 
 
+def _ads_manager_url(native_account_id: str | None, ad_id: str | None) -> str | None:
+    """Deep link opening ONE ad inside Meta Ads Manager.
+
+    Same shape the Activity log builds (app/routers/tactics.py::_meta_url):
+    `act=` scopes the workspace, `selected_ad_ids=` filters to the single ad —
+    without the act= the link lands in whichever account the browser session
+    last had open, which is a different ad entirely.
+    """
+    if not ad_id:
+        return None
+    url = "https://adsmanager.facebook.com/adsmanager/manage/ads"
+    if native_account_id:
+        return f"{url}?act={native_account_id}&selected_ad_ids={ad_id}"
+    return f"{url}?selected_ad_ids={ad_id}"
+
+
 # ─── Tool definitions ─────────────────────────────────────────────────────────
 
 TOOLS = [
@@ -240,7 +256,11 @@ TOOLS = [
             "List individual ADS (creatives) with their performance and WIN/LOSE/TEST "
             "verdict — the ad-level detail behind get_ad_count, which only returns counts. "
             "One row per (branch, ad_name) over the date window: spend, impressions, clicks, "
-            "conversions (bookings), revenue, ROAS, CTR, cost-per-conversion, plus the "
+            "conversions (bookings), revenue, ROAS, CTR, click-to-book rate, "
+            "cost-per-conversion, the video funnel (engagement rate, hook rate, thruplay "
+            "rate, hold rate, completion rate — the same Eng% / Hook / "
+            "Thru / Comp columns the Creative Library shows), an Ads Manager deep link "
+            "that opens the ad itself, plus the "
             "combo's angle / keypoints / target audience / country when the ad is mapped in "
             "the Creative Library. Meta only (ad_daily_metrics is the sole ad-grain table). "
             "The verdict is the FROZEN one from winning_ad_months — awarded once, ever, the "
@@ -288,12 +308,77 @@ TOOLS = [
                 },
                 "sort_by": {
                     "type": "string",
-                    "enum": ["roas", "spend", "conversions", "revenue"],
-                    "description": "Sort key, always descending (default 'roas')",
+                    "enum": [
+                        "roas", "spend", "conversions", "revenue", "ctr",
+                        "click_to_book", "engagement_rate", "hook_rate",
+                        "thruplay_rate", "hold_rate", "video_complete_rate",
+                    ],
+                    "description": (
+                        "Sort key, always descending (default 'roas'). The four video keys "
+                        "rank creatives that never got a video play last — their rate is null."
+                    ),
+                },
+                "video_only": {
+                    "type": "boolean",
+                    "description": (
+                        "Only return ads that actually got video plays (default false). Use "
+                        "when comparing hook / thruplay / completion so image and carousel "
+                        "ads, which have no video funnel at all, stop diluting the ranking."
+                    ),
                 },
                 "limit": {
                     "type": "integer",
                     "description": "Max ads to return (default 50, max 200)",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_ad_benchmarks",
+        "description": (
+            "The BAR every ad in get_winning_ads should be read against: each branch's own "
+            "CTR, click-to-book, ROAS and video funnel (engagement / hook / thruplay / hold "
+            "/ completion) over a date window, at the same (branch, ad_name) grain and the "
+            "same scope as get_winning_ads. Use this instead of industry benchmarks — the "
+            "branch's own account average IS the benchmark, and it self-updates as the "
+            "account changes. Each metric comes back two ways: `median` (the middle ad, "
+            "which is the bar to publish — one runaway creative cannot move it) and "
+            "`blended` (pooled totals, i.e. how the branch actually performed in aggregate). "
+            "Video rates are medianed over VIDEO ads only, so image and carousel ads do not "
+            "drag the bar to zero. Rates are currency-free and comparable across branches; "
+            "spend, revenue and ROAS are in each account's native currency and must NOT be "
+            "pooled across branches — that is why there is no group total for them."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date_from": {
+                    "type": "string",
+                    "description": "Start date YYYY-MM-DD (default: 30 days ago)",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "End date YYYY-MM-DD (default: today)",
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "Branch name substring; omit for every branch",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["kpi", "all"],
+                    "description": (
+                        "Verdict universe (default 'kpi'). Must match the scope used for "
+                        "the ads being judged: 'kpi' drops KOL ads and the Bread branch."
+                    ),
+                },
+                "min_spend": {
+                    "type": "number",
+                    "description": (
+                        "Only let ads above this TOTAL window spend into the bar (default "
+                        "0). Raise it to keep near-zero-spend ads, whose rates are noise, "
+                        "out of the median. Native account currency."
+                    ),
                 },
             },
         },
@@ -314,6 +399,7 @@ def call_tool(name: str, arguments: dict, db: Session) -> Any:
         "get_branches": _get_branches,
         "get_ad_count": _get_ad_count,
         "get_winning_ads": _get_winning_ads,
+        "get_ad_benchmarks": _get_ad_benchmarks,
     }
     handler = handlers.get(name)
     if not handler:
@@ -798,6 +884,71 @@ def _get_branches(args: dict, db: Session) -> dict:
     }
 
 
+def _ad_grain_rows(
+    db: Session,
+    date_from: str,
+    date_to: str,
+    branch: str | None,
+    scope: str,
+    min_spend: float,
+) -> tuple[list[dict], str, dict]:
+    """Ads summed to the (account, ad_name) grain — the shared read for
+    get_winning_ads and get_ad_benchmarks.
+
+    Both tools MUST see the same universe: a benchmark computed over a
+    different set of ads than the ads being judged against it is not a
+    benchmark. Returns the rows plus the WHERE fragment and params so callers
+    can run the coverage query over the identical filter.
+    """
+    filters = ["m.date BETWEEN :date_from AND :date_to", "m.ad_name IS NOT NULL"]
+    params: dict = {"date_from": date_from, "date_to": date_to, "min_spend": min_spend}
+    if branch:
+        # LOWER(...) LIKE LOWER(...) instead of ILIKE so the query runs on both
+        # Postgres (prod) and SQLite (tests).
+        filters.append("LOWER(a.account_name) LIKE LOWER(:branch)")
+        params["branch"] = f"%{branch}%"
+    where = " AND ".join(filters)
+
+    sql = text(f"""
+        SELECT
+            m.account_id                    AS account_id,
+            a.account_name                  AS branch,
+            m.ad_name                       AS ad_name,
+            COUNT(DISTINCT m.ad_id)         AS ad_count,
+            MIN(m.ad_id)                    AS ad_id,
+            COUNT(DISTINCT m.date)          AS days_with_spend,
+            CAST(SUM(m.spend) AS FLOAT)     AS spend,
+            SUM(m.impressions)              AS impressions,
+            SUM(m.clicks)                   AS clicks,
+            SUM(m.conversions)              AS conversions,
+            CAST(SUM(m.revenue) AS FLOAT)   AS revenue,
+            SUM(m.engagement)               AS engagement,
+            SUM(m.video_plays)              AS video_plays,
+            SUM(m.video_3s)                 AS video_3s,
+            SUM(m.thruplay)                 AS thruplay,
+            SUM(m.video_p100)               AS video_p100,
+            MIN(a.account_id)               AS native_account_id
+        FROM ad_daily_metrics m
+        JOIN ad_accounts a ON a.id = m.account_id
+        WHERE {where}
+        GROUP BY m.account_id, a.account_name, m.ad_name
+        HAVING SUM(m.spend) > :min_spend
+    """)
+    rows = [dict(r) for r in db.execute(sql, params).mappings().all()]
+
+    # Scope exclusions mirror winning_months_service exactly: judging a KOL ad
+    # against the KPI bar (which its own spend was kept out of) would measure it
+    # against a benchmark it never belonged to.
+    rows = [
+        r for r in rows
+        if not (
+            scope == SCOPE_KPI
+            and (is_kol(r["ad_name"]) or is_excluded_branch(r["branch"], scope))
+        )
+    ]
+    return rows, where, params
+
+
 def _get_winning_ads(args: dict, db: Session) -> dict:
     """List ads (creatives) with their metrics and frozen WIN/LOSE/TEST verdict.
 
@@ -830,48 +981,10 @@ def _get_winning_ads(args: dict, db: Session) -> dict:
     verdict_filter = (args.get("verdict") or "").strip().upper() or None
     min_spend = float(args.get("min_spend", 0) or 0)
     sort_by = args.get("sort_by") or "roas"
+    video_only = bool(args.get("video_only", False))
     limit = min(int(args.get("limit", 50) or 50), 200)
 
-    filters = ["m.date BETWEEN :date_from AND :date_to", "m.ad_name IS NOT NULL"]
-    params: dict = {"date_from": date_from, "date_to": date_to, "min_spend": min_spend}
-    if branch:
-        # LOWER(...) LIKE LOWER(...) instead of ILIKE so the query runs on both
-        # Postgres (prod) and SQLite (tests).
-        filters.append("LOWER(a.account_name) LIKE LOWER(:branch)")
-        params["branch"] = f"%{branch}%"
-    where = " AND ".join(filters)
-
-    sql = text(f"""
-        SELECT
-            m.account_id                    AS account_id,
-            a.account_name                  AS branch,
-            m.ad_name                       AS ad_name,
-            COUNT(DISTINCT m.ad_id)         AS ad_count,
-            MIN(m.ad_id)                    AS ad_id,
-            COUNT(DISTINCT m.date)          AS days_with_spend,
-            CAST(SUM(m.spend) AS FLOAT)     AS spend,
-            SUM(m.impressions)              AS impressions,
-            SUM(m.clicks)                   AS clicks,
-            SUM(m.conversions)              AS conversions,
-            CAST(SUM(m.revenue) AS FLOAT)   AS revenue
-        FROM ad_daily_metrics m
-        JOIN ad_accounts a ON a.id = m.account_id
-        WHERE {where}
-        GROUP BY m.account_id, a.account_name, m.ad_name
-        HAVING SUM(m.spend) > :min_spend
-    """)
-    rows = [dict(r) for r in db.execute(sql, params).mappings().all()]
-
-    # Scope exclusions mirror winning_months_service exactly: judging a KOL ad
-    # against the KPI bar (which its own spend was kept out of) would measure it
-    # against a benchmark it never belonged to.
-    rows = [
-        r for r in rows
-        if not (
-            scope == SCOPE_KPI
-            and (is_kol(r["ad_name"]) or is_excluded_branch(r["branch"], scope))
-        )
-    ]
+    rows, where, params = _ad_grain_rows(db, date_from, date_to, branch, scope, min_spend)
 
     account_ids = sorted({str(r["account_id"]) for r in rows})
 
@@ -930,6 +1043,19 @@ def _get_winning_ads(args: dict, db: Session) -> dict:
         revenue = float(r["revenue"] or 0)
         roas = round(revenue / spend, 2) if spend > 0 else None
 
+        # Video funnel. Rates are recomputed from SUMMED counts (never averaged
+        # from daily rates), and mirror app/routers/ad_performance.py exactly:
+        # hook = 3s plays / impressions (Ads Manager's definition — video_3s is
+        # actions:video_view, NOT video_play_actions), thruplay and completion
+        # are shares of PLAYS, not impressions. All four stay null for an ad
+        # with no video activity — an image ad has no funnel, and 0% would read
+        # as "nobody watched" instead of "there is nothing to watch".
+        engagement = int(r["engagement"] or 0)
+        video_plays = int(r["video_plays"] or 0)
+        video_3s = int(r["video_3s"] or 0)
+        thruplay = int(r["thruplay"] or 0)
+        video_p100 = int(r["video_p100"] or 0)
+
         wam = frozen.get(key)
         combo = combos.get(key)
         benchmark = benchmarks.get(acc_id)
@@ -948,6 +1074,47 @@ def _get_winning_ads(args: dict, db: Session) -> dict:
             "roas": roas,
             "ctr_pct": round(clicks / impressions * 100, 2) if impressions > 0 else None,
             "cost_per_conversion": round(spend / conversions, 2) if conversions > 0 else None,
+            # Click -> booking, the tier-5 number: bookings per click, not per
+            # impression. 4 decimals on purpose — the spread across branches
+            # lives between 0.06% and 0.18%, which 2 decimals would flatten
+            # into one indistinguishable "0.1%".
+            "click_to_book_pct": (
+                round(conversions / clicks * 100, 4) if clicks > 0 else None
+            ),
+            # Deep link straight into Ads Manager, filtered to this ad — same
+            # shape the Activity log builds (app/routers/tactics.py::_meta_url).
+            "ads_manager_url": _ads_manager_url(r["native_account_id"], r["ad_id"]),
+            # Video funnel — raw counts kept alongside the rates so a caller can
+            # re-aggregate several ads without averaging percentages.
+            "engagement": engagement,
+            "video_plays": video_plays,
+            "video_3s": video_3s,
+            "thruplay": thruplay,
+            "video_p100": video_p100,
+            "engagement_rate_pct": (
+                round(engagement / impressions * 100, 2)
+                if engagement and impressions > 0 else None
+            ),
+            "hook_rate_pct": (
+                round(video_3s / impressions * 100, 2)
+                if video_3s and impressions > 0 else None
+            ),
+            "thruplay_rate_pct": (
+                round(thruplay / video_plays * 100, 2)
+                if thruplay and video_plays > 0 else None
+            ),
+            # Hold rate keeps the 3s watchers as its denominator, NOT plays:
+            # it answers "of the people the hook actually stopped, how many
+            # stayed to the end", which is a creative-body question. Reading it
+            # off plays would just restate thruplay_rate.
+            "hold_rate_pct": (
+                round(thruplay / video_3s * 100, 2)
+                if thruplay and video_3s > 0 else None
+            ),
+            "video_complete_rate_pct": (
+                round(video_p100 / video_plays * 100, 2)
+                if video_p100 and video_plays > 0 else None
+            ),
             # Frozen verdict — never recomputed from the numbers above.
             "verdict": wam.verdict if wam else "TEST",
             "verdict_month": wam.month.strftime("%Y-%m") if wam else None,
@@ -978,6 +1145,8 @@ def _get_winning_ads(args: dict, db: Session) -> dict:
         }
         if verdict_filter and ad["verdict"] != verdict_filter:
             continue
+        if video_only and video_plays <= 0:
+            continue
         ads.append(ad)
 
     sort_key = {
@@ -985,6 +1154,13 @@ def _get_winning_ads(args: dict, db: Session) -> dict:
         "spend": lambda a: a["spend"] or 0,
         "conversions": lambda a: a["conversions"] or 0,
         "revenue": lambda a: a["revenue"] or 0,
+        "ctr": lambda a: a["ctr_pct"] or 0,
+        "engagement_rate": lambda a: a["engagement_rate_pct"] or 0,
+        "hook_rate": lambda a: a["hook_rate_pct"] or 0,
+        "thruplay_rate": lambda a: a["thruplay_rate_pct"] or 0,
+        "video_complete_rate": lambda a: a["video_complete_rate_pct"] or 0,
+        "hold_rate": lambda a: a["hold_rate_pct"] or 0,
+        "click_to_book": lambda a: a["click_to_book_pct"] or 0,
     }.get(sort_by, lambda a: a["roas"] or 0)
     ads.sort(key=sort_key, reverse=True)
 
@@ -1022,12 +1198,25 @@ def _get_winning_ads(args: dict, db: Session) -> dict:
         "date_from": date_from,
         "date_to": date_to,
         "scope": scope,
-        "filters": {"branch": branch, "verdict": verdict_filter, "min_spend": min_spend},
+        "filters": {
+            "branch": branch,
+            "verdict": verdict_filter,
+            "min_spend": min_spend,
+            "video_only": video_only,
+        },
         "note": (
             "Meta ad-level only (ad_daily_metrics); Google/TikTok are not tracked at this "
             "grain. One row per (branch, ad_name). Verdict is the frozen winning_ad_months "
             "decision — TEST means never decided, not 'currently below the bar'. Spend and "
             "revenue are in each account's native currency, so do NOT sum across branches. "
+            "Video funnel denominators all differ, so never compare the rates to each "
+            "other: hook_rate_pct = 3s plays / impressions, thruplay_rate_pct and "
+            "video_complete_rate_pct = share of video PLAYS, hold_rate_pct = thruplay / 3s "
+            "plays (of the people the hook stopped, how many stayed). Every video field is null — not 0 — for an ad with "
+            "no video activity; pass video_only=true to drop those rows. click_to_book_pct "
+            "is bookings / clicks and runs around 0.07-0.17%, so it is returned at 4 "
+            "decimals. Compare any of these against get_ad_benchmarks, not against industry "
+            "numbers. "
             "Check `coverage`: any branch below ~100% means the window is only partly "
             "ingested and its totals understate reality."
         ),
@@ -1035,4 +1224,209 @@ def _get_winning_ads(args: dict, db: Session) -> dict:
         "total_matching": len(ads),
         "returned": min(len(ads), limit),
         "ads": ads[:limit],
+    }
+
+
+def _median(values: list[float]) -> float | None:
+    """Middle value, or the mean of the two middle ones. None for an empty list."""
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    mid = len(vals) // 2
+    if len(vals) % 2:
+        return vals[mid]
+    return (vals[mid - 1] + vals[mid]) / 2
+
+
+def _rate(numerator: float, denominator: float, decimals: int = 2) -> float | None:
+    """Percentage, or None when there is nothing to divide by."""
+    if not numerator or denominator <= 0:
+        return None
+    return round(numerator / denominator * 100, decimals)
+
+
+def _get_ad_benchmarks(args: dict, db: Session) -> dict:
+    """Per-branch performance bars, computed from the branch's own ads.
+
+    The rule this tool exists to enforce: an account's own average is the only
+    benchmark worth publishing. Industry hook-rate tables are cross-vertical,
+    they never saw this account's audiences or currencies, and a bar nobody
+    recomputes goes stale the month after it is written.
+
+    Two numbers per metric, because they answer different questions:
+      * median  — the middle AD. This is the bar to publish: one outlier
+        creative cannot drag it.
+      * blended — pooled totals, i.e. what the branch actually did overall. The
+        honest answer to "how did we do", not to "is this ad any good".
+
+    Video rates are medianed over ads that actually got plays. An image ad has
+    no hook rate; letting it in as a zero would halve the bar and quietly mark
+    every video ad as above average.
+    """
+    date_from, date_to = _default_dates()
+    date_from = args.get("date_from", date_from)
+    date_to = args.get("date_to", date_to)
+    branch = args.get("branch")
+    scope = normalize_scope(args.get("scope"))
+    min_spend = float(args.get("min_spend", 0) or 0)
+
+    rows, where, params = _ad_grain_rows(db, date_from, date_to, branch, scope, min_spend)
+
+    by_branch: dict[str, dict] = {}
+    for r in rows:
+        b = by_branch.setdefault(str(r["branch"]), {"account_id": str(r["account_id"]), "rows": []})
+        b["rows"].append(r)
+
+    account_ids = sorted({str(r["account_id"]) for r in rows})
+    lifetime = compute_lifetime_benchmarks(db, account_ids, scope) if account_ids else {}
+
+    def _per_ad_rates(rs: list[dict]) -> dict:
+        """Each ad's own rates — the population every median is taken over."""
+        out: dict[str, list] = {k: [] for k in (
+            "ctr", "click_to_book", "roas", "engagement_rate",
+            "hook_rate", "thruplay_rate", "hold_rate", "video_complete_rate",
+        )}
+        for r in rs:
+            imp = int(r["impressions"] or 0)
+            clicks = int(r["clicks"] or 0)
+            conv = int(r["conversions"] or 0)
+            spend = float(r["spend"] or 0)
+            rev = float(r["revenue"] or 0)
+            plays = int(r["video_plays"] or 0)
+            v3s = int(r["video_3s"] or 0)
+            thru = int(r["thruplay"] or 0)
+            for key, val in (
+                ("ctr", _rate(clicks, imp)),
+                ("click_to_book", _rate(conv, clicks, 4)),
+                ("roas", round(rev / spend, 2) if spend > 0 else None),
+                ("engagement_rate", _rate(int(r["engagement"] or 0), imp)),
+                ("hook_rate", _rate(v3s, imp)),
+                ("thruplay_rate", _rate(thru, plays)),
+                ("hold_rate", _rate(thru, v3s)),
+                ("video_complete_rate", _rate(int(r["video_p100"] or 0), plays)),
+            ):
+                if val is not None:
+                    out[key].append(val)
+        return out
+
+    branches = []
+    for name in sorted(by_branch):
+        rs = by_branch[name]["rows"]
+        acc_id = by_branch[name]["account_id"]
+        video_rs = [r for r in rs if int(r["video_plays"] or 0) > 0]
+
+        tot = {
+            k: sum(float(r[k] or 0) for r in rs)
+            for k in ("spend", "impressions", "clicks", "conversions", "revenue",
+                      "engagement", "video_plays", "video_3s", "thruplay", "video_p100")
+        }
+        rates = _per_ad_rates(rs)
+        video_rates = _per_ad_rates(video_rs)
+
+        branches.append({
+            "branch": name,
+            "ads": len(rs),
+            "video_ads": len(video_rs),
+            "spend": round(tot["spend"], 2),
+            "impressions": int(tot["impressions"]),
+            "clicks": int(tot["clicks"]),
+            "conversions": int(tot["conversions"]),
+            "revenue": round(tot["revenue"], 2),
+            # The bar to publish.
+            "median": {
+                "ctr_pct": _median(rates["ctr"]),
+                "click_to_book_pct": _median(rates["click_to_book"]),
+                "roas": _median(rates["roas"]),
+                "engagement_rate_pct": _median(rates["engagement_rate"]),
+                "hook_rate_pct": _median(video_rates["hook_rate"]),
+                "thruplay_rate_pct": _median(video_rates["thruplay_rate"]),
+                "hold_rate_pct": _median(video_rates["hold_rate"]),
+                "video_complete_rate_pct": _median(video_rates["video_complete_rate"]),
+            },
+            # What the branch actually did in aggregate.
+            "blended": {
+                "ctr_pct": _rate(tot["clicks"], tot["impressions"]),
+                "click_to_book_pct": _rate(tot["conversions"], tot["clicks"], 4),
+                "roas": round(tot["revenue"] / tot["spend"], 2) if tot["spend"] > 0 else None,
+                "engagement_rate_pct": _rate(tot["engagement"], tot["impressions"]),
+                "hook_rate_pct": _rate(tot["video_3s"], tot["impressions"]),
+                "thruplay_rate_pct": _rate(tot["thruplay"], tot["video_plays"]),
+                "hold_rate_pct": _rate(tot["thruplay"], tot["video_3s"]),
+                "video_complete_rate_pct": _rate(tot["video_p100"], tot["video_plays"]),
+            },
+            # The ROAS bar the frozen WIN/LOSE verdicts were actually judged on
+            # — LIFETIME, not this window. Kept separate on purpose: an ad can
+            # beat the window bar and still be a LOSE against lifetime.
+            "lifetime_benchmark_roas": (
+                round(lifetime[acc_id], 2) if lifetime.get(acc_id) else None
+            ),
+            # Clicks needed to buy one booking — the same fact as
+            # click_to_book_pct, in the unit a meeting actually argues about.
+            "clicks_per_booking": (
+                round(tot["clicks"] / tot["conversions"]) if tot["conversions"] > 0 else None
+            ),
+        })
+
+    # Group medians pool every ad across branches. Only currency-free RATES are
+    # pooled — ROAS, spend and revenue are deliberately absent because the
+    # branches run three currencies and a pooled ROAS would be fiction.
+    all_rates = _per_ad_rates(rows)
+    all_video_rates = _per_ad_rates([r for r in rows if int(r["video_plays"] or 0) > 0])
+
+    cov_sql = text(f"""
+        SELECT
+            a.account_name          AS branch,
+            COUNT(DISTINCT m.date)  AS days_with_data,
+            MIN(m.date)             AS first_day,
+            MAX(m.date)             AS last_day
+        FROM ad_daily_metrics m
+        JOIN ad_accounts a ON a.id = m.account_id
+        WHERE {where}
+        GROUP BY a.account_name
+        ORDER BY a.account_name
+    """)
+    cov_params = {k: v for k, v in params.items() if k != "min_spend"}
+    days_requested = (date.fromisoformat(date_to) - date.fromisoformat(date_from)).days + 1
+    coverage = []
+    for c in db.execute(cov_sql, cov_params).mappings().all():
+        days_with_data = int(c["days_with_data"] or 0)
+        coverage.append({
+            "branch": c["branch"],
+            "days_with_data": days_with_data,
+            "days_requested": days_requested,
+            "coverage_pct": (
+                round(days_with_data / days_requested * 100, 1) if days_requested else None
+            ),
+            "first_day": str(c["first_day"]),
+            "last_day": str(c["last_day"]),
+        })
+
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "scope": scope,
+        "filters": {"branch": branch, "min_spend": min_spend},
+        "note": (
+            "Meta ad-level only (ad_daily_metrics), one ad = one (branch, ad_name). "
+            "`median` is the bar to publish; `blended` is aggregate performance — never "
+            "mix them in one comparison. Video medians cover video ads only (video_ads "
+            "counts them). Rates compare across branches; spend / revenue / ROAS are "
+            "native currency and never pool. lifetime_benchmark_roas is the separate "
+            "LIFETIME bar the frozen WIN/LOSE verdicts in get_winning_ads were judged on. "
+            "Recompute monthly, and prefer these over any external industry number. "
+            "Check `coverage`: a branch below ~100% has a partly ingested window, so its "
+            "bar rests on fewer days than were asked for."
+        ),
+        "coverage": coverage,
+        "meander_median": {
+            "ads": len(rows),
+            "ctr_pct": _median(all_rates["ctr"]),
+            "click_to_book_pct": _median(all_rates["click_to_book"]),
+            "engagement_rate_pct": _median(all_rates["engagement_rate"]),
+            "hook_rate_pct": _median(all_video_rates["hook_rate"]),
+            "thruplay_rate_pct": _median(all_video_rates["thruplay_rate"]),
+            "hold_rate_pct": _median(all_video_rates["hold_rate"]),
+            "video_complete_rate_pct": _median(all_video_rates["video_complete_rate"]),
+        },
+        "branches": branches,
     }
