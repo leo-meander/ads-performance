@@ -36,8 +36,13 @@ class Ad(TimestampMixin, Base):
     # usually the answer to "why did this live-looking ad stop spending".
     effective_status = Column(String(40), nullable=True, index=True)
     # ad.preview_shareable_link — the platform's own render of the whole ad
-    # (creative + copy + CTA). Long-lived, unlike the CDN asset URLs, but only
-    # openable by someone with access to the ad account.
+    # (creative + copy + CTA). Long-lived, unlike the CDN asset URLs, and it is
+    # the link to hand a reviewer: Meta issues it as a SHARE link (fb.me/...)
+    # for people who do not administer the ad account, where an Ads Manager
+    # deep link would drop them on an account picker. Meta can rotate it, so it
+    # is refreshed (not appended) on every platform sync, and it dies with the
+    # ad — fetch_ads stops returning archived/deleted ads, so the column simply
+    # goes stale-then-absent rather than pointing at a dead page.
     preview_url = Column(String(1000), nullable=True)
 
     creative_id = Column(String(100), nullable=True)

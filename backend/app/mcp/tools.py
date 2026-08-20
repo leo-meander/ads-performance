@@ -9,6 +9,7 @@ from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
 from app.models.keypoint import BranchKeypoint
 from app.models.winning_ad_month import WinningAdMonth
+from app.services.ad_state import live_ad_fields, states_by_ad_name
 from app.services.winning_months_service import (
     SCOPE_KPI,
     compute_lifetime_benchmarks,
@@ -259,8 +260,9 @@ TOOLS = [
             "conversions (bookings), revenue, ROAS, CTR, click-to-book rate, "
             "cost-per-conversion, the video funnel (engagement rate, hook rate, thruplay "
             "rate, hold rate, completion rate — the same Eng% / Hook / "
-            "Thru / Comp columns the Creative Library shows), an Ads Manager deep link "
-            "that opens the ad itself, plus the "
+            "Thru / Comp columns the Creative Library shows), TWO links to the ad "
+            "(preview_url renders the creative for anyone, ads_manager_url needs account "
+            "access), its live delivery status, plus the "
             "combo's angle / keypoints / target audience / country when the ad is mapped in "
             "the Creative Library. Meta only (ad_daily_metrics is the sole ad-grain table). "
             "The verdict is the FROZEN one from winning_ad_months — awarded once, ever, the "
@@ -1003,6 +1005,12 @@ def _get_winning_ads(args: dict, db: Session) -> dict:
         ):
             frozen.setdefault((str(wam.account_id), wam.ad_name), wam)
 
+    # Live Meta ad state, matched by (account, ad_name) — the shareable preview
+    # link plus whether the ad is still delivering. Same helper the Creative
+    # Library drawer and the winning-months page use, so the three surfaces
+    # cannot drift on what "this creative is running" means.
+    ad_states = states_by_ad_name(db, account_ids)
+
     # Creative Library mapping. Filtered by branch only, then matched on ad_name
     # in Python — an IN() over every ad_name would blow SQLite's parameter cap.
     combos: dict[tuple, Any] = {}
@@ -1081,8 +1089,16 @@ def _get_winning_ads(args: dict, db: Session) -> dict:
             "click_to_book_pct": (
                 round(conversions / clicks * 100, 4) if clicks > 0 else None
             ),
-            # Deep link straight into Ads Manager, filtered to this ad — same
-            # shape the Activity log builds (app/routers/tactics.py::_meta_url).
+            # Two different links, for two different readers.
+            # preview_url is Meta's own render of the ad (fb.me/...), built to
+            # be handed to someone WITHOUT ad-account access — the link for a
+            # review meeting. ads_manager_url goes into Ads Manager, which
+            # needs access to that specific account, so it lands on an account
+            # picker (or nothing) for anyone not on all five accounts.
+            # live_* describe delivery right now, NOT the frozen verdict:
+            # live_ad_count counts ads currently synced under this name, while
+            # ad_count above counts the ad_ids that spent in the window.
+            **live_ad_fields(ad_states, acc_id, r["ad_name"]),
             "ads_manager_url": _ads_manager_url(r["native_account_id"], r["ad_id"]),
             # Video funnel — raw counts kept alongside the rates so a caller can
             # re-aggregate several ads without averaging percentages.
@@ -1216,7 +1232,11 @@ def _get_winning_ads(args: dict, db: Session) -> dict:
             "no video activity; pass video_only=true to drop those rows. click_to_book_pct "
             "is bookings / clicks and runs around 0.07-0.17%, so it is returned at 4 "
             "decimals. Compare any of these against get_ad_benchmarks, not against industry "
-            "numbers. "
+            "numbers. When linking someone to an ad, hand out preview_url — Meta's own "
+            "shareable render, which opens without Business Manager access; use "
+            "ads_manager_url only for someone who administers that specific ad account. "
+            "preview_url is null for an ad archived or deleted on Meta, or a branch not "
+            "synced since the column landed; the ad and its verdict are still valid. "
             "Check `coverage`: any branch below ~100% means the window is only partly "
             "ingested and its totals understate reality."
         ),

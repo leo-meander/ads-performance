@@ -11,7 +11,7 @@ here as well as Postgres in prod. These tests lock in:
   * the coverage block, which is what exposes a half-ingested date window,
   * the video funnel (engagement / hook / thruplay / hold / completion) pooled
     from summed counts, and null — never 0 — for an ad with no video,
-  * click-to-book and the Ads Manager deep link,
+  * click-to-book, the shareable preview link and the Ads Manager deep link,
   * branch / verdict / min_spend filters and sorting.
 """
 from __future__ import annotations
@@ -27,8 +27,11 @@ from app.models.account import AdAccount
 from app.models.ad_angle import AdAngle
 from app.models.ad_combo import AdCombo
 from app.models.ad_copy import AdCopy
+from app.models.ad import Ad
 from app.models.ad_daily_metric import AdDailyMetric
 from app.models.ad_material import AdMaterial
+from app.models.ad_set import AdSet
+from app.models.campaign import Campaign
 from app.models.keypoint import BranchKeypoint
 from app.models.winning_ad_month import WinningAdMonth
 from tests.db import TestSession
@@ -112,6 +115,36 @@ def seeded(db):
         ),
     ])
 
+    # Live Meta ad rows. "Hero Ad" ships into two campaigns under one name:
+    # the PAUSED one holds a preview link, the ACTIVE one holds the link that
+    # should win — summarize_states prefers a delivering ad.
+    camp = Campaign(
+        id=str(uuid.uuid4()), account_id=sgn.id, platform="meta",
+        platform_campaign_id="c1", name="C1", status="ACTIVE", objective="OUTCOME_SALES",
+    )
+    db.add(camp)
+    db.flush()
+    adset = AdSet(
+        id=str(uuid.uuid4()), campaign_id=camp.id, account_id=sgn.id, platform="meta",
+        platform_adset_id="as1", name="VN_adset", status="ACTIVE",
+    )
+    db.add(adset)
+    db.flush()
+    db.add_all([
+        Ad(
+            id=str(uuid.uuid4()), ad_set_id=adset.id, campaign_id=camp.id,
+            account_id=sgn.id, platform="meta", platform_ad_id="ad1", name="Hero Ad",
+            status="PAUSED", effective_status="PAUSED",
+            preview_url="https://fb.me/paused",
+        ),
+        Ad(
+            id=str(uuid.uuid4()), ad_set_id=adset.id, campaign_id=camp.id,
+            account_id=sgn.id, platform="meta", platform_ad_id="ad2", name="Hero Ad",
+            status="ACTIVE", effective_status="ACTIVE",
+            preview_url="https://fb.me/live",
+        ),
+    ])
+
     # Creative Library mapping for "Hero Ad" only.
     kp = BranchKeypoint(
         id=str(uuid.uuid4()), branch_id=sgn.id, category="location",
@@ -176,6 +209,27 @@ def test_video_funnel_rates_are_pooled_not_averaged(db, seeded):
     assert hero["thruplay_rate_pct"] == 42.0          # 420 / 1000 plays
     assert hero["video_complete_rate_pct"] == 21.0    # 210 / 1000 plays
     assert hero["hold_rate_pct"] == 60.0              # 420 / 700 3s plays
+
+
+def test_preview_link_prefers_a_delivering_ad(db, seeded):
+    """preview_url is the shareable fb.me render — the link a reviewer opens.
+
+    Two ads share the name; the one still delivering wins, so the link shows
+    something that is actually running.
+    """
+    ads = _by_name(_get_winning_ads({**MAY, "branch": "Saigon"}, db))
+    hero = ads["Hero Ad"]
+    assert hero["preview_url"] == "https://fb.me/live"
+    assert hero["live_status"] == "ACTIVE"
+    assert hero["live_active_count"] == 1
+    assert hero["live_ad_count"] == 2        # ads under this name, not spenders
+    assert hero["ad_count"] == 2             # ad_ids that spent in the window
+
+    # An ad with no synced Meta row still lists, it just has no preview link —
+    # archived/deleted on Meta never hides the ad or its verdict.
+    assert ads["Quiet Ad"]["preview_url"] is None
+    assert ads["Quiet Ad"]["live_status"] is None
+    assert ads["Quiet Ad"]["ads_manager_url"] is not None
 
 
 def test_click_to_book_and_ads_manager_link(db, seeded):
