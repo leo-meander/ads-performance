@@ -19,6 +19,7 @@ from app.models.ad import Ad
 from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
+from app.services.metric_bounds import clamp_ratio_fields
 from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
 from app.services.tiktok_client import (
     TikTokAPIError,
@@ -64,14 +65,12 @@ def _upsert_tiktok_metrics(
     existing = q.first()
     now = datetime.now(timezone.utc)
 
-    raw_ctr = insight.get("ctr") or 0
-    safe_ctr = min(float(raw_ctr), 99.999999) if raw_ctr else 0
     metric_fields = {
         "spend": insight["spend"],
         "impressions": insight["impressions"],
         "clicks": insight["clicks"],
         "link_clicks": insight.get("link_clicks", insight["clicks"]),
-        "ctr": safe_ctr,
+        "ctr": insight.get("ctr") or 0,
         "conversions": insight["conversions"],
         "revenue": insight["revenue"],
         "revenue_website": insight.get("revenue_website", insight["revenue"]),
@@ -94,6 +93,9 @@ def _upsert_tiktok_metrics(
         "video_p100_views": insight.get("video_p100_views", 0),
         "computed_at": now,
     }
+    # Bound derived ratios to their NUMERIC limits — an overflow raises DataError
+    # and aborts the whole sync transaction. See services/metric_bounds.py.
+    clamp_ratio_fields(metric_fields, context=f"tiktok campaign={campaign_id} date={insight_date}")
 
     if existing:
         for k, v in metric_fields.items():

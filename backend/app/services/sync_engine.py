@@ -20,6 +20,7 @@ from app.models.ad_set import AdSet
 from app.models.campaign import Campaign
 from app.models.metrics import MetricsCache
 from app.services.changelog import log_change
+from app.services.metric_bounds import clamp_ratio_fields
 from app.services.parse_utils import parse_adset_metadata, parse_campaign_metadata
 from app.services.meta_client import (
     fetch_ad_insights,
@@ -60,16 +61,12 @@ def _upsert_metrics_row(
     existing = q.first()
     now = datetime.now(timezone.utc)
 
-    # Defensive cap on CTR (Meta occasionally returns >100 due to tracking lag).
-    # Column is NUMERIC(8,6) with max absolute value < 100.
-    raw_ctr = insight.get("ctr") or 0
-    safe_ctr = min(float(raw_ctr), 99.999999) if raw_ctr else 0
     metric_fields = {
         "spend": insight["spend"],
         "impressions": insight["impressions"],
         "clicks": insight["clicks"],
         "link_clicks": insight.get("link_clicks", 0),
-        "ctr": safe_ctr,
+        "ctr": insight.get("ctr") or 0,
         "conversions": insight["conversions"],
         "revenue": insight["revenue"],
         "revenue_website": insight.get("revenue_website", insight["revenue"]),
@@ -92,6 +89,10 @@ def _upsert_metrics_row(
         "video_p100_views": insight.get("video_p100_views", 0),
         "computed_at": now,
     }
+    # Ratios come straight from Meta (or from our own division) and can blow
+    # past their NUMERIC limits on a low-spend / high-revenue day. An overflow
+    # aborts the whole transaction, so bound them here instead.
+    clamp_ratio_fields(metric_fields, context=f"meta campaign={campaign_id} date={insight_date}")
 
     if existing:
         for k, v in metric_fields.items():
@@ -616,32 +617,52 @@ def sync_all_platforms(
     results = []
 
     for account in accounts:
-        if account.platform == "meta":
-            result = sync_meta_account(db, account, date_from=date_from, date_to=date_to)
+        # Read identity out before the call: if the account's sync blows up we
+        # roll back, which expires the ORM instance.
+        acct_id, acct_name, acct_platform = str(account.id), account.account_name, account.platform
+        try:
+            if acct_platform == "meta":
+                result = sync_meta_account(db, account, date_from=date_from, date_to=date_to)
+            elif acct_platform == "google":
+                from app.services.google_sync_engine import sync_google_account
+                result = sync_google_account(db, account, date_from=date_from, date_to=date_to)
+            elif acct_platform == "tiktok":
+                from app.services.tiktok_sync_engine import sync_tiktok_account
+                result = sync_tiktok_account(db, account, date_from=date_from, date_to=date_to)
+            else:
+                continue
+        except Exception as e:
+            # One account must never starve the rest. Before this guard a single
+            # DataError (numeric overflow on a ratio column) aborted the loop, so
+            # every account after it silently stopped receiving data — for days,
+            # with the cron still reporting success.
+            db.rollback()
+            logger.exception("Sync failed for %s account %s", acct_platform, acct_name)
             results.append({
-                "account_id": str(account.id),
-                "account_name": account.account_name,
-                "platform": account.platform,
-                **result,
+                "account_id": acct_id,
+                "account_name": acct_name,
+                "platform": acct_platform,
+                "errors": [f"sync aborted: {type(e).__name__}: {e}"],
             })
-        elif account.platform == "google":
-            from app.services.google_sync_engine import sync_google_account
-            result = sync_google_account(db, account, date_from=date_from, date_to=date_to)
-            results.append({
-                "account_id": str(account.id),
-                "account_name": account.account_name,
-                "platform": account.platform,
-                **result,
-            })
-        elif account.platform == "tiktok":
-            from app.services.tiktok_sync_engine import sync_tiktok_account
-            result = sync_tiktok_account(db, account, date_from=date_from, date_to=date_to)
-            results.append({
-                "account_id": str(account.id),
-                "account_name": account.account_name,
-                "platform": account.platform,
-                **result,
-            })
+            continue
+
+        results.append({
+            "account_id": acct_id,
+            "account_name": acct_name,
+            "platform": acct_platform,
+            **result,
+        })
+
+    # Surface per-account failures at ERROR level. The cron endpoints throw the
+    # returned list away, so without this a broken account leaves no trace in
+    # the logs at all.
+    failed = [r for r in results if r.get("errors")]
+    if failed:
+        logger.error(
+            "[sync] %d of %d accounts reported errors: %s",
+            len(failed), len(results),
+            "; ".join(f"{r['platform']}/{r['account_name']}: {' | '.join(r['errors'])[:300]}" for r in failed),
+        )
 
     # After sync: auto-classify creative verdicts
     try:

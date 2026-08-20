@@ -40,6 +40,7 @@ from app.services.google_client import (
 )
 from app.config import settings
 from app.services.changelog import log_change
+from app.services.metric_bounds import clamp_ratio_fields
 from app.services.parse_utils import (
     parse_campaign_metadata,
     parse_google_country,
@@ -71,9 +72,6 @@ def _upsert_google_metrics(
     existing = q.first()
     now = datetime.now(timezone.utc)
 
-    # Defensive cap on CTR (edge cases where clicks > impressions).
-    raw_ctr = insight.get("ctr") or 0
-    safe_ctr = min(float(raw_ctr), 99.999999) if raw_ctr else 0
     metric_fields = {
         "spend": insight["spend"],
         "impressions": insight["impressions"],
@@ -83,7 +81,7 @@ def _upsert_google_metrics(
         # into link_clicks so the landing-page rollup reads the same column
         # regardless of source platform.
         "link_clicks": insight["clicks"],
-        "ctr": safe_ctr,
+        "ctr": insight.get("ctr") or 0,
         "conversions": insight["conversions"],
         "revenue": insight["revenue"],
         "roas": insight["roas"],
@@ -99,6 +97,9 @@ def _upsert_google_metrics(
         "revenue_offline": insight.get("revenue_offline", 0),
         "computed_at": now,
     }
+    # Bound derived ratios to their NUMERIC limits — an overflow raises DataError
+    # and aborts the whole sync transaction. See services/metric_bounds.py.
+    clamp_ratio_fields(metric_fields, context=f"google campaign={campaign_id} date={insight_date}")
 
     if existing:
         for k, v in metric_fields.items():
