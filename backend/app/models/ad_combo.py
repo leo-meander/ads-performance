@@ -1,5 +1,7 @@
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy.orm import validates
 
+from app.core.name_fit import fit_name
 from app.models.base import Base, JSONType, TimestampMixin, UUIDType
 
 
@@ -50,3 +52,10 @@ class AdCombo(TimestampMixin, Base):
     # don't need the pgvector extension).
     embedded_at = Column(DateTime(timezone=True), nullable=True, index=True)
     embedding_model = Column(String(40), nullable=True)
+
+    # Platform-supplied names can exceed the column width (TikTok Smart+ builds
+    # ad_name out of the whole caption). Postgres raises instead of truncating,
+    # and that error aborts the entire sync transaction — see core/name_fit.py.
+    @validates("ad_name")
+    def _fit_name_columns(self, key, value):
+        return fit_name(value)

@@ -1,5 +1,7 @@
 from sqlalchemy import Column, ForeignKey, String
+from sqlalchemy.orm import validates
 
+from app.core.name_fit import fit_name
 from app.models.base import Base, JSONType, TimestampMixin, UUIDType
 
 
@@ -42,3 +44,10 @@ class Ad(TimestampMixin, Base):
 
     creative_id = Column(String(100), nullable=True)
     raw_data = Column(JSONType, nullable=True)
+
+    # Platform-supplied names can exceed the column width (TikTok Smart+ builds
+    # ad_name out of the whole caption). Postgres raises instead of truncating,
+    # and that error aborts the entire sync transaction — see core/name_fit.py.
+    @validates("name")
+    def _fit_name_columns(self, key, value):
+        return fit_name(value)
