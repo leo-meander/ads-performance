@@ -684,10 +684,14 @@ def country_funnel(
     account_id: str = Query(None),
     branches: str = Query(None),
     campaign_type: str = Query(None),
+    campaign_ids: str = Query(None, description="Comma-separated campaign UUIDs"),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
-    """Conversion funnel filterable by country, TA, funnel stage, branch."""
+    """Conversion funnel filterable by country, TA, funnel stage, branch.
+
+    Pass campaign_ids (comma-separated UUIDs) to scope the funnel to specific
+    campaigns while keeping the country filter applied."""
     try:
         account_id, scoped_ids, err = _resolve_scope(db, current_user, account_id, branches)
         if err:
@@ -701,6 +705,10 @@ def country_funnel(
         df = date.fromisoformat(date_from)
         dt = date.fromisoformat(date_to)
         prev_from, prev_to = get_prev_period(df, dt)
+
+        parsed_campaign_ids = (
+            [c.strip() for c in campaign_ids.split(",") if c.strip()] if campaign_ids else None
+        )
 
         def _query_funnel(d_from, d_to):
             cc = _country_col()
@@ -729,6 +737,8 @@ def country_funnel(
                 q = q.filter(Campaign.funnel_stage == funnel_stage.upper())
             if platform:
                 q = q.filter(MetricsCache.platform == platform)
+            if parsed_campaign_ids:
+                q = q.filter(MetricsCache.campaign_id.in_(parsed_campaign_ids))
             q = apply_campaign_type(q, campaign_type)
             if account_id:
                 q = q.filter(Campaign.account_id == account_id)
@@ -740,11 +750,12 @@ def country_funnel(
         prev_row = _query_funnel(prev_from, prev_to)
 
         if not row or not row.impressions:
-            return _api_response(data={"stages": [], "country": country, "country_name": country_name(country) or country})
+            return _api_response(data={"stages": [], "steps": [], "country": country, "country_name": country_name(country) or country})
 
         fields, labels = _funnel_shape(campaign_type)
 
         stages = []
+        steps = []
         for i, field in enumerate(fields):
             cur_val = int(getattr(row, field) or 0)
             prev_val = int(getattr(prev_row, field) or 0) if prev_row else 0
@@ -777,11 +788,24 @@ def country_funnel(
                 "drop_off_prev": drop_off_prev,
                 "drop_off_change": drop_off_change,
             })
+            # Same numbers in the /dashboard/funnel step shape (key + label), so
+            # callers that need the stage key — leak highlighting, the funnel
+            # diagnosis — don't have to match on the display name.
+            steps.append({
+                "key": field,
+                "label": labels[i],
+                "value": cur_val,
+                "change": change,
+                "drop_off": drop_off,
+                "drop_off_prev": drop_off_prev,
+                "drop_off_change": drop_off_change,
+            })
 
         return _api_response(data={
             "country": country,
             "country_name": country_name(country) or country,
             "stages": stages,
+            "steps": steps,
         })
     except Exception as e:
         return _api_response(error=str(e))
