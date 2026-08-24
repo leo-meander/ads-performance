@@ -299,12 +299,9 @@ function DashboardInner() {
           drop_off: s.drop_off, drop_off_prev: s.drop_off_prev, drop_off_change: s.drop_off_change,
         }))
         setFunnelData(raw)
-        // Capture raw FunnelStep[] for analysis (only available from /dashboard/funnel, not /country/funnel)
-        if (!country && funnelRes.data.steps) {
-          setFunnel(funnelRes.data.steps)
-        } else {
-          setFunnel([])
-        }
+        // Capture raw FunnelStep[] for analysis — both /dashboard/funnel and
+        // /dashboard/country/funnel emit `steps` (key + label).
+        setFunnel(funnelRes.data.steps || [])
       }
       if (brBranch.success && brBranch.data) setByBranch(brBranch.data.items || [])
       if (brPlat.success && brPlat.data) {
@@ -389,6 +386,14 @@ function DashboardInner() {
     return campaignRows.filter((r) => r.campaign_name.toLowerCase().includes(q))
   }, [campaignRows, campaignSearch])
 
+  // With a country filter on, only /dashboard/country/funnel applies it — the
+  // plain funnel endpoint has no country dimension. Both return `steps`.
+  const funnelUrl = useCallback(
+    (params: URLSearchParams) =>
+      country ? `/api/dashboard/country/funnel?${params}` : `/api/dashboard/funnel?${params}`,
+    [country],
+  )
+
   // Campaign-scoped funnel (when search active).
   useEffect(() => {
     if (!campaignSearch.trim() || filteredRows.length === 0) { setCampaignFunnel([]); return }
@@ -397,13 +402,13 @@ function DashboardInner() {
     const ids = filteredRows.map((r) => r.campaign_id).join(',')
     const params = new URLSearchParams(buildQs())
     params.set('campaign_ids', ids)
-    apiFetch<{ steps: FunnelStep[] }>(`/api/dashboard/funnel?${params}`)
+    apiFetch<{ steps: FunnelStep[] }>(funnelUrl(params))
       .then((res) => { if (!cancelled) setCampaignFunnel(res.success && res.data ? res.data.steps || [] : []) })
       .catch(() => { if (!cancelled) setCampaignFunnel([]) })
       .finally(() => { if (!cancelled) setCampaignFunnelLoading(false) })
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [campaignSearch, filteredRows, buildQs])
+  }, [campaignSearch, filteredRows, buildQs, funnelUrl])
 
   // By-branch funnel.
   useEffect(() => {
@@ -421,7 +426,7 @@ function DashboardInner() {
         const params = new URLSearchParams(baseQs)
         params.set('branches', branchName)
         if (campaignIdParam) params.set('campaign_ids', campaignIdParam)
-        const res = await apiFetch<{ steps: FunnelStep[] }>(`/api/dashboard/funnel?${params}`)
+        const res = await apiFetch<{ steps: FunnelStep[] }>(funnelUrl(params))
         return [branchName, res.success && res.data ? res.data.steps || [] : []] as [string, FunnelStep[]]
       }),
     )
@@ -430,7 +435,7 @@ function DashboardInner() {
       .finally(() => { if (!cancelled) setBranchFunnelLoading(false) })
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [funnelView, selectedBranches, branches, campaignSearch, filteredRows, buildQs])
+  }, [funnelView, selectedBranches, branches, campaignSearch, filteredRows, buildQs, funnelUrl])
 
   // By-campaign funnel.
   useEffect(() => {
@@ -444,7 +449,7 @@ function DashboardInner() {
       targets.map(async (row) => {
         const params = new URLSearchParams(baseQs)
         params.set('campaign_ids', row.campaign_id)
-        const res = await apiFetch<{ steps: FunnelStep[] }>(`/api/dashboard/funnel?${params}`)
+        const res = await apiFetch<{ steps: FunnelStep[] }>(funnelUrl(params))
         return [row.campaign_name, res.success && res.data ? res.data.steps || [] : []] as [string, FunnelStep[]]
       }),
     )
@@ -453,7 +458,7 @@ function DashboardInner() {
       .finally(() => { if (!cancelled) setCampaignFunnelTableLoading(false) })
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [funnelView, filteredRows, buildQs])
+  }, [funnelView, filteredRows, buildQs, funnelUrl])
 
   const toggleBranch = (name: string) => {
     setSelectedBranches(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name])
@@ -544,10 +549,30 @@ function DashboardInner() {
     return insights.filter((i) => i.row.campaign_name.toLowerCase().includes(q))
   }, [insights, campaignSearch])
 
+  const campaignFilterActive = campaignSearch.trim().length > 0
+
+  // Once a campaign filter is on, the scoped funnel is the only valid baseline —
+  // falling back to the all-campaign one would label another campaign's numbers
+  // with this campaign's name.
   const displayFunnel = useMemo(
-    () => (campaignSearch.trim() && campaignFunnel.length > 0 ? campaignFunnel : funnel),
-    [campaignSearch, campaignFunnel, funnel],
+    () => (campaignFilterActive ? campaignFunnel : funnel),
+    [campaignFilterActive, campaignFunnel, funnel],
   )
+
+  // The aggregate bars render from FunnelStage[], so the campaign-scoped steps
+  // have to be reshaped into that form too — otherwise the header reads
+  // "filtered" while the bars still show every campaign in scope.
+  const displayStages = useMemo<FunnelStage[]>(() => {
+    if (!campaignFilterActive) return funnelData
+    return campaignFunnel.map((s) => ({
+      name: s.label,
+      value: s.value,
+      change: s.change,
+      drop_off: s.drop_off,
+      drop_off_prev: s.drop_off_prev,
+      drop_off_change: s.drop_off_change,
+    }))
+  }, [campaignFilterActive, campaignFunnel, funnelData])
 
   // Days in the selected window — keeps the diagnosis from saying "this week"
   // when the user is looking at 30 days.
@@ -683,7 +708,7 @@ function DashboardInner() {
     return <div className="flex items-center justify-center h-64"><div className="text-gray-500">Loading dashboard...</div></div>
   }
 
-  const funnelMax = funnelData.length > 0 ? Math.max(...funnelData.map(s => s.value), 1) : 1
+  const funnelMax = displayStages.length > 0 ? Math.max(...displayStages.map(s => s.value), 1) : 1
 
   return (
     <div>
@@ -1229,7 +1254,13 @@ function DashboardInner() {
             /* Single aggregate view */
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="space-y-3">
-                {funnelData.map((stage, i) => {
+                {campaignFilterActive && displayStages.length === 0 ? (
+                  <p className="text-sm text-gray-400 py-6 text-center">
+                    {campaignFunnelLoading
+                      ? 'Loading campaign funnel…'
+                      : `No funnel data for "${campaignSearch}" in this period.`}
+                  </p>
+                ) : displayStages.map((stage, i) => {
                   const widthPct = Math.max((stage.value / funnelMax) * 100, 4)
                   // Match to FunnelStep for leak highlighting
                   const funnelStep = displayFunnel.find((s) => s.label === stage.name)
