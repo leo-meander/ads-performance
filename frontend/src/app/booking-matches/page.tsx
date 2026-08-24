@@ -5,6 +5,7 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { API_BASE } from '@/lib/api'
 import { formatLocalDate } from '@/lib/dates'
 import { fmtMoney } from '@/components/dashboard/dashboardUtils'
+import { downloadCsv, toCsv, type CsvColumn } from '@/lib/csv'
 
 type BookingMatch = {
   id: string
@@ -123,6 +124,38 @@ const LEAD_BUCKET_ORDER = ['0', '1-3', '4-7', '8-14', '15+']
 type Branch = { name: string; currency: string }
 
 const CHANNELS = ['meta', 'google']
+
+// CSV layout mirrors the raw table, plus the ids / emails the table hides
+// for width. Money stays as raw numbers (no thousands separators) so the
+// file stays sum-able in Excel/Sheets; the currency lives in the header.
+function bookingCsvColumns(currency: string): CsvColumn<BookingMatch>[] {
+  return [
+    { header: 'Date', value: m => m.match_date },
+    { header: 'Branch', value: m => m.branch },
+    { header: 'Channel', value: m => m.ads_channel },
+    { header: 'Campaign', value: m => m.campaign_name },
+    { header: 'Campaign ID', value: m => m.campaign_id },
+    { header: 'Ad', value: m => m.ad_name },
+    { header: 'Ad ID', value: m => m.ad_id },
+    { header: 'Kind', value: m => m.purchase_kind },
+    { header: 'Ads Country', value: m => m.ads_country },
+    { header: 'Bookings', value: m => m.ads_bookings },
+    { header: `Matched Revenue (${currency})`, value: m => m.matched_revenue },
+    { header: `Ads Revenue (${currency})`, value: m => m.ads_revenue },
+    { header: 'Reservation ID', value: m => m.reservation_ids },
+    { header: 'Reservation #', value: m => m.reservation_numbers },
+    { header: 'Guest', value: m => m.guest_names },
+    { header: 'Guest Email', value: m => m.guest_emails },
+    { header: 'Status', value: m => m.reservation_statuses },
+    { header: 'Room', value: m => m.room_types },
+    { header: 'Rate Plan', value: m => m.rate_plans },
+    { header: 'Source', value: m => m.reservation_sources },
+    { header: 'Matched Country', value: m => m.matched_country },
+    { header: 'Result', value: m => m.match_result },
+    { header: 'Confidence', value: m => m.confidence },
+    { header: 'Matched At', value: m => m.matched_at },
+  ]
+}
 const MATCH_RESULTS = ['Matched', 'Matched (country)', 'Matched (combo)', 'Multiple']
 
 function getDateRange(preset: string): { from: string; to: string } {
@@ -359,6 +392,8 @@ export default function BookingMatchesDashboard() {
   const [rowsLoading, setRowsLoading] = useState(false)
   const [running, setRunning] = useState(false)
   const [runMessage, setRunMessage] = useState<string | null>(null)
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
 
   // Same rule as the dashboard: single branch (or several sharing one currency)
   // shows that native currency; multi-branch / mixed / all-branches shows VND.
@@ -449,6 +484,55 @@ export default function BookingMatchesDashboard() {
   const toggleBranch = (name: string) => {
     setSelectedBranches(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name])
   }
+
+  // The table renders at most one API page, and it may not be open at all,
+  // so the export re-pulls the whole filtered set page by page instead of
+  // dumping `matches`. That way the CSV matches the "N rows" count shown.
+  const downloadMatches = useCallback(async () => {
+    const params = buildParams()
+    if (!params) return
+    setDownloading(true)
+    setDownloadError(null)
+    try {
+      const PAGE = 1000  // API caps limit at 1000
+      const MAX_ROWS = 50000  // guard against an accidental all-time pull
+      const all: BookingMatch[] = []
+      let currency = activeCurrency
+      let total = 0
+      for (let offset = 0; offset < MAX_ROWS; offset += PAGE) {
+        const page = new URLSearchParams(params)
+        page.set('limit', String(PAGE))
+        page.set('offset', String(offset))
+        const res = await fetch(
+          `${API_BASE}/api/booking-matches?${page}`, { credentials: 'include' },
+        ).then(r => r.json())
+        if (!res.success) throw new Error(res.error || 'Export failed')
+        currency = res.data.currency || currency
+        total = res.data.total ?? 0
+        all.push(...res.data.items)
+        if (res.data.items.length < PAGE || all.length >= total) break
+      }
+      if (all.length === 0) {
+        setDownloadError('Nothing to export for these filters.')
+        return
+      }
+      const { from, to } = resolveRange()
+      const scope = selectedBranches.length > 0
+        ? selectedBranches.join('-').replace(/\s+/g, '')
+        : 'all-branches'
+      downloadCsv(
+        `booking-matches_${scope}_${from}_${to}.csv`,
+        toCsv(all, bookingCsvColumns(currency)),
+      )
+      if (all.length < total) {
+        setDownloadError(`Exported the first ${all.length} of ${total} rows (export cap).`)
+      }
+    } catch (e: any) {
+      setDownloadError(`Export failed: ${e.message}`)
+    } finally {
+      setDownloading(false)
+    }
+  }, [buildParams, resolveRange, selectedBranches, activeCurrency])
 
   const runManualMatch = async () => {
     setRunning(true)
@@ -985,13 +1069,28 @@ export default function BookingMatchesDashboard() {
               )}
             </span>
           </div>
-          <button
-            onClick={() => setShowRawTable(v => !v)}
-            className="text-xs font-medium text-blue-600 hover:text-blue-700"
-          >
-            {showRawTable ? 'Hide details ▲' : 'Show raw rows ▼'}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={downloadMatches}
+              disabled={downloading || (summary?.total_matches ?? 0) === 0}
+              title="Download every row matching the current filters as CSV"
+              className="px-2 py-1 border border-gray-300 rounded text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+            >
+              {downloading ? 'Preparing...' : 'Download CSV'}
+            </button>
+            <button
+              onClick={() => setShowRawTable(v => !v)}
+              className="text-xs font-medium text-blue-600 hover:text-blue-700"
+            >
+              {showRawTable ? 'Hide details ▲' : 'Show raw rows ▼'}
+            </button>
+          </div>
         </div>
+        {downloadError && (
+          <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800">
+            {downloadError}
+          </div>
+        )}
         {showRawTable && (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
