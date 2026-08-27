@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# Mirror, not registry-1.docker.io — see frontend/Dockerfile: the shared build
+# IP hits Docker Hub's anonymous pull limit and the build fails on the FROM line.
+FROM mirror.gcr.io/library/python:3.12-slim
 
 WORKDIR /app
 
