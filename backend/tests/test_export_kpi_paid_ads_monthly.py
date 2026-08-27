@@ -52,10 +52,10 @@ def _campaign(db, account, country="JP") -> Campaign:
     return c
 
 
-def _metric(db, campaign, *, d, spend, revenue, conv, ad_set_id=None, ad_id=None):
+def _metric(db, campaign, *, d, spend, revenue, conv, leads=0, ad_set_id=None, ad_id=None):
     db.add(MetricsCache(
         id=str(uuid.uuid4()), campaign_id=campaign.id, platform="meta", date=d,
-        spend=spend, revenue=revenue, conversions=conv,
+        spend=spend, revenue=revenue, conversions=conv, leads=leads,
         ad_set_id=ad_set_id, ad_id=ad_id,
     ))
 
@@ -141,3 +141,28 @@ def test_unknown_branch_errors():
     r = client.get("/api/export/kpi/paid-ads-monthly?year=2026&branch=nope",
                    headers={"X-API-Key": key})
     assert r.json()["success"] is False
+
+
+def test_leads_sum_campaign_level_only():
+    """Leads ride the same campaign-level filter as spend/conversions — the KPI
+    sheet fills its Leads + Cost-per-lead rows from this field."""
+    db = TestSession()
+    key = _api_key(db)
+    acc = _account(db, "Meander Osaka", "JPY")
+    camp = _campaign(db, acc, country="JP")
+    _metric(db, camp, d=date(2026, 3, 4), spend=1000, revenue=0, conv=0, leads=7)
+    _metric(db, camp, d=date(2026, 3, 9), spend=1000, revenue=0, conv=0, leads=5)
+    # ad-set grain must not double-count leads either
+    _metric(db, camp, d=date(2026, 3, 9), spend=1000, revenue=0, conv=0, leads=99,
+            ad_set_id=str(uuid.uuid4()))
+    db.commit()
+    db.close()
+
+    r = client.get("/api/export/kpi/paid-ads-monthly?year=2026&branch=osaka",
+                   headers={"X-API-Key": key})
+    assert r.status_code == 200
+    months = r.json()["data"]["branches"][0]["months"]
+    march = next(m for m in months if m["month"] == 3)
+    assert march["leads"] == 12
+    # a month with no rows still reports the field, as 0 (not missing/None)
+    assert next(m for m in months if m["month"] == 11)["leads"] == 0

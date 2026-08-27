@@ -1168,6 +1168,10 @@ def export_kpi_paid_ads_monthly(
       - Valid country only (ISO-2 code or the 'ALL' marker; NULL / 'Unknown'
         excluded), mirroring country.py:_apply_common_filters.
 
+    ``leads`` comes from the same campaign-level rows (Meta lead actions /
+    Google SUBMIT_LEAD_FORM), so a sheet can fill its Leads + Cost-per-lead
+    rows instead of having them typed in.
+
     ``roas`` is the native ROAS (revenue_native / spend_native) — identical to
     the per-branch dashboard ROAS since FX cancels. ``*_vnd`` fields apply the
     same FX_TO_VND map the dashboard uses for its VND view. Months with no data
@@ -1190,7 +1194,7 @@ def export_kpi_paid_ads_monthly(
             account_ids = get_account_ids_for_branches(db, [b])
             months = {
                 m: {"spend_native": 0.0, "revenue_native": 0.0, "conversions": 0,
-                    "spend_vnd": 0.0, "revenue_vnd": 0.0}
+                    "leads": 0, "spend_vnd": 0.0, "revenue_vnd": 0.0}
                 for m in range(1, 13)
             }
             if account_ids:
@@ -1201,6 +1205,7 @@ def export_kpi_paid_ads_monthly(
                         func.sum(MetricsCache.spend).label("spend"),
                         func.sum(MetricsCache.revenue).label("revenue"),
                         func.sum(MetricsCache.conversions).label("conversions"),
+                        func.sum(MetricsCache.leads).label("leads"),
                     )
                     .join(Campaign, Campaign.id == MetricsCache.campaign_id)
                     .join(AdAccount, AdAccount.id == Campaign.account_id)
@@ -1229,6 +1234,7 @@ def export_kpi_paid_ads_monthly(
                     bucket["spend_native"] += spend_n
                     bucket["revenue_native"] += rev_n
                     bucket["conversions"] += int(r.conversions or 0)
+                    bucket["leads"] += int(r.leads or 0)
                     bucket["spend_vnd"] += spend_n * fx
                     bucket["revenue_vnd"] += rev_n * fx
 
@@ -1244,6 +1250,10 @@ def export_kpi_paid_ads_monthly(
                     "spend_vnd": round(bk["spend_vnd"]),
                     "revenue_vnd": round(bk["revenue_vnd"]),
                     "conversions": bk["conversions"],
+                    # Lead-form submissions (Meta `actions` lead types; Google
+                    # SUBMIT_LEAD_FORM). 0 for accounts that run no lead ads —
+                    # a consumer must treat 0 as "none", not as "unknown".
+                    "leads": bk["leads"],
                     "roas": round(rev_n / spend_n, 4) if spend_n > 0 else None,
                 })
 
