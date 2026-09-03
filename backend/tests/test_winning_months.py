@@ -32,7 +32,7 @@ exists.
 """
 
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1144,4 +1144,63 @@ def test_live_state_never_crosses_branches():
     assert sgn_win["live_status"] == "ACTIVE"
     assert tpe_win["preview_url"] == "https://fb.com/p/tpe"
     assert tpe_win["live_status"] == "PAUSED"
+    db.close()
+
+
+# ── stuck-in-TEST tag (STALE_TEST_DAYS) ───────────────────
+
+
+def _new_ad_entries(data) -> dict:
+    """Every new_ad_list entry across every month, keyed by ad_name."""
+    return {
+        e["ad_name"]: e
+        for m in data["months"]
+        for e in m["new_ad_list"]
+    }
+
+
+def test_stale_test_flags_an_ad_still_in_test_after_thirty_days():
+    """Per Mason: an ad launched over 30 days ago that never left TEST is
+    never going to leave it on its own, so the read side tags it for a human
+    to decide (award_manual_verdict). A young TEST ad is NOT tagged — it is
+    still legitimately gathering evidence."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    old_day = date.today() - timedelta(days=60)
+    young_day = date.today() - timedelta(days=5)
+    # Both are far under 2,500 clicks / 5 bookings, so both sit in TEST.
+    _metric(db, acc, ad_name="CRTV_old_thin", on=old_day, spend=100, revenue=50,
+            clicks=40, conversions=0)
+    _metric(db, acc, ad_name="CRTV_young_thin", on=young_day, spend=100, revenue=50,
+            clicks=40, conversions=0)
+    data = list_winning_months(db)
+
+    by_name = _new_ad_entries(data)
+    old_ad, young_ad = by_name["CRTV_old_thin"], by_name["CRTV_young_thin"]
+    assert old_ad["status"] == "TEST" and young_ad["status"] == "TEST"
+    assert old_ad["age_days"] == 60 and old_ad["stale_test"] is True
+    assert young_ad["age_days"] == 5 and young_ad["stale_test"] is False
+
+    # The month bucket carries the count, so the collapsed list can be flagged
+    # without loading every ad in it.
+    old_month = next(m for m in data["months"] if m["month"] == old_day.isoformat()[:7])
+    assert old_month["stale_tests"] == 1
+    db.close()
+
+
+def test_stale_test_never_flags_an_ad_that_already_has_a_verdict():
+    """The tag means "stuck", not "old" — an ad that cleared the bar is
+    decided, however long ago it launched, and must not be offered for a
+    manual verdict the backend would reject as already judged."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    old_day = date.today() - timedelta(days=60)
+    _metric(db, acc, ad_name="CRTV_old_winner", on=old_day, spend=100, revenue=500,
+            clicks=3000, conversions=20)
+    data = list_winning_months(db)
+
+    winner = _new_ad_entries(data)["CRTV_old_winner"]
+    assert winner["status"] == "WIN"
+    assert winner["age_days"] == 60
+    assert winner["stale_test"] is False
     db.close()

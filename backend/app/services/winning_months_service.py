@@ -132,6 +132,17 @@ SCOPE_KPI = "kpi"
 SCOPE_ALL = "all"
 VALID_SCOPES = (SCOPE_KPI, SCOPE_ALL)
 
+# How long an ad may sit in TEST before the read side flags it for a human.
+# Per Mason (2026-09-03): "ads nào đã được tạo >30 ngày mà vẫn chưa thoát khỏi
+# trạng thái test" — an ad that has been live a month without reaching 2,500
+# cumulative clicks or 5 bookings is not "still gathering evidence," it is
+# never going to gather enough, so it should be decided by hand
+# (award_manual_verdict) instead of silently sitting outside the win rate
+# forever. This is a REPORTING flag only: it changes no verdict, writes
+# nothing, and an ad keeps accumulating toward an automatic verdict while it
+# carries the flag.
+STALE_TEST_DAYS = 30
+
 
 def normalize_scope(scope: str | None) -> str:
     """Coerce a caller-supplied scope to a known one, defaulting to the KPI.
@@ -1148,6 +1159,16 @@ def list_winning_months(
       "test" — not enough cumulative clicks/bookings yet; the ad is not
         counted in win_rate on either side.
 
+    Every entry also carries `age_days` (days since its first day of spend)
+    and `stale_test` — True for an ad that is STILL in TEST more than
+    STALE_TEST_DAYS after launch. Those are the ads that will never gather
+    enough evidence on their own and would otherwise sit outside the win rate
+    forever; the UI tags them so a human can settle them with
+    award_manual_verdict. `stale_tests` on each month bucket is the count of
+    them, kept even for months whose per-ad list isn't shipped. Neither field
+    changes any verdict or count — an ad flagged here is still a normal
+    candidate for an automatic verdict next month.
+
     Every ad entry (both `ads` and `new_ad_list`) also carries the LIVE state
     of the Meta ad behind it, matched by (branch, ad_name): `preview_url`
     opens Meta's own render of the ad, `live_status` / `live_active_count` /
@@ -1250,6 +1271,10 @@ def list_winning_months(
 
     new_ads_by_month: dict[str, int] = {}
     new_ad_list_by_month: dict[str, list[dict]] = {}
+    # Wall-clock, deliberately: "created more than 30 days ago" is a question
+    # about how long the ad has had to prove itself, not about how far the
+    # sync has got. A branch whose sync stalled still has month-old ads.
+    today = date.today()
     for r in new_ads_q.group_by(AdDailyMetric.account_id, AdDailyMetric.ad_name).all():
         key = r.first_date.isoformat()[:7]
         new_ads_by_month[key] = new_ads_by_month.get(key, 0) + 1
@@ -1273,6 +1298,7 @@ def list_winning_months(
             status_source = "test" if status == "TEST" else "live"
             decided_month = None
 
+        age_days = (today - r.first_date).days
         new_ad_list_by_month.setdefault(key, []).append({
             "ad_name": r.ad_name,
             "account_id": r.account_id,
@@ -1280,6 +1306,11 @@ def list_winning_months(
             "status": status,
             "status_source": status_source,
             "decided_month": decided_month,
+            # Days since the ad's first day of spend, and whether that makes
+            # it a stuck TEST — see STALE_TEST_DAYS. Reporting only: the ad is
+            # still a normal candidate for an automatic verdict.
+            "age_days": age_days,
+            "stale_test": status == "TEST" and age_days > STALE_TEST_DAYS,
             "first_date": r.first_date.isoformat(),
             "last_date": r.last_date.isoformat() if r.last_date else None,
             "spend": spend,
@@ -1398,6 +1429,9 @@ def list_winning_months(
         b["in_progress"] = key in in_progress_keys
         b["new_ads"] = new_ads_by_month.get(key, 0)
         b["new_ad_list"] = new_ad_list_by_month.get(key, [])
+        # Counted before the per-month narrowing below strips the list, so the
+        # month picker can flag a month with stuck ads without loading it.
+        b["stale_tests"] = sum(1 for e in b["new_ad_list"] if e["stale_test"])
         b["by_branch"] = [
             {"branch_name": n, "count": c}
             for n, c in sorted(b["by_branch"].items(), key=lambda kv: -kv[1])

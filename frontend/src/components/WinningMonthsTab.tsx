@@ -45,6 +45,13 @@ interface NewAd extends LiveAd {
   status: 'WIN' | 'LOSE' | 'TEST'
   status_source: 'auto' | 'manual' | 'live' | 'test'
   decided_month: string | null
+  // Days since the ad's first day of spend, and whether that makes it a
+  // STUCK test — still TEST more than 30 days after launch (backend
+  // STALE_TEST_DAYS). Such an ad will never gather enough clicks/bookings on
+  // its own, so it gets tagged and can be decided by hand instead of sitting
+  // outside the win rate forever.
+  age_days: number
+  stale_test: boolean
   first_date: string
   last_date: string | null
   spend: number
@@ -67,6 +74,9 @@ interface WinMonth {
   roas: number | null
   new_ads: number
   new_ad_list: NewAd[]
+  // How many of new_ad_list are stuck in TEST past 30 days. Sent even for
+  // months whose per-ad list isn't shipped, so the picker can flag them.
+  stale_tests: number
   by_branch: { branch_name: string; count: number }[]
   ads: WinAd[]
 }
@@ -116,7 +126,7 @@ const nextMonth = (m: string) => {
 const emptyMonth = (month: string): WinMonth => ({
   month, count: 0, lose_count: 0, tested: 0, win_rate: null, in_progress: false,
   spend: 0, revenue: 0, conversions: 0, roas: null, new_ads: 0, new_ad_list: [],
-  by_branch: [], ads: [],
+  stale_tests: 0, by_branch: [], ads: [],
 })
 
 // Status pill for an ad in the "created this month" group. WIN/LOSE/TEST is
@@ -133,6 +143,13 @@ const STATUS_HINT: Record<NewAd['status_source'], string> = {
   live: 'Not frozen yet: cumulative numbers already score this, but it can still change before the month closes.',
   test: 'Not enough cumulative clicks or bookings yet (needs >2,500 clicks or ≥5 bookings), so it counts toward neither side of the win rate.',
 }
+
+// An ad still in TEST this long after launch is not "gathering evidence" any
+// more — at its click rate it never will be. The tag says so, and the WIN/LOSE
+// buttons beside it are the escape hatch (award_manual_verdict on the backend).
+const STALE_TEST_HINT = (days: number) =>
+  `Launched ${days} days ago and still in TEST — never reached 2,500 cumulative clicks or 5 bookings, ` +
+  `so no automatic verdict is coming. Decide it by hand instead of leaving it outside the win rate.`
 
 const MONTH_LABEL = (m: string) => {
   const [y, mm] = m.split('-')
@@ -178,6 +195,9 @@ export default function WinningMonthsTab({
   // Collapsed by default — the winners table is the headline; the full
   // created-this-month roster is the follow-up question, not the answer.
   const [showCreated, setShowCreated] = useState(false)
+  // The stuck-in-TEST ad currently being decided by hand, "account::ad_name".
+  const [decidingAd, setDecidingAd] = useState('')
+  const [decideMsg, setDecideMsg] = useState('')
 
   const load = () => {
     setLoading(true); setError('')
@@ -207,6 +227,46 @@ export default function WinningMonthsTab({
       })
       .catch(() => setMsg('Recompute failed'))
       .finally(() => setRefreshing(false))
+  }
+
+  // Hand-decide an ad that has been stuck in TEST past STALE_TEST_DAYS — it
+  // will never clear the click/booking gate on its own, so the alternative is
+  // it never counting at all. The row is INSERT-only on the backend and lands
+  // in the current (most-recently-synced) month, exactly like an automatic
+  // verdict earned today, so a closed month's reported KPI never moves
+  // retroactively. Hence the confirm: it cannot be undone from here.
+  const decideManually = (ad: NewAd, verdict: 'WIN' | 'LOSE') => {
+    const roas = ad.roas != null ? `${ad.roas.toFixed(2)}x` : 'no'
+    const bm = ad.benchmark_roas != null ? `${ad.benchmark_roas.toFixed(2)}x` : '—'
+    if (!window.confirm(
+      `Freeze ${verdict} for "${ad.ad_name}" (${ad.branch_name})?\n\n`
+      + `${ad.age_days} days in TEST · ${roas} ROAS vs ${bm} benchmark · `
+      + `${ad.clicks.toLocaleString()} clicks · ${ad.conversions} bookings.\n\n`
+      + `Verdicts are frozen once and never rewritten, and it counts toward the win rate from now on.`,
+    )) return
+    setDecidingAd(`${ad.account_id}::${ad.ad_name}`); setDecideMsg('')
+    fetch(`${API_BASE}/api/creative/winning-months/manual-verdict`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        account_id: ad.account_id,
+        ad_name: ad.ad_name,
+        verdict,
+        scope,
+        notes: `Manual: still TEST ${ad.age_days} days after launch `
+          + `(${ad.clicks.toLocaleString()} clicks, ${ad.conversions} bookings).`,
+      }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        setDecideMsg(d.success
+          ? `${ad.ad_name} → ${verdict}, frozen in ${MONTH_LABEL(d.data.month)}.`
+          : `Error: ${d.error}`)
+        if (d.success) load()
+      })
+      .catch(() => setDecideMsg('Manual verdict failed'))
+      .finally(() => setDecidingAd(''))
   }
 
   // Branches the backend leaves out of this KPI (winning_months_service
@@ -268,6 +328,11 @@ export default function WinningMonthsTab({
           <li>ROAS above the branch lifetime benchmark = <strong>WIN</strong>. Otherwise = <strong>LOSE</strong>.</li>
           <li>TEST ads are not counted.</li>
           <li>Each ad is judged only once — the WIN/LOSE result is frozen and never re-tested.</li>
+          <li>
+            Still in TEST <strong>30+ days</strong> after launch = tagged <strong>STUCK</strong>
+            {canEdit ? ' — decide it WIN or LOSE by hand in the created-ads list below.' : '.'}
+            {' '}It will never gather enough clicks on its own.
+          </li>
           <li><strong>Win Rate</strong> = WIN ads ÷ (WIN + LOSE ads).</li>
           {isAll ? (
             <li>
@@ -489,6 +554,14 @@ export default function WinningMonthsTab({
                         .map(x => `${x.n} ${x.s}`)
                         .join(' · ')}
                     </span>
+                    {current.stale_tests > 0 && (
+                      <span
+                        className="text-[10px] font-semibold text-amber-800 bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5"
+                        title={`${current.stale_tests} ad(s) launched over 30 days ago are still in TEST — open this list to decide them.`}
+                      >
+                        {current.stale_tests} stuck in TEST
+                      </span>
+                    )}
                     <span className="ml-auto text-[11px] text-gray-400">
                       {showCreated ? 'hide' : 'show'}
                     </span>
@@ -499,7 +572,12 @@ export default function WinningMonthsTab({
                       <p className="px-4 pb-2 text-[11px] text-gray-400">
                         Reference only — these do not feed the win rate above. An ad is judged the month its
                         cumulative evidence clears the bar, so one created here may be decided in a later month.
+                        {current.stale_tests > 0 && (
+                          <> Ads tagged <strong className="text-amber-700">STUCK</strong> passed 30 days without
+                          ever clearing the bar{canEdit ? ' — decide those by hand.' : '.'}</>
+                        )}
                       </p>
+                      {decideMsg && <p className="px-4 pb-2 text-[11px] text-gray-600">{decideMsg}</p>}
                       <div className="overflow-x-auto">
                         <table className="w-full text-sm">
                           <thead><tr className="bg-gray-50 border-y">
@@ -514,12 +592,21 @@ export default function WinningMonthsTab({
                             <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs" title="Cumulative clicks. Needs >2,500 (or ≥5 bookings) to leave TEST.">
                               Clicks
                             </th>
+                            {canEdit && (
+                              <th className="text-right py-2 px-2 text-gray-500 font-medium text-xs" title="Ads stuck in TEST past 30 days can be settled by hand — nothing else is decidable here.">
+                                Decide
+                              </th>
+                            )}
                           </tr></thead>
                           <tbody>{current.new_ad_list.map(a => {
                             const fmt = FORMAT_META[inferFormat(a.ad_name)]
                             const Icon = fmt.Icon
+                            const decideKey = `${a.account_id}::${a.ad_name}`
                             return (
-                              <tr key={`${a.account_id}-${a.ad_name}`} className="border-b border-gray-50 hover:bg-gray-50/60">
+                              <tr
+                                key={`${a.account_id}-${a.ad_name}`}
+                                className={`border-b border-gray-50 ${a.stale_test ? 'bg-amber-50/50 hover:bg-amber-50' : 'hover:bg-gray-50/60'}`}
+                              >
                                 <td className="py-2 px-2">
                                   <p className="text-sm text-gray-900 max-w-[280px] truncate" title={a.ad_name}>{a.ad_name}</p>
                                   <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
@@ -544,6 +631,19 @@ export default function WinningMonthsTab({
                                   {a.decided_month && a.decided_month !== current.month && (
                                     <p className="text-[9px] text-gray-400 mt-0.5">decided {MONTH_LABEL(a.decided_month)}</p>
                                   )}
+                                  {/* Stuck: >30 days old and still TEST. The age is
+                                      on the tag because "how long has it had?" is the
+                                      whole basis for deciding it by hand. */}
+                                  {a.stale_test && (
+                                    <p className="mt-0.5">
+                                      <span
+                                        className="text-[9px] font-semibold text-amber-800 bg-amber-100 border border-amber-200 rounded px-1 py-0.5"
+                                        title={STALE_TEST_HINT(a.age_days)}
+                                      >
+                                        STUCK {a.age_days}d
+                                      </span>
+                                    </p>
+                                  )}
                                 </td>
                                 <td className="py-2 px-2 text-right text-xs">
                                   <span className={a.status === 'WIN' ? 'font-bold text-green-600' : 'text-gray-700'}>
@@ -554,6 +654,36 @@ export default function WinningMonthsTab({
                                 <td className="py-2 px-2 text-right text-xs tabular-nums">{a.conversions}</td>
                                 <td className="py-2 px-2 text-right text-xs tabular-nums">{a.spend.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                                 <td className="py-2 px-2 text-right text-xs tabular-nums">{a.clicks.toLocaleString()}</td>
+                                {/* Only a stuck TEST is decidable: anything else is
+                                    either already frozen or still legitimately
+                                    gathering evidence, and the backend would reject
+                                    a second verdict for an ad that has one. */}
+                                {canEdit && (
+                                  <td className="py-2 px-2 text-right whitespace-nowrap">
+                                    {a.stale_test ? (
+                                      <span className="inline-flex gap-1">
+                                        <button
+                                          onClick={() => decideManually(a, 'WIN')}
+                                          disabled={decidingAd === decideKey}
+                                          title="Freeze this ad as a WIN — permanent, and it starts counting toward the win rate."
+                                          className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-green-200 text-green-700 bg-green-50 hover:bg-green-100 disabled:opacity-40"
+                                        >
+                                          WIN
+                                        </button>
+                                        <button
+                                          onClick={() => decideManually(a, 'LOSE')}
+                                          disabled={decidingAd === decideKey}
+                                          title="Freeze this ad as a LOSE — permanent, and it starts counting toward the win rate."
+                                          className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 disabled:opacity-40"
+                                        >
+                                          LOSE
+                                        </button>
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-gray-300">—</span>
+                                    )}
+                                  </td>
+                                )}
                               </tr>
                             )
                           })}</tbody>
