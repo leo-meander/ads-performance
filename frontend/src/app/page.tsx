@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import {
-  ChevronRight, Search, X,
+  ChevronRight, ChevronDown, ChevronUp, Search, X,
   TrendingUp, AlertTriangle, Target, Activity, ArrowRight,
   Filter as FilterIcon, Info, CheckCircle2,
 } from 'lucide-react'
@@ -34,6 +34,9 @@ import {
 import SurfApplyModal from '@/components/action-needed/SurfApplyModal'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
+
+// Winners shown before the "Show more" button expands the full list
+const WINNERS_PREVIEW_COUNT = 6
 
 type FunnelStage = {
   name: string
@@ -185,6 +188,9 @@ function DashboardInner() {
   const [campaignFunnelTableLoading, setCampaignFunnelTableLoading] = useState(false)
   const [campaignFunnel, setCampaignFunnel] = useState<FunnelStep[]>([])
   const [campaignFunnelLoading, setCampaignFunnelLoading] = useState(false)
+
+  // Winners list expand/collapse
+  const [winnersExpanded, setWinnersExpanded] = useState(false)
 
   // Benchmark comparison
   const [comparisonMode, setComparisonMode] = useState<'prev' | 'benchmark'>('prev')
@@ -1409,7 +1415,7 @@ function DashboardInner() {
             <h2 className="text-sm font-semibold text-gray-800">Working well ({winners.length})</h2>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {winners.slice(0, 6).map((i) => (
+            {(winnersExpanded ? winners : winners.slice(0, WINNERS_PREVIEW_COUNT)).map((i) => (
               <div key={i.row.campaign_id} className="bg-white rounded-xl border border-green-100 p-4">
                 <div className="flex items-start justify-between gap-2">
                   <span className="font-medium text-gray-900 text-sm break-words" title={i.row.campaign_name}>
@@ -1434,6 +1440,26 @@ function DashboardInner() {
               </div>
             ))}
           </div>
+          {winners.length > WINNERS_PREVIEW_COUNT && (
+            <div className="mt-3 flex justify-center">
+              <button
+                onClick={() => setWinnersExpanded((v) => !v)}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 border border-gray-200 hover:border-gray-300 bg-white rounded-lg px-3 py-1.5 transition-colors"
+              >
+                {winnersExpanded ? (
+                  <>
+                    <ChevronUp className="w-3.5 h-3.5" />
+                    Show less
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="w-3.5 h-3.5" />
+                    Show {winners.length - WINNERS_PREVIEW_COUNT} more
+                  </>
+                )}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
