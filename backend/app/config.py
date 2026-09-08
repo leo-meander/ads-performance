@@ -130,6 +130,29 @@ class Settings(BaseSettings):
     CLARITY_API_TOKEN: str = ""
     CLARITY_PROJECT_ID: str = ""
 
+    # ── Spy Ads / competitor monitor ──────────────────────────────
+    # Meta's official Ad Library API only returns ads outside the EU when they
+    # are political, so hotel competitors in VN/TW/JP are invisible to it. The
+    # apify provider crawls the public Ad Library web surface instead and is
+    # the only source that sees ordinary commercial ads. meta_official stays
+    # available for EU/political lookups and needs no extra credentials.
+    AD_LIBRARY_PROVIDER: str = "apify"  # apify | meta_official
+    APIFY_TOKEN: str = ""
+    APIFY_FB_ADS_ACTOR: str = "apify/facebook-ads-scraper"
+    APIFY_TIMEOUT_SECONDS: int = 240
+    APIFY_POLL_SECONDS: int = 5
+    # Apify bills per ad returned, so every call carries a hard ceiling.
+    APIFY_MAX_RESULTS: int = 100
+
+    # Per-page crawl budget. Kept low deliberately: the monitor's value is
+    # repeated observation of the same ads, not depth on any single run.
+    SPY_CRAWL_ADS_PER_PAGE: int = 50
+    # The "worth studying" bar. An ad a competitor has funded this long is
+    # very likely profitable; below it we are just watching them test.
+    SPY_LONG_RUNNING_DAYS: int = 30
+    # Ads per AI breakdown batch — one cheap model call each.
+    SPY_BREAKDOWN_BATCH: int = 25
+
     # Google Analytics 4 Data API — service account JSON as base64.
     # Base64 used because the raw JSON contains newlines in private_key which
     # some deploy targets (Zeabur UI text field) don't preserve correctly.

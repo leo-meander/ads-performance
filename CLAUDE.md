@@ -82,6 +82,24 @@ Phase 8: Creative Intelligence (migrations 033-036)
   embedding_model). The Voyage embedding pipeline was dropped — these columns
   are unused; do not wire new code to them.
 
+## Spy Ads (/ad-research) — competitor monitor
+- Data source is pluggable: `AD_LIBRARY_PROVIDER` = `apify` (default) or
+  `meta_official`. Meta's official ads_archive API only returns ads outside
+  the EU when they are political, so it CANNOT see hotel competitors in
+  VN/TW/JP — that is a Meta limitation, not a bug. Apify crawls the public
+  Ad Library web surface and bills per ad returned.
+- `spy_competitor_ads` is the longevity ledger. It keeps TWO clocks that must
+  never be merged: `days_running` (Meta's own start date) and
+  `first_seen_at`/`last_seen_at`/`seen_count` (what we actually observed).
+- Never retire an ad as "stopped" on a crawl that hit its results limit —
+  a truncated crawl cannot distinguish absent from unreached.
+- `spy_creative_groups` collapses duplicated concepts (shared CDN asset id, or
+  near-identical copy). Singleton clusters are NOT persisted.
+- AI runs in two passes: cheap per-ad breakdown into a FIXED angle taxonomy
+  (spy_intelligence.ANGLE_TAXONOMY), then a digest that interprets a tally
+  computed in SQL. Never ask the model to do the counting.
+- Cron: /api/internal/tasks/spy-ads-crawl (every 2 days).
+
 ## Branches (6 total)
 5 hotels + 1 restaurant — each maps to one or more ad_accounts.
 - Meander Saigon
