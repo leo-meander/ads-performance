@@ -1621,13 +1621,16 @@ def trigger_spy_ads_crawl(
     limit: int | None = None,
     breakdown: bool = True,
 ):
-    """Every 2-3 days: refresh the competitor ad ledger behind /ad-research.
+    """Manual dispatch: refresh the competitor ad ledger behind /ad-research.
 
-    Cadence is a cost decision, not a technical one. The provider bills per ad
-    returned and an ad's run length barely moves overnight, so a daily-or-
-    slower sweep buys the same signal for a fraction of the spend. Longevity
-    is measured from Meta's own start date, so a missed day does not create a
-    gap in the number - only in our own first/last-seen evidence.
+    Deliberately unscheduled. The provider bills per ad returned and run length
+    comes from Meta's own start date, so crawling on a timer does not improve
+    the ranking - it only sharpens our own first/last-seen evidence, which
+    nobody reads between research sessions.
+
+    The everyday path is the "Crawl now" button on /ad-research, which walks
+    competitors one at a time and shows a roll call. This endpoint sweeps them
+    all in one go and is the fallback for crawling without opening the app.
 
     Runs async in a thread: one provider run per tracked page, each tens of
     seconds, which would otherwise blow the ingress timeout.

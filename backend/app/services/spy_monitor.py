@@ -1,7 +1,7 @@
 """Competitor ad monitor: crawl tracked pages, keep the longevity ledger.
 
-Run this on a cadence (Zeabur cron -> /api/internal/tasks/spy-ads-crawl).
-Each run:
+Runs on demand -- the "Crawl now" button on /ad-research, or a manual
+dispatch of /api/internal/tasks/spy-ads-crawl. Each run:
 
 1. asks the Ad Library provider for each tracked page's live ads,
 2. upserts them into `spy_competitor_ads`, extending first/last-seen,
@@ -9,7 +9,9 @@ Each run:
 4. re-derives creative groups so duplicated concepts read as one.
 
 The expensive part is step 1 - Apify bills per ad returned - so the crawl is
-bounded per page and is meant to run every day or two, not hourly.
+bounded per page and deliberately has no schedule. Run length is measured
+from Meta's own start date, so crawling more often does not make the ranking
+better; it only sharpens our own first/last-seen evidence.
 """
 
 from __future__ import annotations
@@ -41,15 +43,36 @@ def _aware(dt: datetime | None) -> datetime | None:
 
 
 def _days_running(ad: SpyCompetitorAd, now: datetime) -> int:
+    """How long the ad has been in market.
+
+    The window ends at whichever bound we can actually stand behind:
+
+    1. Meta's own stop date, when it gave one;
+    2. otherwise, for an ad we have stopped seeing, the last crawl that still
+       found it -- we know it ran that long and cannot claim more;
+    3. otherwise now, for an ad still running.
+
+    Case 2 is what keeps the headline number honest when crawling is ad hoc.
+    Counting up to the crawl that *noticed* the ad missing would silently
+    credit it with however long the gap between crawls happened to be, so an
+    ad that died in February would read as still-running in April.
+    """
+    stop = _aware(ad.ad_delivery_stop_time)
+    last_seen = _aware(ad.last_seen_at)
+    if stop:
+        end = stop
+    elif not ad.is_currently_active and last_seen:
+        end = last_seen
+    else:
+        end = now
+
     start = _aware(ad.ad_delivery_start_time)
-    if not start:
-        # No provider start date: fall back to our own observation window so
-        # the ranking still has something honest to sort on.
-        first = _aware(ad.first_seen_at) or now
-        end = _aware(ad.disappeared_at) or _aware(ad.last_seen_at) or now
-        return max(0, (end.date() - first.date()).days)
-    end = _aware(ad.ad_delivery_stop_time) or now
-    return max(0, (end.date() - start.date()).days)
+    if start:
+        return max(0, (end.date() - start.date()).days)
+    # No provider start date: fall back to our own observation window so the
+    # ranking still has something honest to sort on.
+    first = _aware(ad.first_seen_at) or now
+    return max(0, (end.date() - first.date()).days)
 
 
 def _days_observed(ad: SpyCompetitorAd) -> int:

@@ -98,7 +98,14 @@ Phase 8: Creative Intelligence (migrations 033-036)
 - AI runs in two passes: cheap per-ad breakdown into a FIXED angle taxonomy
   (spy_intelligence.ANGLE_TAXONOMY), then a digest that interprets a tally
   computed in SQL. Never ask the model to do the counting.
-- Cron: /api/internal/tasks/spy-ads-crawl (every 2 days).
+- NO cron. Crawling is on-demand: the "Crawl now" button on /ad-research
+  walks competitors one at a time (one provider run each, so a sweep never
+  hits the ingress timeout). /api/internal/tasks/spy-ads-crawl still exists
+  for manual dispatch. The provider bills per ad returned and run length
+  comes from Meta's start date, so scheduled crawling buys resolution
+  nobody reads. Consequence: the ledger goes stale between crawls — the
+  Radar tab surfaces how stale, and a retired ad's days_running stops at
+  last_seen_at rather than growing across the gap.
 
 ## Branches (6 total)
 5 hotels + 1 restaurant — each maps to one or more ad_accounts.

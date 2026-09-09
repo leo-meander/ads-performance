@@ -195,9 +195,12 @@ function AdRow({ ad }: { ad: MonitoredAd }) {
               Seen by us: {ad.seen_count}x over {ad.days_observed}d
             </span>
             {ad.last_seen_at && <span>Last seen {new Date(ad.last_seen_at).toLocaleDateString()}</span>}
-            {!ad.is_currently_active && ad.disappeared_at && (
+            {/* "Gone since" would name the crawl that noticed, not the day it
+                stopped. Only the last confirmed sighting is provable. */}
+            {!ad.is_currently_active && (
               <span className="text-red-500">
-                Gone since {new Date(ad.disappeared_at).toLocaleDateString()}
+                Stopped — last confirmed{' '}
+                {ad.last_seen_at ? new Date(ad.last_seen_at).toLocaleDateString() : 'unknown'}
               </span>
             )}
           </div>
@@ -274,6 +277,9 @@ export default function SpyRadarTab({
   const [adStatus, setAdStatus] = useState<'active' | 'stopped' | 'all'>('active')
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
+  const [progress, setProgress] = useState<
+    { done: number; total: number; current: string; lines: string[] } | null
+  >(null)
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
 
   const loadAds = useCallback(() => {
@@ -317,32 +323,66 @@ export default function SpyRadarTab({
       .catch(() => {})
   }
 
-  const runCrawl = () => {
+  // One request per competitor rather than one sweep.
+  //
+  // Each page costs a full provider run (tens of seconds), so a sweep over
+  // half a dozen competitors would run past the ingress timeout and the user
+  // would lose the roll call for runs they had already paid for. Serial, not
+  // parallel: the provider charges per ad and rate-limits concurrent runs, and
+  // a half-finished parallel batch is harder to reason about than a queue.
+  const runCrawl = async () => {
+    const pages = (status?.pages || []).filter(p => p.monitor_enabled)
+    if (pages.length === 0) {
+      setMessage({ tone: 'err', text: 'No competitors are enabled for monitoring yet.' })
+      return
+    }
+
     setBusy('crawl')
     setMessage(null)
-    fetch(`${API_BASE}/api/spy-ads/monitor/crawl`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({}),
-    })
-      .then(r => r.json())
-      .then(d => {
-        const t = d.data?.totals
-        if (d.success && t) {
-          setMessage({
-            tone: 'ok',
-            text: `Crawled ${d.data.pages.length} pages: ${t.fetched} ads (${t.new} new, ${t.retired} retired)${t.failed ? `, ${t.failed} failed` : ''}.`,
-          })
+    setProgress({ done: 0, total: pages.length, current: pages[0].page_name, lines: [] })
+
+    const lines: string[] = []
+    let fetched = 0
+    let added = 0
+    let retired = 0
+    let failed = 0
+
+    for (const [i, page] of pages.entries()) {
+      setProgress({ done: i, total: pages.length, current: page.page_name, lines: [...lines] })
+      try {
+        const resp = await fetch(`${API_BASE}/api/spy-ads/monitor/crawl`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ page_db_id: page.id }),
+        })
+        const d = await resp.json()
+        const row = d.data?.pages?.[0]
+        if (row && !row.error) {
+          fetched += row.fetched
+          added += row.new
+          retired += row.retired
+          lines.push(`${page.page_name}: ${row.fetched} ads (${row.new} new)`)
         } else {
-          setMessage({ tone: 'err', text: d.error || 'Crawl failed.' })
+          failed += 1
+          lines.push(`${page.page_name}: ${row?.error || d.error || 'failed'}`)
         }
-        loadAds()
-        loadGroups()
-        onStatusChange()
-      })
-      .catch(() => setMessage({ tone: 'err', text: 'Could not reach the server.' }))
-      .finally(() => setBusy(null))
+      } catch {
+        failed += 1
+        lines.push(`${page.page_name}: could not reach the server`)
+      }
+      setProgress({ done: i + 1, total: pages.length, current: '', lines: [...lines] })
+    }
+
+    setMessage({
+      tone: failed === pages.length ? 'err' : 'ok',
+      text: `Crawled ${pages.length - failed}/${pages.length} competitors: ${fetched} ads (${added} new, ${retired} retired).`,
+    })
+    setProgress(null)
+    loadAds()
+    loadGroups()
+    onStatusChange()
+    setBusy(null)
   }
 
   const runBreakdown = () => {
@@ -373,6 +413,23 @@ export default function SpyRadarTab({
 
   const brokenPages = (status?.pages || []).filter(p => p.last_crawl_error)
   const neverCrawled = (status?.pages || []).filter(p => !p.last_checked_at)
+
+  // Nothing crawls on a schedule, so the ledger is exactly as fresh as the
+  // last time somebody pressed the button. Say how stale it is rather than
+  // letting a three-month-old snapshot read as today's market.
+  //
+  // Freshness counts only crawls that SUCCEEDED. `last_checked_at` records the
+  // attempt, so a run that failed on every competitor would otherwise reset the
+  // clock and make a stale ledger look current -- "we tried" is not "we know".
+  const lastCrawl = (status?.pages || [])
+    .filter(p => !p.last_crawl_error)
+    .map(p => p.last_checked_at)
+    .filter((d): d is string => !!d)
+    .sort()
+    .pop()
+  const daysStale = lastCrawl
+    ? Math.floor((Date.now() - new Date(lastCrawl).getTime()) / 86400000)
+    : null
 
   return (
     <div className="space-y-4">
@@ -421,6 +478,30 @@ export default function SpyRadarTab({
         <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 text-sm text-blue-800">
           {neverCrawled.length} tracked competitor{neverCrawled.length === 1 ? ' has' : 's have'} never been
           crawled. Run a crawl to start their longevity clock.
+        </div>
+      )}
+
+      {daysStale === null && (status?.pages || []).some(p => p.last_checked_at) && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+          <p className="font-semibold flex items-center gap-1.5">
+            <AlertTriangle className="w-4 h-4" /> No competitor has been crawled successfully
+          </p>
+          <p className="mt-1 text-amber-700">
+            Every crawl so far has failed, so anything below is either stale or empty. Fix the
+            errors above before reading these numbers.
+          </p>
+        </div>
+      )}
+
+      {daysStale !== null && daysStale >= 7 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+          <p className="font-semibold flex items-center gap-1.5">
+            <AlertTriangle className="w-4 h-4" /> This ledger is {daysStale} days old
+          </p>
+          <p className="mt-1 text-amber-700">
+            Nothing crawls on a schedule — press &quot;Crawl now&quot; before trusting what is
+            still running. Ads that stopped since the last crawl are still listed as active.
+          </p>
         </div>
       )}
 
@@ -485,6 +566,32 @@ export default function SpyRadarTab({
           {busy === 'breakdown' ? 'Analyzing...' : `Break down ${status?.totals.awaiting_breakdown ?? 0}`}
         </button>
       </div>
+
+      {progress && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm">
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <span className="font-medium text-blue-900">
+              {progress.current
+                ? `Crawling ${progress.current}…`
+                : 'Finishing up…'}
+            </span>
+            <span className="text-xs text-blue-700 tabular-nums">
+              {progress.done}/{progress.total}
+            </span>
+          </div>
+          <div className="h-1.5 bg-blue-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-500 rounded-full transition-all"
+              style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
+            />
+          </div>
+          {progress.lines.length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-xs text-blue-800">
+              {progress.lines.map((l, i) => <li key={i}>{l}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
 
       {message && (
         <div

@@ -487,3 +487,44 @@ def test_singleton_clusters_are_not_persisted_as_concepts():
     assert db.query(SpyCreativeGroup).count() == 0
     assert all(r.creative_group_key is None for r in db.query(SpyCompetitorAd).all())
     db.close()
+
+
+def test_retired_ad_stops_counting_at_the_last_crawl_that_saw_it():
+    """Ad-hoc crawling must not invent longevity across the gap.
+
+    Crawl on day 0 and again on day 60 with the ad gone. We can prove it ran
+    until day 0; whether it survived to day 60 is unknown, so the run length
+    must stop at day 0 rather than absorb the whole 60-day gap.
+    """
+    db = TestSession()
+    page = _page(db)
+    ad = _ad("A1", start=NOW - timedelta(days=10))
+
+    with patch("app.services.spy_monitor.fetch_page_ads") as fetch:
+        fetch.return_value = AdLibraryPage(ads=[ad], source="apify")
+        crawl_tracked_page(db, page, limit=10, now=NOW)
+        assert db.query(SpyCompetitorAd).one().days_running == 10
+
+        fetch.return_value = AdLibraryPage(ads=[], source="apify")
+        crawl_tracked_page(db, page, limit=10, now=NOW + timedelta(days=60))
+
+    row = db.query(SpyCompetitorAd).one()
+    assert row.is_currently_active is False
+    assert row.days_running == 10, "the 60-day gap must not become runtime"
+    # We still record when we noticed, separately from when we last confirmed.
+    assert at(row.disappeared_at) == at(NOW + timedelta(days=60))
+    assert at(row.last_seen_at) == at(NOW)
+    db.close()
+
+
+def test_meta_stop_date_still_wins_over_our_last_sighting():
+    db = TestSession()
+    page = _page(db)
+    ad = _ad("A1", start=NOW - timedelta(days=40))
+    ad.ad_delivery_stop_time = NOW - timedelta(days=5)
+    ad.is_active = False
+    upsert_ads(db, [ad], tracked_page=page, now=NOW)
+    db.commit()
+
+    assert db.query(SpyCompetitorAd).one().days_running == 35
+    db.close()

@@ -5,7 +5,7 @@ competitor hotel ads in VN/TW/JP are only reachable through the public Ad
 Library web surface. This provider drives an Apify actor over that surface.
 
 Cost is per ad returned, so every call is bounded by an explicit results limit
-and the monitor crawls on a multi-day cadence rather than hourly.
+and the monitor crawls only when someone asks it to.
 
 The actor's item shape is not a contract we control, so parsing is
 deliberately forgiving: every field is looked up under several plausible
