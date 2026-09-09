@@ -16,10 +16,17 @@ from app.database import get_db
 from app.dependencies.auth import require_page
 from app.models.account import AdAccount
 from app.models.spy_analysis_report import SpyAnalysisReport
+from app.models.spy_competitor_ad import SpyCompetitorAd, SpyCreativeGroup
 from app.models.spy_saved_ad import SpySavedAd
 from app.models.spy_tracked_page import SpyTrackedPage
 from app.models.user import User
-from app.services.ad_library_client import fetch_page_ads, search_ads
+from app.services.ad_library import (
+    AdLibraryError,
+    active_provider_name,
+    fetch_page_ads,
+    provider_status,
+    search_ads,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +61,22 @@ def _resolve_meta_token(db: Session) -> str | None:
 # ── Search ─────────────────────────────────────────────────
 
 
+@router.get("/spy-ads/provider")
+def get_provider_info(
+    current_user: User = Depends(require_page("ad_research")),
+):
+    """What source is answering, and whether it can see commercial ads.
+
+    The page shows this up front because the two sources differ in coverage,
+    not just speed: an empty grid means something completely different on
+    meta_official than on apify.
+    """
+    try:
+        return _api_response(provider_status())
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
 @router.get("/spy-ads/search")
 def search_ad_library(
     q: str = "",
@@ -62,26 +85,37 @@ def search_ad_library(
     platform: str = "ALL",
     media_type: str = "ALL",
     page_id: str = "",
-    limit: int = Query(default=25, le=50),
+    limit: int = Query(default=25, le=100),
     after: str | None = None,
+    provider: str | None = None,
     current_user: User = Depends(require_page("ad_research")),
     db: Session = Depends(get_db),
 ):
+    name = active_provider_name(provider)
     try:
-        result = search_ads(
+        page = search_ads(
+            provider=name,
             query=q,
             country=country,
             active_status=active_status,
             publisher_platform=platform,
             media_type=media_type,
-            search_page_ids=page_id,
+            page_id=page_id,
             limit=limit,
             after=after,
-            access_token=_resolve_meta_token(db),
+            access_token=_resolve_meta_token(db) if name == "meta_official" else None,
         )
-        return _api_response(result)
+        return _api_response({
+            "ads": [a.to_dict() for a in page.ads],
+            "paging": {"after": page.after},
+            "provider": page.source or name,
+            "coverage_note": page.coverage_note,
+        })
+    except AdLibraryError as e:
+        logger.warning("Ad Library search failed [%s]: %s", name, e)
+        return _api_response(error=str(e))
     except Exception as e:
-        logger.error("Search failed: %s", e)
+        logger.exception("Ad Library search crashed [%s]", name)
         return _api_response(error=str(e))
 
 
@@ -216,20 +250,39 @@ def get_tracked_page_ads(
         if not row:
             return _api_response(error="Tracked page not found.")
 
-        result = fetch_page_ads(
+        name = active_provider_name()
+        page = fetch_page_ads(
+            provider=name,
             page_id=row.page_id,
             country=row.country or "ALL",
             active_status=active_status,
             limit=limit,
             after=after,
-            access_token=_resolve_meta_token(db),
+            access_token=_resolve_meta_token(db) if name == "meta_official" else None,
         )
 
+        # A live view is also an observation — fold it into the ledger so
+        # browsing a competitor extends their ads' first/last-seen for free.
+        from app.services.spy_monitor import upsert_ads
+        upsert_ads(db, page.ads, tracked_page=row)
+
         row.last_checked_at = datetime.now(timezone.utc)
+        row.last_crawl_ad_count = len(page.ads)
+        row.last_crawl_error = page.coverage_note
         db.commit()
 
-        return _api_response(result)
+        return _api_response({
+            "ads": [a.to_dict() for a in page.ads],
+            "paging": {"after": page.after},
+            "provider": page.source or name,
+            "coverage_note": page.coverage_note,
+        })
+    except AdLibraryError as e:
+        db.rollback()
+        return _api_response(error=str(e))
     except Exception as e:
+        db.rollback()
+        logger.exception("Tracked-page ad fetch crashed")
         return _api_response(error=str(e))
 
 
@@ -546,7 +599,7 @@ def analyze_ads(
             input_ad_ids=body.ad_ids,
             input_params={"custom_prompt": body.custom_prompt},
             result_markdown="",
-            model_used="claude-sonnet-4-20250514",
+            model_used="claude-sonnet-5",
         )
         db.add(report)
         db.commit()
@@ -558,7 +611,7 @@ def analyze_ads(
             full_text = []
             try:
                 with client.messages.stream(
-                    model="claude-sonnet-4-20250514",
+                    model="claude-sonnet-5",
                     max_tokens=4096,
                     system=ANALYSIS_SYSTEM_PROMPT,
                     messages=[
@@ -661,4 +714,357 @@ def get_stats(
             "collections": [{"name": n, "count": c} for n, c in collections if n],
         })
     except Exception as e:
+        return _api_response(error=str(e))
+
+
+# -- Competitor monitor (longevity ledger) ------------------------------
+#
+# Search answers "what is running right now". The monitor answers the harder
+# question: what has KEPT running. That only comes from repeated observation,
+# so these endpoints read `spy_competitor_ads` rather than hitting a provider.
+
+
+def _competitor_ad_dict(r: SpyCompetitorAd) -> dict:
+    return {
+        "id": r.id,
+        "ad_archive_id": r.ad_archive_id,
+        "tracked_page_id": r.tracked_page_id,
+        "page_id": r.page_id,
+        "page_name": r.page_name,
+        "country": r.country,
+        "ad_creative_bodies": r.ad_creative_bodies or [],
+        "ad_creative_link_titles": r.ad_creative_link_titles or [],
+        "ad_creative_link_captions": r.ad_creative_link_captions or [],
+        "cta_text": r.cta_text,
+        "link_url": r.link_url,
+        "media_type": r.media_type,
+        "preview_image_url": r.preview_image_url,
+        "ad_snapshot_url": r.ad_snapshot_url,
+        "publisher_platforms": r.publisher_platforms or [],
+        "ad_delivery_start_time": (
+            r.ad_delivery_start_time.isoformat() if r.ad_delivery_start_time else None
+        ),
+        "ad_delivery_stop_time": (
+            r.ad_delivery_stop_time.isoformat() if r.ad_delivery_stop_time else None
+        ),
+        "days_running": r.days_running or 0,
+        "first_seen_at": r.first_seen_at.isoformat() if r.first_seen_at else None,
+        "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+        "seen_count": r.seen_count or 0,
+        "days_observed": r.days_observed or 0,
+        "is_currently_active": bool(r.is_currently_active),
+        "disappeared_at": r.disappeared_at.isoformat() if r.disappeared_at else None,
+        "creative_group_key": r.creative_group_key,
+        "ai_breakdown": r.ai_breakdown,
+        "source": r.source,
+    }
+
+
+@router.get("/spy-ads/monitor/ads")
+def list_monitored_ads(
+    min_days: int | None = None,
+    status: str = "active",  # active | stopped | all
+    page_id: str | None = None,
+    country: str | None = None,
+    media_type: str | None = None,
+    has_breakdown: bool | None = None,
+    sort_by: str = "days_running",
+    limit: int = Query(default=50, le=200),
+    offset: int = 0,
+    current_user: User = Depends(require_page("ad_research")),
+    db: Session = Depends(get_db),
+):
+    """The longevity ranking - longest-running competitor ads first."""
+    try:
+        q = db.query(SpyCompetitorAd).filter(SpyCompetitorAd.is_active.is_(True))
+        if min_days is not None:
+            q = q.filter(SpyCompetitorAd.days_running >= min_days)
+        if status == "active":
+            q = q.filter(SpyCompetitorAd.is_currently_active.is_(True))
+        elif status == "stopped":
+            q = q.filter(SpyCompetitorAd.is_currently_active.is_(False))
+        if page_id:
+            q = q.filter(SpyCompetitorAd.page_id == page_id)
+        if country:
+            q = q.filter(SpyCompetitorAd.country == country.upper())
+        if media_type:
+            q = q.filter(SpyCompetitorAd.media_type == media_type)
+        if has_breakdown is True:
+            q = q.filter(SpyCompetitorAd.ai_breakdown.isnot(None))
+        elif has_breakdown is False:
+            q = q.filter(SpyCompetitorAd.ai_breakdown.is_(None))
+
+        total = q.count()
+        sort_col = {
+            "days_running": SpyCompetitorAd.days_running,
+            "days_observed": SpyCompetitorAd.days_observed,
+            "first_seen_at": SpyCompetitorAd.first_seen_at,
+            "last_seen_at": SpyCompetitorAd.last_seen_at,
+            "seen_count": SpyCompetitorAd.seen_count,
+        }.get(sort_by, SpyCompetitorAd.days_running)
+        rows = q.order_by(sort_col.desc()).offset(offset).limit(limit).all()
+
+        return _api_response({
+            "items": [_competitor_ad_dict(r) for r in rows],
+            "total": total,
+            "long_running_days": settings.SPY_LONG_RUNNING_DAYS,
+        })
+    except Exception as e:
+        logger.exception("monitor/ads failed")
+        return _api_response(error=str(e))
+
+
+@router.get("/spy-ads/monitor/groups")
+def list_creative_groups(
+    min_ads: int = 2,
+    only_active: bool = True,
+    limit: int = Query(default=50, le=200),
+    offset: int = 0,
+    current_user: User = Depends(require_page("ad_research")),
+    db: Session = Depends(get_db),
+):
+    """Creative concepts - the same idea duplicated across ad ids.
+
+    Defaults to groups of 2+ because a group of one is just an ad, and the
+    whole point of this view is repetition.
+    """
+    try:
+        q = db.query(SpyCreativeGroup).filter(
+            SpyCreativeGroup.is_active.is_(True),
+            SpyCreativeGroup.ad_count >= min_ads,
+        )
+        if only_active:
+            q = q.filter(SpyCreativeGroup.is_still_active.is_(True))
+        total = q.count()
+        rows = (
+            q.order_by(
+                SpyCreativeGroup.ad_count.desc(),
+                SpyCreativeGroup.max_days_running.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        items = [
+            {
+                "id": g.id,
+                "group_key": g.group_key,
+                "label": g.label,
+                "ad_count": g.ad_count,
+                "active_ad_count": g.active_ad_count,
+                "page_ids": g.page_ids or [],
+                "page_names": g.page_names or [],
+                "representative_ad_id": g.representative_ad_id,
+                "preview_image_url": g.preview_image_url,
+                "media_type": g.media_type,
+                "first_seen_at": g.first_seen_at.isoformat() if g.first_seen_at else None,
+                "last_seen_at": g.last_seen_at.isoformat() if g.last_seen_at else None,
+                "max_days_running": g.max_days_running,
+                "is_still_active": bool(g.is_still_active),
+            }
+            for g in rows
+        ]
+        return _api_response({"items": items, "total": total})
+    except Exception as e:
+        logger.exception("monitor/groups failed")
+        return _api_response(error=str(e))
+
+
+@router.get("/spy-ads/monitor/groups/{group_key}")
+def get_creative_group(
+    group_key: str,
+    current_user: User = Depends(require_page("ad_research")),
+    db: Session = Depends(get_db),
+):
+    try:
+        group = (
+            db.query(SpyCreativeGroup)
+            .filter(SpyCreativeGroup.group_key == group_key)
+            .first()
+        )
+        if not group:
+            return _api_response(error="Creative group not found.")
+        members = (
+            db.query(SpyCompetitorAd)
+            .filter(
+                SpyCompetitorAd.creative_group_key == group_key,
+                SpyCompetitorAd.is_active.is_(True),
+            )
+            .order_by(SpyCompetitorAd.days_running.desc())
+            .all()
+        )
+        return _api_response({
+            "group_key": group.group_key,
+            "label": group.label,
+            "ad_count": group.ad_count,
+            "active_ad_count": group.active_ad_count,
+            "page_names": group.page_names or [],
+            "max_days_running": group.max_days_running,
+            "first_seen_at": group.first_seen_at.isoformat() if group.first_seen_at else None,
+            "last_seen_at": group.last_seen_at.isoformat() if group.last_seen_at else None,
+            "is_still_active": bool(group.is_still_active),
+            "ads": [_competitor_ad_dict(m) for m in members],
+        })
+    except Exception as e:
+        return _api_response(error=str(e))
+
+
+@router.get("/spy-ads/monitor/status")
+def get_monitor_status(
+    current_user: User = Depends(require_page("ad_research")),
+    db: Session = Depends(get_db),
+):
+    """Per-page crawl roll call.
+
+    A cron that returns 202 proves nothing about whether a competitor actually
+    yielded ads, and a page silently returning zero looks exactly like one
+    that stopped advertising. Surfacing `last_crawl_error` and the per-page ad
+    count is what makes a broken page visible instead of invisible.
+    """
+    try:
+        pages = (
+            db.query(SpyTrackedPage)
+            .filter(SpyTrackedPage.is_active.is_(True))
+            .order_by(SpyTrackedPage.page_name)
+            .all()
+        )
+        long_days = settings.SPY_LONG_RUNNING_DAYS
+        base = db.query(SpyCompetitorAd).filter(SpyCompetitorAd.is_active.is_(True))
+        total_ads = base.count()
+        active_ads = base.filter(SpyCompetitorAd.is_currently_active.is_(True)).count()
+        long_running = base.filter(
+            SpyCompetitorAd.is_currently_active.is_(True),
+            SpyCompetitorAd.days_running >= long_days,
+        ).count()
+        awaiting = base.filter(
+            SpyCompetitorAd.days_running >= long_days,
+            SpyCompetitorAd.ai_breakdown.is_(None),
+        ).count()
+        groups = (
+            db.query(SpyCreativeGroup)
+            .filter(SpyCreativeGroup.is_active.is_(True), SpyCreativeGroup.ad_count >= 2)
+            .count()
+        )
+
+        return _api_response({
+            "provider": provider_status(),
+            "long_running_days": long_days,
+            "totals": {
+                "tracked_pages": len(pages),
+                "ads_tracked": total_ads,
+                "ads_active": active_ads,
+                "long_running_active": long_running,
+                "awaiting_breakdown": awaiting,
+                "creative_groups": groups,
+            },
+            "pages": [
+                {
+                    "id": p.id,
+                    "page_id": p.page_id,
+                    "page_name": p.page_name,
+                    "category": p.category,
+                    "country": p.country,
+                    "monitor_enabled": bool(p.monitor_enabled),
+                    "last_checked_at": (
+                        p.last_checked_at.isoformat() if p.last_checked_at else None
+                    ),
+                    "last_crawl_ad_count": p.last_crawl_ad_count,
+                    "last_crawl_error": p.last_crawl_error,
+                }
+                for p in pages
+            ],
+        })
+    except Exception as e:
+        logger.exception("monitor/status failed")
+        return _api_response(error=str(e))
+
+
+class CrawlBody(BaseModel):
+    page_db_id: str | None = None
+    limit: int | None = None
+
+
+@router.post("/spy-ads/monitor/crawl")
+def trigger_crawl(
+    body: CrawlBody,
+    current_user: User = Depends(require_page("ad_research", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Crawl now. Synchronous so the user sees the roll call they triggered.
+
+    One page takes an Apify run (tens of seconds); a sweep of a handful of
+    competitors stays inside the ingress timeout. The cron path runs the same
+    function in a background thread.
+    """
+    try:
+        from app.services.spy_monitor import run_crawl
+        result = run_crawl(db, page_db_id=body.page_db_id, limit=body.limit)
+        return _api_response(result, error=result.get("error"))
+    except Exception as e:
+        logger.exception("monitor/crawl failed")
+        return _api_response(error=str(e))
+
+
+class BreakdownBody(BaseModel):
+    limit: int | None = None
+    min_days_running: int | None = None
+    force: bool = False
+
+
+@router.post("/spy-ads/monitor/breakdown")
+def trigger_breakdown(
+    body: BreakdownBody,
+    current_user: User = Depends(require_page("ad_research", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Fill hook/angle/offer/USP/CTA/target on long-running ads."""
+    try:
+        from app.services.spy_intelligence import breakdown_ads
+        result = breakdown_ads(
+            db,
+            limit=body.limit or settings.SPY_BREAKDOWN_BATCH,
+            min_days_running=body.min_days_running,
+            force=body.force,
+        )
+        return _api_response(result)
+    except Exception as e:
+        logger.exception("monitor/breakdown failed")
+        return _api_response(error=str(e))
+
+
+@router.get("/spy-ads/patterns")
+def get_patterns(
+    min_days: int | None = None,
+    current_user: User = Depends(require_page("ad_research")),
+    db: Session = Depends(get_db),
+):
+    """The pattern tally - counted in SQL, no model call, no cost."""
+    try:
+        from app.services.spy_intelligence import compute_tally
+        return _api_response(compute_tally(db, min_days_running=min_days))
+    except Exception as e:
+        logger.exception("patterns failed")
+        return _api_response(error=str(e))
+
+
+class DigestBody(BaseModel):
+    min_days_running: int | None = None
+
+
+@router.post("/spy-ads/patterns/digest")
+def create_pattern_digest(
+    body: DigestBody,
+    current_user: User = Depends(require_page("ad_research", "edit")),
+    db: Session = Depends(get_db),
+):
+    """Interpret the tally into a MEANDER-facing recommendation."""
+    try:
+        from app.services.spy_intelligence import build_pattern_digest
+        return _api_response(
+            build_pattern_digest(db, min_days_running=body.min_days_running)
+        )
+    except ValueError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        logger.exception("patterns/digest failed")
         return _api_response(error=str(e))

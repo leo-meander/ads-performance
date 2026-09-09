@@ -35,6 +35,7 @@ from app.models.ai_conversation import AIConversation
 from app.models.spy_tracked_page import SpyTrackedPage
 from app.models.spy_saved_ad import SpySavedAd
 from app.models.spy_analysis_report import SpyAnalysisReport
+from app.models.spy_competitor_ad import SpyCompetitorAd, SpyCreativeGroup
 from app.models.google_asset_group import GoogleAssetGroup
 from app.models.google_asset import GoogleAsset
 from app.models.google_recommendation import GoogleRecommendation

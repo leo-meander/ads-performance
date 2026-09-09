@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Search, ExternalLink, Bookmark, BookmarkCheck, UserPlus, Plus, X, Trash2, Tag, Brain, ChevronRight, Eye } from 'lucide-react'
+import { Search, ExternalLink, Bookmark, BookmarkCheck, UserPlus, Plus, X, Trash2, Tag, Brain, ChevronRight, Eye, AlertTriangle, RefreshCw, Radar } from 'lucide-react'
+import SpyRadarTab, { MonitorStatus } from '@/components/SpyRadarTab'
+import SpyPatternsTab from '@/components/SpyPatternsTab'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -117,7 +119,11 @@ function AdCard({ ad, savedIds, onSave, onTrackPage }: { ad: AdResult; savedIds:
 }
 
 export default function SpyAdsPage() {
-  const [activeTab, setActiveTab] = useState<'search' | 'competitors' | 'saved' | 'analysis'>('search')
+  // Radar leads: the page's whole point is what has KEPT running, and a
+  // one-off search cannot answer that.
+  const [activeTab, setActiveTab] = useState<'radar' | 'patterns' | 'search' | 'competitors' | 'saved' | 'analysis'>('radar')
+  const [monitorStatus, setMonitorStatus] = useState<MonitorStatus | null>(null)
+  const [crawlingPageId, setCrawlingPageId] = useState<string | null>(null)
 
   // ── Search state ──
   const [searchQuery, setSearchQuery] = useState('')
@@ -129,6 +135,10 @@ export default function SpyAdsPage() {
   const [pagingCursor, setPagingCursor] = useState<string | null>(null)
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
+  // Set when a source answered but its coverage makes an empty result
+  // expected — the difference between "nothing is running" and "this API
+  // cannot see what is running".
+  const [coverageNote, setCoverageNote] = useState<string | null>(null)
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set())
 
   // ── Competitors state ──
@@ -157,6 +167,7 @@ export default function SpyAdsPage() {
 
   // ── Load initial data ──
   useEffect(() => {
+    loadMonitorStatus()
     loadTrackedPages()
     loadCollections()
     loadSavedAds()
@@ -166,6 +177,11 @@ export default function SpyAdsPage() {
       if (d.success) setSavedIds(new Set(d.data.items.map((a: SavedAd) => a.ad_archive_id)))
     }).catch(() => {})
   }, [])
+
+  const loadMonitorStatus = () => {
+    fetch(`${API_BASE}/api/spy-ads/monitor/status`, { credentials: 'include' })
+      .then(r => r.json()).then(d => { if (d.success) setMonitorStatus(d.data) }).catch(() => {})
+  }
 
   const loadTrackedPages = () => {
     fetch(`${API_BASE}/api/spy-ads/tracked-pages`, { credentials: 'include' }).then(r => r.json()).then(d => {
@@ -196,9 +212,13 @@ export default function SpyAdsPage() {
   // ── Search functions ──
   const doSearch = (query?: string, append = false) => {
     const q = query ?? searchQuery
-    if (!q.trim() && !platform) return
+    if (!q.trim()) {
+      setSearchError('Enter a keyword to search the Ad Library.')
+      return
+    }
     setIsSearching(true)
     setSearchError(null)
+    setCoverageNote(null)
     const params = new URLSearchParams({
       q, country, active_status: activeStatus, platform, media_type: mediaType, limit: '25',
     })
@@ -209,6 +229,7 @@ export default function SpyAdsPage() {
         if (append) setSearchResults(prev => [...prev, ...d.data.ads])
         else setSearchResults(d.data.ads)
         setPagingCursor(d.data.paging?.after || null)
+        setCoverageNote(d.data.coverage_note || null)
       } else {
         if (!append) setSearchResults([])
         setSearchError(d.error || 'Search failed. Please try again.')
@@ -260,6 +281,19 @@ export default function SpyAdsPage() {
   const removeTrackedPage = (id: string) => {
     fetch(`${API_BASE}/api/spy-ads/tracked-pages/${id}`, { method: 'DELETE', credentials: 'include' })
       .then(r => r.json()).then(d => { if (d.success) loadTrackedPages() }).catch(() => {})
+  }
+
+  const crawlOnePage = (page: TrackedPage) => {
+    setCrawlingPageId(page.id)
+    fetch(`${API_BASE}/api/spy-ads/monitor/crawl`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ page_db_id: page.id }),
+    }).then(r => r.json()).then(() => {
+      loadMonitorStatus()
+      loadTrackedPages()
+    }).catch(() => {}).finally(() => setCrawlingPageId(null))
   }
 
   const viewPageAds = (page: TrackedPage) => {
@@ -328,13 +362,15 @@ export default function SpyAdsPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Spy Ads</h1>
-          <p className="text-sm text-gray-500 mt-1">Research & analyze competitor Meta Ads</p>
+          <p className="text-sm text-gray-500 mt-1">Track how long competitor Meta Ads keep running, and what that says.</p>
         </div>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit">
         {[
+          { key: 'radar' as const, label: `Radar${monitorStatus ? ` (${monitorStatus.totals.long_running_active})` : ''}` },
+          { key: 'patterns' as const, label: 'Patterns' },
           { key: 'search' as const, label: 'Search' },
           { key: 'competitors' as const, label: `Competitors (${trackedPages.length})` },
           { key: 'saved' as const, label: `Saved (${savedTotal})` },
@@ -346,9 +382,42 @@ export default function SpyAdsPage() {
         ))}
       </div>
 
+      {/* ═══ RADAR TAB ═══ */}
+      {activeTab === 'radar' && (
+        <SpyRadarTab status={monitorStatus} onStatusChange={loadMonitorStatus} />
+      )}
+
+      {/* ═══ PATTERNS TAB ═══ */}
+      {activeTab === 'patterns' && (
+        <SpyPatternsTab longRunningDays={monitorStatus?.long_running_days ?? 30} />
+      )}
+
       {/* ═══ SEARCH TAB ═══ */}
       {activeTab === 'search' && (
         <div className="space-y-4">
+          {/* The two sources differ in coverage, not just speed, so say which
+              one is answering before the user reads an empty grid as "no ads". */}
+          {monitorStatus && !monitorStatus.provider.configured && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+              <p className="font-semibold flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4" /> Search cannot run yet
+              </p>
+              <p className="mt-1 text-amber-700">{monitorStatus.provider.note}</p>
+            </div>
+          )}
+          {monitorStatus?.provider.configured && !monitorStatus.provider.covers_commercial_ads && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+              <p className="font-semibold flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4" /> Limited coverage
+              </p>
+              <p className="mt-1 text-amber-700">
+                Meta&apos;s official Ad Library API only returns ads outside the EU when they are
+                about social issues, elections or politics — hotel ads in VN/TW/JP will not appear.
+                Set AD_LIBRARY_PROVIDER=apify to search ordinary commercial ads.
+              </p>
+            </div>
+          )}
+
           {/* Search bar + filters */}
           <div className="bg-white rounded-xl border border-gray-200 p-4">
             <div className="flex gap-2 mb-3">
@@ -422,7 +491,14 @@ export default function SpyAdsPage() {
 
           {!isSearching && !searchError && searchResults.length === 0 && searchQuery && (
             <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400">
-              No results. Try different keywords or filters.
+              {coverageNote ? (
+                <>
+                  <p className="text-amber-700 font-medium">No results — and none were possible.</p>
+                  <p className="text-xs mt-1 text-amber-600 max-w-xl mx-auto">{coverageNote}</p>
+                </>
+              ) : (
+                'No results. Try different keywords or filters.'
+              )}
             </div>
           )}
 
@@ -486,14 +562,49 @@ export default function SpyAdsPage() {
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                    <div className="flex items-center gap-2 text-xs text-gray-400 mb-3">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 mb-2">
                       <span>{page.country || '—'}</span>
                       <span>ID: {page.page_id}</span>
-                      {page.last_checked_at && <span>Checked: {new Date(page.last_checked_at).toLocaleDateString()}</span>}
+                      {page.last_checked_at
+                        ? <span>Crawled {new Date(page.last_checked_at).toLocaleDateString()}</span>
+                        : <span className="text-amber-600">Never crawled</span>}
                     </div>
-                    <button onClick={() => viewPageAds(page)} className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium">
-                      <Eye className="w-3.5 h-3.5" /> View Ads
-                    </button>
+                    {/* The crawl outcome per page, not just the timestamp: a page
+                        that silently returns zero looks exactly like one that
+                        stopped advertising unless we say which it was. */}
+                    {(() => {
+                      const st = monitorStatus?.pages.find(p => p.id === page.id)
+                      if (!st) return null
+                      if (st.last_crawl_error) {
+                        return (
+                          <p className="text-[11px] text-red-600 mb-2 flex items-start gap-1">
+                            <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                            <span className="line-clamp-2">{st.last_crawl_error}</span>
+                          </p>
+                        )
+                      }
+                      if (st.last_crawl_ad_count !== null) {
+                        return (
+                          <p className="text-[11px] text-gray-500 mb-2">
+                            {st.last_crawl_ad_count} ads on the last crawl
+                          </p>
+                        )
+                      }
+                      return null
+                    })()}
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => viewPageAds(page)} className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium">
+                        <Eye className="w-3.5 h-3.5" /> View Ads
+                      </button>
+                      <button
+                        onClick={() => crawlOnePage(page)}
+                        disabled={crawlingPageId !== null}
+                        className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 font-medium disabled:opacity-50"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${crawlingPageId === page.id ? 'animate-spin' : ''}`} />
+                        {crawlingPageId === page.id ? 'Crawling…' : 'Crawl'}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

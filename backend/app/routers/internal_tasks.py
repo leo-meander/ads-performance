@@ -297,6 +297,37 @@ def _do_figma_job_poll(db, limit: int = 25):
     return counts
 
 
+def _do_spy_ads_crawl(db, limit: int | None = None, breakdown: bool = True):
+    """Crawl tracked competitor pages, then break down what has stuck.
+
+    Ordered on purpose: the crawl is what extends first/last-seen, so an ad
+    only clears the long-running bar after the crawl has run. Breaking down
+    first would spend model calls on ads that have not yet qualified.
+    """
+    from app.services.spy_monitor import run_crawl
+    result = run_crawl(db, limit=limit)
+    logger.info(
+        "[spy-ads-crawl] provider=%s pages=%d fetched=%d new=%d retired=%d failed=%d",
+        result["provider"], len(result["pages"]), result["totals"]["fetched"],
+        result["totals"]["new"], result["totals"]["retired"],
+        result["totals"]["failed"],
+    )
+    for page in result["pages"]:
+        if page["error"]:
+            logger.warning(
+                "[spy-ads-crawl] %s: %s", page["page_name"], page["error"],
+            )
+
+    if breakdown:
+        from app.services.spy_intelligence import breakdown_ads
+        counts = breakdown_ads(db, limit=settings.SPY_BREAKDOWN_BATCH)
+        logger.info(
+            "[spy-ads-crawl] breakdown analyzed=%d failed=%d skipped=%d",
+            counts["analyzed"], counts["failed"], counts["skipped"],
+        )
+    return result
+
+
 @router.post("/internal/tasks/sync-all-platforms", status_code=202)
 def trigger_sync_all_platforms(
     background_tasks: BackgroundTasks,
@@ -1582,3 +1613,32 @@ def trigger_google_conversion_resync(
         "date_to": resolved_to,
         "account_name_filter": account_name,
     })
+
+
+@router.post("/internal/tasks/spy-ads-crawl", status_code=202)
+def trigger_spy_ads_crawl(
+    x_internal_secret: str | None = Header(default=None),
+    limit: int | None = None,
+    breakdown: bool = True,
+):
+    """Manual dispatch: refresh the competitor ad ledger behind /ad-research.
+
+    Deliberately unscheduled. The provider bills per ad returned and run length
+    comes from Meta's own start date, so crawling on a timer does not improve
+    the ranking - it only sharpens our own first/last-seen evidence, which
+    nobody reads between research sessions.
+
+    The everyday path is the "Crawl now" button on /ad-research, which walks
+    competitors one at a time and shows a roll call. This endpoint sweeps them
+    all in one go and is the fallback for crawling without opening the app.
+
+    Runs async in a thread: one provider run per tracked page, each tens of
+    seconds, which would otherwise blow the ingress timeout.
+    """
+    _require_secret(x_internal_secret)
+    if limit is not None and (limit <= 0 or limit > 200):
+        raise HTTPException(status_code=400, detail="limit must be 1..200")
+    _run_in_thread(
+        _do_spy_ads_crawl, "spy-ads-crawl", limit=limit, breakdown=breakdown,
+    )
+    return _api_response(data={"status": "started", "breakdown": breakdown})
