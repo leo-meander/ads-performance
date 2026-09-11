@@ -25,6 +25,12 @@ interface TrackedPage {
   country: string | null; notes: string | null; last_checked_at: string | null; created_at: string
 }
 
+interface PageCandidate { page_id: string; page_name: string; ad_count: number; score: number }
+interface PageResolution {
+  resolved: boolean; page_id: string; page_name: string; method: string
+  platform: string; handle: string; note: string | null; candidates: PageCandidate[]
+}
+
 interface Collection { name: string; count: number }
 interface Report { id: string; title: string; analysis_type: string; input_ad_ids: string[]; model_used: string; created_at: string; has_result: boolean }
 interface ReportDetail extends Report { result_markdown: string; input_params: any }
@@ -145,6 +151,13 @@ export default function SpyAdsPage() {
   const [trackedPages, setTrackedPages] = useState<TrackedPage[]>([])
   const [showAddModal, setShowAddModal] = useState(false)
   const [newPage, setNewPage] = useState({ page_id: '', page_name: '', category: 'Boutique Hotel', country: 'VN', notes: '' })
+  // What the user pasted, and what the backend made of it. Kept separate from
+  // newPage.page_id so the dialog can show the page it found before saving —
+  // a wrong page tracked silently costs a crawl and reads as "no ads".
+  const [pageInput, setPageInput] = useState('')
+  const [resolving, setResolving] = useState(false)
+  const [resolution, setResolution] = useState<PageResolution | null>(null)
+  const [resolveError, setResolveError] = useState<string | null>(null)
   const [competitorAds, setCompetitorAds] = useState<AdResult[]>([])
   const [viewingPage, setViewingPage] = useState<TrackedPage | null>(null)
 
@@ -263,19 +276,68 @@ export default function SpyAdsPage() {
   }
 
   // ── Competitor functions ──
+  const resetAddForm = () => {
+    setNewPage({ page_id: '', page_name: '', category: 'Boutique Hotel', country: 'VN', notes: '' })
+    setPageInput('')
+    setResolution(null)
+    setResolveError(null)
+  }
+
+  // Find the numeric Page ID behind a pasted Facebook/Instagram URL before
+  // anything is saved. The Ad Library is indexed by Page ID only — a handle
+  // stored as-is crawls to an empty result that looks like "not advertising".
+  const resolvePageInput = () => {
+    const raw = pageInput.trim()
+    if (!raw) return
+    setResolving(true)
+    setResolveError(null)
+    setResolution(null)
+    fetch(`${API_BASE}/api/spy-ads/resolve-page`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ page_url: raw, country: newPage.country }),
+    }).then(r => r.json()).then(d => {
+      if (!d.success) { setResolveError(d.error || 'Could not resolve that link.'); return }
+      const res: PageResolution = d.data
+      setResolution(res)
+      if (res.resolved) {
+        setNewPage(p => ({ ...p, page_id: res.page_id, page_name: p.page_name || res.page_name }))
+      }
+    }).catch(() => setResolveError('Could not reach the server.'))
+      .finally(() => setResolving(false))
+  }
+
+  const pickCandidate = (c: PageCandidate) => {
+    setNewPage(p => ({ ...p, page_id: c.page_id, page_name: c.page_name }))
+    setResolution(r => (r ? { ...r, resolved: true, page_id: c.page_id, page_name: c.page_name, note: null } : r))
+    setResolveError(null)
+  }
+
   const addTrackedPage = () => {
+    setResolveError(null)
     fetch(`${API_BASE}/api/spy-ads/tracked-pages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify(newPage),
+      body: JSON.stringify({ ...newPage, page_url: pageInput.trim() }),
     }).then(r => r.json()).then(d => {
       if (d.success) {
         loadTrackedPages()
         setShowAddModal(false)
-        setNewPage({ page_id: '', page_name: '', category: 'Boutique Hotel', country: 'VN', notes: '' })
+        resetAddForm()
+        return
       }
-    }).catch(() => {})
+      setResolveError(d.error || 'Could not add that competitor.')
+      // The backend resolves too; if it stalled on an ambiguous handle it
+      // hands back the same candidate list the dialog already knows how to show.
+      if (d.data?.candidates?.length) {
+        setResolution({
+          resolved: false, page_id: '', page_name: '', method: 'ad_library_search',
+          platform: 'facebook', handle: pageInput.trim(), note: null, candidates: d.data.candidates,
+        })
+      }
+    }).catch(() => setResolveError('Could not reach the server.'))
   }
 
   const removeTrackedPage = (id: string) => {
@@ -532,11 +594,64 @@ export default function SpyAdsPage() {
             <div className="bg-white rounded-xl border border-gray-200 p-4">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-900">Add Competitor Page</h3>
-                <button onClick={() => setShowAddModal(false)} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                <button onClick={() => { setShowAddModal(false); resetAddForm() }} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
               </div>
+
+              {/* Paste anything: page URL, Instagram profile, or the raw ID. */}
+              <div className="flex gap-2 mb-2">
+                <input
+                  placeholder="facebook.com/theirpage · instagram.com/their_handle · or Page ID"
+                  value={pageInput}
+                  onChange={e => { setPageInput(e.target.value); setResolution(null); setResolveError(null); setNewPage(p => ({ ...p, page_id: '' })) }}
+                  onKeyDown={e => { if (e.key === 'Enter') resolvePageInput() }}
+                  className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                />
+                <button
+                  onClick={resolvePageInput}
+                  disabled={resolving || !pageInput.trim()}
+                  className="px-4 py-2 border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 whitespace-nowrap"
+                >
+                  {resolving ? 'Finding…' : 'Find page'}
+                </button>
+              </div>
+
+              {resolveError && (
+                <p className="text-xs text-red-600 mb-2 flex items-start gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  <span>{resolveError}</span>
+                </p>
+              )}
+
+              {resolution?.resolved && (
+                <div className="mb-2 px-3 py-2 rounded-lg bg-green-50 border border-green-200">
+                  <p className="text-xs text-green-800">
+                    Found <span className="font-semibold">{resolution.page_name || resolution.page_id}</span>
+                    <span className="text-green-600"> · ID {resolution.page_id}</span>
+                  </p>
+                  {resolution.note && <p className="text-[11px] text-green-700 mt-0.5">{resolution.note}</p>}
+                </div>
+              )}
+
+              {/* Ambiguous handle: the backend refuses to guess, so pick one. */}
+              {resolution && !resolution.resolved && resolution.candidates.length > 0 && (
+                <div className="mb-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200">
+                  <p className="text-xs text-amber-800 mb-1.5">{resolution.note || 'Pick the right page:'}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {resolution.candidates.map(c => (
+                      <button
+                        key={c.page_id}
+                        onClick={() => pickCandidate(c)}
+                        className="px-2 py-1 rounded-md bg-white border border-amber-300 text-[11px] text-gray-700 hover:border-amber-500"
+                      >
+                        {c.page_name} <span className="text-gray-400">· {c.ad_count} ads</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
-                <input placeholder="Meta Page ID" value={newPage.page_id} onChange={e => setNewPage({ ...newPage, page_id: e.target.value })} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" />
-                <input placeholder="Page Name" value={newPage.page_name} onChange={e => setNewPage({ ...newPage, page_name: e.target.value })} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" />
+                <input placeholder="Page Name (optional)" value={newPage.page_name} onChange={e => setNewPage({ ...newPage, page_name: e.target.value })} className="px-3 py-2 border border-gray-200 rounded-lg text-sm" />
                 <select value={newPage.category} onChange={e => setNewPage({ ...newPage, category: e.target.value })} className="px-3 py-2 border border-gray-200 rounded-lg text-sm">
                   {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
@@ -545,7 +660,12 @@ export default function SpyAdsPage() {
                 </select>
               </div>
               <textarea placeholder="Notes (optional)" value={newPage.notes} onChange={e => setNewPage({ ...newPage, notes: e.target.value })} className="w-full mt-3 px-3 py-2 border border-gray-200 rounded-lg text-sm" rows={2} />
-              <button onClick={addTrackedPage} className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700">Save</button>
+              <div className="flex items-center gap-3 mt-3">
+                <button onClick={addTrackedPage} disabled={!pageInput.trim() && !newPage.page_id} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-40">Save</button>
+                <p className="text-[11px] text-gray-400">
+                  Save resolves the link too — &quot;Find page&quot; just shows you which page first.
+                </p>
+              </div>
             </div>
           )}
 
@@ -564,11 +684,21 @@ export default function SpyAdsPage() {
                     </div>
                     <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400 mb-2">
                       <span>{page.country || '—'}</span>
-                      <span>ID: {page.page_id}</span>
+                      <span className={/^\d{5,}$/.test(page.page_id) ? '' : 'text-red-600'}>ID: {page.page_id}</span>
                       {page.last_checked_at
                         ? <span>Crawled {new Date(page.last_checked_at).toLocaleDateString()}</span>
                         : <span className="text-amber-600">Never crawled</span>}
                     </div>
+                    {/* Rows added before URL resolution existed can hold a handle
+                        instead of an ID. The Ad Library answers those with an
+                        empty result, so say it here rather than let the card
+                        read as "competitor stopped advertising". */}
+                    {!/^\d{5,}$/.test(page.page_id) && (
+                      <p className="text-[11px] text-red-600 mb-2 flex items-start gap-1">
+                        <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                        <span>Not a Meta Page ID — remove and re-add by pasting their page URL.</span>
+                      </p>
+                    )}
                     {/* The crawl outcome per page, not just the timestamp: a page
                         that silently returns zero looks exactly like one that
                         stopped advertising unless we say which it was. */}
