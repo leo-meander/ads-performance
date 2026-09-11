@@ -24,7 +24,12 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.spy_competitor_ad import SpyCompetitorAd, SpyCreativeGroup
 from app.models.spy_tracked_page import SpyTrackedPage
-from app.services.ad_library import AdLibraryError, active_provider_name, fetch_page_ads
+from app.services.ad_library import (
+    AdLibraryError,
+    active_provider_name,
+    fetch_page_ads,
+    looks_like_page_id,
+)
 from app.services.ad_library.base import NormalizedAd
 from app.services.spy_fingerprint import fingerprint, group_ads
 
@@ -221,6 +226,24 @@ def crawl_tracked_page(
         "retired": 0,
         "error": None,
     }
+
+    # Rows added before URL resolution existed can hold a vanity slug. Meta
+    # answers `view_all_page_id=<slug>` with an empty result, not an error,
+    # so crawling one would buy a provider run and then read as "competitor
+    # stopped advertising". Refuse it and say what to do instead.
+    if not looks_like_page_id(tracked_page.page_id):
+        message = (
+            f"'{tracked_page.page_id}' is not a numeric Meta Page ID, so the Ad "
+            "Library cannot look it up. Remove this competitor and add it again "
+            "by pasting their Facebook or Instagram URL."
+        )
+        tracked_page.last_checked_at = now
+        tracked_page.last_crawl_ad_count = 0
+        tracked_page.last_crawl_error = message
+        db.commit()
+        result["error"] = message
+        logger.warning("[spy-crawl] skipped %s: %s", tracked_page.page_name, message)
+        return result
 
     try:
         page = fetch_page_ads(

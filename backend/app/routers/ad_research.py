@@ -24,7 +24,9 @@ from app.services.ad_library import (
     AdLibraryError,
     active_provider_name,
     fetch_page_ads,
+    looks_like_page_id,
     provider_status,
+    resolve_page,
     search_ads,
 )
 
@@ -123,11 +125,22 @@ def search_ad_library(
 
 
 class TrackedPageCreate(BaseModel):
-    page_id: str
-    page_name: str
+    # Either is enough: `page_url` is whatever the user pasted (facebook.com
+    # page, instagram.com profile, or a bare id) and `page_id` is the numeric
+    # id the Search tab already knows. Anything non-numeric arriving in
+    # `page_id` is resolved rather than stored, because the Ad Library
+    # answers a slug with silence, not an error.
+    page_id: str = ""
+    page_url: str = ""
+    page_name: str = ""
     category: str | None = None
     country: str | None = None
     notes: str | None = None
+
+
+class PageResolveRequest(BaseModel):
+    page_url: str
+    country: str | None = None
 
 
 class TrackedPageUpdate(BaseModel):
@@ -162,6 +175,27 @@ def list_tracked_pages(
         return _api_response(error=str(e))
 
 
+@router.post("/spy-ads/resolve-page")
+def resolve_competitor_page(
+    body: PageResolveRequest,
+    current_user: User = Depends(require_page("ad_research", "edit")),
+):
+    """Look up the numeric Page ID behind a pasted URL, before anything is saved.
+
+    Separate from the create call so the dialog can show WHICH page it found
+    (and, when the handle is ambiguous, the candidates) instead of committing
+    a competitor the user never actually confirmed.
+    """
+    try:
+        result = resolve_page(body.page_url, country=body.country or "ALL")
+        return _api_response(result.to_dict())
+    except AdLibraryError as e:
+        return _api_response(error=str(e))
+    except Exception as e:
+        logger.exception("[spy-resolve] failed for %r", body.page_url)
+        return _api_response(error=str(e))
+
+
 @router.post("/spy-ads/tracked-pages")
 def create_tracked_page(
     body: TrackedPageCreate,
@@ -169,24 +203,65 @@ def create_tracked_page(
     db: Session = Depends(get_db),
 ):
     try:
+        # An id the caller already resolved wins over the pasted URL, so
+        # confirming in the dialog does not buy a second lookup.
+        raw = (body.page_id or "").strip()
+        if not looks_like_page_id(raw):
+            raw = (body.page_url or raw).strip()
+        if not raw:
+            return _api_response(
+                error="Paste a Facebook page URL, an Instagram URL, or a Page ID."
+            )
+
+        page_id = raw
+        page_name = (body.page_name or "").strip()
+        resolution = None
+
+        # A slug stored as-is crawls forever and returns nothing, so resolve
+        # here too -- not only in the dialog -- and refuse if it stays unclear.
+        if not looks_like_page_id(raw):
+            resolution = resolve_page(raw, country=body.country or "ALL")
+            if not resolution.resolved:
+                return _api_response(
+                    data={"candidates": [c.to_dict() for c in resolution.candidates]},
+                    error=resolution.note or f"Could not find a Page ID for '{raw}'.",
+                )
+            page_id = resolution.page_id
+            page_name = page_name or resolution.page_name
+
         existing = db.query(SpyTrackedPage).filter(
-            SpyTrackedPage.page_id == body.page_id,
+            SpyTrackedPage.page_id == page_id,
             SpyTrackedPage.is_active.is_(True),
         ).first()
         if existing:
-            return _api_response(error=f"Page {body.page_id} is already tracked.")
+            return _api_response(
+                error=f"{existing.page_name} (ID {page_id}) is already tracked."
+            )
 
-        row = SpyTrackedPage(
-            page_id=body.page_id,
-            page_name=body.page_name,
-            category=body.category,
-            country=body.country,
-            notes=body.notes,
-        )
-        db.add(row)
+        # A page tracked before, then removed: revive the row so its ad
+        # history reattaches instead of colliding with the unique page_id.
+        retired = db.query(SpyTrackedPage).filter(
+            SpyTrackedPage.page_id == page_id
+        ).first()
+        row = retired or SpyTrackedPage(page_id=page_id)
+        row.page_name = page_name or page_id
+        row.category = body.category
+        row.country = body.country
+        row.notes = body.notes
+        row.is_active = True
+        if retired is None:
+            db.add(row)
         db.commit()
         db.refresh(row)
-        return _api_response({"id": row.id, "page_id": row.page_id, "page_name": row.page_name})
+        return _api_response({
+            "id": row.id,
+            "page_id": row.page_id,
+            "page_name": row.page_name,
+            "resolution": resolution.to_dict() if resolution else None,
+        })
+    except AdLibraryError as e:
+        db.rollback()
+        return _api_response(error=str(e))
     except Exception as e:
         db.rollback()
         return _api_response(error=str(e))

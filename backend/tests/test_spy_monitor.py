@@ -65,7 +65,7 @@ def _auth(user):
     return {"Authorization": f"Bearer {create_access_token(user.id, user.roles or [])}"}
 
 
-def _page(db, page_id="111", name="Hotel A", country="VN"):
+def _page(db, page_id="100000000000111", name="Hotel A", country="VN"):
     row = SpyTrackedPage(
         id=str(uuid.uuid4()),
         page_id=page_id,
@@ -82,7 +82,7 @@ def _page(db, page_id="111", name="Hotel A", country="VN"):
 
 
 def _ad(archive_id, *, start=None, body="Stay in the heart of Osaka tonight",
-        images=None, videos=None, active=True, page_id="111", page_name="Hotel A"):
+        images=None, videos=None, active=True, page_id="100000000000111", page_name="Hotel A"):
     return NormalizedAd(
         ad_archive_id=archive_id,
         page_id=page_id,
@@ -292,9 +292,9 @@ def test_rebuild_groups_counts_competitors_and_keeps_the_oldest_start():
         db,
         [
             _ad("A1", start=NOW - timedelta(days=60), images=[img],
-                page_id="111", page_name="Hotel A"),
+                page_id="100000000000111", page_name="Hotel A"),
             _ad("A2", start=NOW - timedelta(days=10), images=[img + "?oh=z"],
-                page_id="222", page_name="Hotel B"),
+                page_id="100000000000222", page_name="Hotel B"),
         ],
         tracked_page=page,
         now=NOW,

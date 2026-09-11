@@ -152,6 +152,13 @@ class Settings(BaseSettings):
     SPY_LONG_RUNNING_DAYS: int = 30
     # Ads per AI breakdown batch — one cheap model call each.
     SPY_BREAKDOWN_BATCH: int = 25
+    # Adding a competitor by URL: how many ads one id-resolution search may
+    # buy. Small on purpose — it only needs enough results to read a page id
+    # off, and the provider bills per ad returned.
+    SPY_RESOLVE_SEARCH_LIMIT: int = 8
+    # Facebook either answers the public page fetch fast or serves a login
+    # wall; a long wait only stalls the Add Competitor dialog.
+    SPY_RESOLVE_HTTP_TIMEOUT: int = 10
 
     # Google Analytics 4 Data API — service account JSON as base64.
     # Base64 used because the raw JSON contains newlines in private_key which

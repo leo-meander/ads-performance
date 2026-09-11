@@ -88,6 +88,16 @@ Phase 8: Creative Intelligence (migrations 033-036)
   the EU when they are political, so it CANNOT see hotel competitors in
   VN/TW/JP — that is a Meta limitation, not a bug. Apify crawls the public
   Ad Library web surface and bills per ad returned.
+- Competitors are added by pasting a Facebook page URL, an Instagram profile
+  URL, or a raw ID; `ad_library/page_resolver.py` turns it into the numeric
+  Page ID (`/api/spy-ads/resolve-page`). The Ad Library is indexed by Page ID
+  ONLY — a handle stored as `page_id` returns an empty crawl, not an error, so
+  a non-numeric `page_id` is refused before any provider run. Instagram has no
+  id here: an IG handle resolves to the Facebook Page that buys its ads.
+  Resolution tries URL params → the page's public HTML (free; requires a
+  declared-bot User-Agent, a browser one gets HTTP 400) → a small Ad Library
+  keyword search (that last one costs money and never guesses: an unclear
+  match comes back as candidates for a human to pick).
 - `spy_competitor_ads` is the longevity ledger. It keeps TWO clocks that must
   never be merged: `days_running` (Meta's own start date) and
   `first_seen_at`/`last_seen_at`/`seen_count` (what we actually observed).

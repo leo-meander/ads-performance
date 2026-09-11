@@ -26,7 +26,9 @@ __all__ = [
     "PROVIDERS",
     "active_provider_name",
     "get_provider",
+    "looks_like_page_id",
     "provider_status",
+    "resolve_page",
     "search_ads",
     "fetch_page_ads",
 ]
@@ -64,3 +66,11 @@ def search_ads(provider: str | None = None, **kwargs) -> AdLibraryPage:
 
 def fetch_page_ads(page_id: str, provider: str | None = None, **kwargs) -> AdLibraryPage:
     return get_provider(provider).fetch_page_ads(page_id=page_id, **kwargs)
+
+
+# Imported last: page_resolver calls search_ads above, so importing it any
+# earlier would be circular.
+from app.services.ad_library.page_resolver import (  # noqa: E402
+    looks_like_page_id,
+    resolve_page,
+)
