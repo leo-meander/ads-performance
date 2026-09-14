@@ -91,9 +91,13 @@ def _api_response(data=None, error=None):
     }
 
 
+# Default window for every endpoint here: the last 7 days (today inclusive).
+# It mirrors the dashboard's default preset, and it is deliberately narrow --
+# campaign-insights scans every match plus every matched reservation in the
+# window, so the window length is the single biggest driver of page load time.
 def _default_date_range() -> tuple[date, date]:
     today = date.today()
-    return today - timedelta(days=29), today
+    return today - timedelta(days=6), today
 
 
 def _apply_branch_scope(q, column, user, db, requested_branches: list[str] | None, exact_match: bool = False):

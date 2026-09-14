@@ -14,6 +14,8 @@ unknown" and applies the appropriate fallback).
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import pycountry
 
 # Strings Cloudbeds returns when no country is set. All map to None.
@@ -111,10 +113,22 @@ def _looks_like_iso2(s: str) -> bool:
     return len(s) == 2 and s.isalpha() and s.isascii()
 
 
+@lru_cache(maxsize=4096)
 def normalize_country_to_iso(raw: str | None) -> str | None:
     """Convert a raw PMS country value into an ISO-3166-1 alpha-2 code.
 
     Returns None if the input is empty/junk or can't be confidently mapped.
+
+    Memoised because the miss path is expensive and the input alphabet is tiny.
+    A value that reaches step 4 costs a ``search_fuzzy``, i.e. a difflib scan
+    over every country in pycountry -- and unmappable inputs are the common
+    case, not the rare one: an ads row targeting every country carries
+    ``ads_country = "ALL"``, which misses the overrides, misses the ISO-2 test,
+    misses ``lookup``, and pays for the fuzzy scan before returning None. The
+    booking-match analytics endpoints call this once per reservation, so the
+    same handful of strings were being re-derived thousands of times per
+    request. The function is pure over a bounded set of country strings, so
+    caching it is safe and bounds the fuzzy scans to one per distinct input.
     """
     if not raw:
         return None

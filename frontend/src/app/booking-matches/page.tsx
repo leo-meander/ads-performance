@@ -365,7 +365,9 @@ function FlowStack({ exact, cross, nul, max, leakage }: { exact: number; cross: 
 }
 
 export default function BookingMatchesDashboard() {
-  const [datePreset, setDatePreset] = useState('30d')
+  // 7 days by default: the window drives how much this page has to scan,
+  // and the last week is what the daily read actually asks for.
+  const [datePreset, setDatePreset] = useState('7d')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [branches, setBranches] = useState<Branch[]>([])
@@ -388,7 +390,12 @@ export default function BookingMatchesDashboard() {
   const [showRawTable, setShowRawTable] = useState(false)
   const [matches, setMatches] = useState<BookingMatch[]>([])
   const [listCurrency, setListCurrency] = useState<string>('VND')
-  const [loading, setLoading] = useState(false)
+  // Two flags, not one: the KPI/chart summary is a single grouped aggregate and
+  // lands well before campaign-insights, which walks every matched reservation.
+  // Sharing one flag made the cheap half wait for the expensive half.
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [insightsLoading, setInsightsLoading] = useState(false)
+  const loading = summaryLoading || insightsLoading
   const [rowsLoading, setRowsLoading] = useState(false)
   const [running, setRunning] = useState(false)
   const [runMessage, setRunMessage] = useState<string | null>(null)
@@ -431,43 +438,70 @@ export default function BookingMatchesDashboard() {
 
   // Charts + KPIs. campaign-insights carries the window-wide reservation stats
   // in `overall`, so there's no separate /insights round trip.
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     const params = buildParams()
     if (!params) return
-    setLoading(true)
-    try {
-      const [summaryRes, campaignRes] = await Promise.all([
-        fetch(`${API_BASE}/api/booking-matches/summary?${params}`, { credentials: 'include' }).then(r => r.json()),
-        fetch(`${API_BASE}/api/booking-matches/campaign-insights?${params}`, { credentials: 'include' }).then(r => r.json()),
-      ])
-      if (summaryRes.success) setSummary(summaryRes.data)
-      if (campaignRes.success) setCampaignInsights(campaignRes.data)
-    } finally {
-      setLoading(false)
+    setSummaryLoading(true)
+    setInsightsLoading(true)
+
+    // Both requests are in flight together, but each commits its own state the
+    // moment it resolves instead of being held behind Promise.all — the KPI
+    // cards and charts appear while campaign-insights is still coming back.
+    const load = async (
+      path: string,
+      apply: (data: any) => void,
+      done: (v: boolean) => void,
+    ) => {
+      try {
+        const res = await fetch(`${API_BASE}/api/${path}?${params}`, {
+          credentials: 'include', signal,
+        }).then(r => r.json())
+        if (res.success) apply(res.data)
+      } catch (e: any) {
+        if (e?.name === 'AbortError') return  // superseded; leave the flag set
+      }
+      done(false)
     }
+
+    await Promise.all([
+      load('booking-matches/summary', setSummary, setSummaryLoading),
+      load('booking-matches/campaign-insights', setCampaignInsights, setInsightsLoading),
+    ])
   }, [buildParams])
 
   // The raw row dump is collapsed by default and nothing above it depends on
   // the rows, so it's only fetched once the user actually opens it.
-  const fetchRows = useCallback(async () => {
+  const fetchRows = useCallback(async (signal?: AbortSignal) => {
     const params = buildParams()
     if (!params) return
     setRowsLoading(true)
     try {
       const res = await fetch(
-        `${API_BASE}/api/booking-matches?${params}`, { credentials: 'include' },
+        `${API_BASE}/api/booking-matches?${params}`, { credentials: 'include', signal },
       ).then(r => r.json())
       if (res.success) {
         setMatches(res.data.items)
         setListCurrency(res.data.currency || 'VND')
       }
-    } finally {
-      setRowsLoading(false)
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return
     }
+    setRowsLoading(false)
   }, [buildParams])
 
-  useEffect(() => { fetchData() }, [fetchData])
-  useEffect(() => { if (showRawTable) fetchRows() }, [showRawTable, fetchRows])
+  // Aborting on cleanup means a fast filter change cancels the in-flight
+  // request instead of racing it — no stale payload overwriting a newer one.
+  useEffect(() => {
+    const ctrl = new AbortController()
+    fetchData(ctrl.signal)
+    return () => ctrl.abort()
+  }, [fetchData])
+  useEffect(() => {
+    if (!showRawTable) return
+    const ctrl = new AbortController()
+    fetchRows(ctrl.signal)
+    return () => ctrl.abort()
+  }, [showRawTable, fetchRows])
 
   // Close branch dropdown on outside click.
   const branchDropdownRef = useRef<HTMLDivElement>(null)
