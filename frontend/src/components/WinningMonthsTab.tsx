@@ -16,14 +16,20 @@ interface LiveAd {
   live_ad_count: number
 }
 
-interface WinAd extends LiveAd {
+// The Creative-Library identity behind a row: which combo it came from and
+// the TA/country that combo was built for. Present on both tables — an ad
+// only tells you what it is once it is tied back to its combo.
+interface CreativeRef {
+  combo_id: string | null
+  target_audience: string | null
+  country: string | null
+}
+
+interface WinAd extends LiveAd, CreativeRef {
   id: string
   ad_name: string
   account_id: string
   branch_name: string
-  combo_id: string | null
-  target_audience: string | null
-  country: string | null
   spend: number | null
   revenue: number | null
   impressions: number | null
@@ -38,7 +44,7 @@ interface WinAd extends LiveAd {
 // not the same question as "did it win this month": an ad is judged the month
 // its cumulative evidence clears the bar, so `decided_month` is often later
 // than the month it launched.
-interface NewAd extends LiveAd {
+interface NewAd extends LiveAd, CreativeRef {
   ad_name: string
   account_id: string
   branch_name: string
@@ -176,6 +182,35 @@ function AdPreviewLink({ ad }: { ad: LiveAd }) {
     >
       <ExternalLink className="w-3 h-3" /> Preview
     </a>
+  )
+}
+
+// TA / country / combo chips. TA and country are the dominant values for the
+// ad, not a breakdown — the ROAS column beside them is already summed across
+// every one of them. The combo chip goes straight to that creative's detail
+// drawer: the chip already names it, so landing on a filtered one-row table
+// would just be a click with nothing to choose. `search` stays so the list
+// behind the drawer is that same creative once it's closed.
+function CreativeChips({ ad }: { ad: CreativeRef }) {
+  return (
+    <>
+      {ad.target_audience && (
+        <span className="text-[9px] text-gray-400 bg-gray-50 border border-gray-100 rounded px-1 py-0.5">{ad.target_audience}</span>
+      )}
+      {ad.country && (
+        <span className="text-[9px] text-gray-400 bg-gray-50 border border-gray-100 rounded px-1 py-0.5">{ad.country}</span>
+      )}
+      {ad.combo_id && (
+        <a
+          href={`/creative?search=${encodeURIComponent(ad.combo_id)}&combo=${encodeURIComponent(ad.combo_id)}`}
+          onClick={e => e.stopPropagation()}
+          className="text-[9px] font-mono text-blue-600 bg-blue-50 hover:bg-blue-100 rounded px-1 py-0.5"
+          title="Open this creative's details"
+        >
+          {ad.combo_id}
+        </a>
+      )}
+    </>
   )
 }
 
@@ -494,29 +529,7 @@ export default function WinningMonthsTab({
                               <Icon className="w-3 h-3" /> {fmt.label}
                             </span>
                             <AdPreviewLink ad={a} />
-                            {/* TA/Country are secondary here — the ROAS column already
-                                reflects the total summed across all of them; these are
-                                just the dominant values for context, not a breakdown. */}
-                            {a.target_audience && (
-                              <span className="text-[9px] text-gray-400 bg-gray-50 border border-gray-100 rounded px-1 py-0.5">{a.target_audience}</span>
-                            )}
-                            {a.country && (
-                              <span className="text-[9px] text-gray-400 bg-gray-50 border border-gray-100 rounded px-1 py-0.5">{a.country}</span>
-                            )}
-                            {/* Straight to the creative's detail drawer — the chip
-                                already names it, so landing on a filtered one-row
-                                table would just be a click with nothing to choose.
-                                `search` stays so the list behind the drawer is that
-                                same creative once it's closed. */}
-                            {a.combo_id && (
-                              <a
-                                href={`/creative?search=${encodeURIComponent(a.combo_id)}&combo=${encodeURIComponent(a.combo_id)}`}
-                                className="text-[9px] font-mono text-blue-600 bg-blue-50 hover:bg-blue-100 rounded px-1 py-0.5"
-                                title="Open this creative's details"
-                              >
-                                {a.combo_id}
-                              </a>
-                            )}
+                            <CreativeChips ad={a} />
                           </div>
                         </td>
                         <td className="py-2 px-2 text-xs text-gray-600">{a.branch_name}</td>
@@ -614,6 +627,7 @@ export default function WinningMonthsTab({
                                       <Icon className="w-3 h-3" /> {fmt.label}
                                     </span>
                                     <AdPreviewLink ad={a} />
+                                    <CreativeChips ad={a} />
                                   </div>
                                 </td>
                                 <td className="py-2 px-2 text-xs text-gray-600">{a.branch_name}</td>

@@ -1242,6 +1242,19 @@ def list_winning_months(
         ).all()
     }
 
+    # ad_name → combo for the in-scope branches, so an ad in new_ad_list can
+    # carry the same CMB deep-link and TA/country chips the winners table gets.
+    # The winners read theirs off the frozen row; an ad here usually has no
+    # frozen row at all, so it is resolved live from the Creative Library —
+    # one bulk query, not one per row.
+    combo_by_ad: dict[tuple[str, str], AdCombo] = {
+        (c.branch_id, c.ad_name): c
+        for c in db.query(AdCombo).filter(
+            AdCombo.branch_id.in_([a.id for a in accounts_in_scope] or ["__no_match__"])
+        ).all()
+        if c.ad_name
+    }
+
     # Every NEW ad_name that first appeared each month, scoped the same way as
     # the KPI (non-KOL, EXCLUDED_BRANCHES out) so the numbers sit in the same
     # universe as win/tested. Feeds two things, neither of which touches
@@ -1299,10 +1312,19 @@ def list_winning_months(
             decided_month = None
 
         age_days = (today - r.first_date).days
+        # Current link wins over the frozen snapshot: a combo attached after
+        # the award should still show. The frozen values are the fallback for
+        # an ad whose combo has since been unlinked or renamed.
+        combo = combo_by_ad.get((r.account_id, r.ad_name))
         new_ad_list_by_month.setdefault(key, []).append({
             "ad_name": r.ad_name,
             "account_id": r.account_id,
             "branch_name": acc_names.get(r.account_id, "—"),
+            "combo_id": combo.combo_id if combo else (frozen.combo_id if frozen else None),
+            "target_audience": (
+                combo.target_audience if combo else (frozen.target_audience if frozen else None)
+            ),
+            "country": combo.country if combo else (frozen.country if frozen else None),
             "status": status,
             "status_source": status_source,
             "decided_month": decided_month,

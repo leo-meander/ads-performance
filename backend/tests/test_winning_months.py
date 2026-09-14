@@ -39,7 +39,10 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models.account import AdAccount
+from app.models.ad_combo import AdCombo
+from app.models.ad_copy import AdCopy
 from app.models.ad_daily_metric import AdDailyMetric
+from app.models.ad_material import AdMaterial
 from app.models.user import User
 from app.models.winning_ad_month import WinningAdMonth
 from app.services.auth_service import create_access_token, hash_password
@@ -102,6 +105,32 @@ def _metric(db, acc, *, ad_name, on, spend, revenue, clicks=100, conversions=10,
         clicks=clicks, conversions=conversions,
     ))
     db.commit()
+
+
+_combo_n = 0
+
+
+def _combo(db, acc, *, ad_name, target_audience="Solo", country="PH"):
+    """A Creative-Library combo tied to an ad by name — what gives a row its
+    CMB code and TA/country chips."""
+    global _combo_n
+    _combo_n += 1
+    n = _combo_n
+    db.add(AdCopy(
+        copy_id=f"CPY-{n}", branch_id=acc.id, target_audience=target_audience,
+        headline="h", body_text="b", cta="Book", language="en",
+    ))
+    db.add(AdMaterial(
+        branch_id=acc.id, material_id=f"MAT-{n}", material_type="image",
+        file_url=f"https://x/{n}.jpg", url_source="auto",
+    ))
+    db.add(AdCombo(
+        id=str(uuid.uuid4()), combo_id=f"CMB-{n}", branch_id=acc.id,
+        ad_name=ad_name, target_audience=target_audience, country=country,
+        copy_id=f"CPY-{n}", material_id=f"MAT-{n}",
+    ))
+    db.commit()
+    return f"CMB-{n}"
 
 
 # ── helpers ───────────────────────────────────────────────
@@ -513,6 +542,58 @@ def test_new_ad_list_itemises_the_ads_behind_the_count():
 
     # Winners first, then losers, then TEST (see the sort in list_winning_months).
     assert [e["status"] for e in may["new_ad_list"]] == ["WIN", "LOSE", "TEST"]
+
+
+def test_new_ad_list_carries_the_combo_behind_each_ad():
+    """A created-this-month row is only identifiable once it is tied back to
+    its combo — the winners table has carried the CMB / TA / country chips all
+    along, and the roster below it must too. Resolved live from the Creative
+    Library, since an ad still in TEST has no frozen row to read them off."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    cmb = _combo(db, acc, ad_name="CRTV_thin", target_audience="Couple", country="TW")
+    # Still in TEST — nothing frozen, so the combo is the only source.
+    _metric(db, acc, ad_name="CRTV_thin", on=MAY, spend=10, revenue=5,
+            clicks=40, conversions=0)
+    # No combo linked: the chips are simply absent, not an error.
+    _metric(db, acc, ad_name="CRTV_orphan", on=MAY, spend=10, revenue=5,
+            clicks=40, conversions=0)
+    db.close()
+
+    data = client.get(
+        "/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers()
+    ).json()["data"]
+    may = next(m for m in data["months"] if m["month"] == "2026-05")
+    by_name = {e["ad_name"]: e for e in may["new_ad_list"]}
+
+    assert by_name["CRTV_thin"]["combo_id"] == cmb
+    assert by_name["CRTV_thin"]["target_audience"] == "Couple"
+    assert by_name["CRTV_thin"]["country"] == "TW"
+    assert by_name["CRTV_orphan"]["combo_id"] is None
+    assert by_name["CRTV_orphan"]["target_audience"] is None
+    assert by_name["CRTV_orphan"]["country"] is None
+
+
+def test_new_ad_list_combo_survives_an_ad_that_already_froze():
+    """A decided ad stays in the created-this-month roster, and keeps its
+    chips — they come from the live combo when one is still linked."""
+    db = TestSession()
+    acc = _account(db, name="Meander Saigon")
+    cmb = _combo(db, acc, ad_name="CRTV_A", target_audience="Solo", country="SG")
+    _metric(db, acc, ad_name="CRTV_A", on=MAY, spend=100, revenue=500)
+    _metric(db, acc, ad_name="CRTV_jun", on=JUN, spend=100, revenue=300)
+    db.close()
+
+    data = client.get(
+        "/api/creative/winning-months", params={"year": 2026}, headers=_admin_headers()
+    ).json()["data"]
+    may = next(m for m in data["months"] if m["month"] == "2026-05")
+    row = next(e for e in may["new_ad_list"] if e["ad_name"] == "CRTV_A")
+    assert row["status"] == "WIN"
+    assert row["combo_id"] == cmb
+    assert row["country"] == "SG"
+    # And the winners table above it agrees — same ad, same chips.
+    assert next(a for a in may["ads"] if a["ad_name"] == "CRTV_A")["combo_id"] == cmb
 
 
 def test_new_ad_list_reports_the_month_an_ad_was_actually_decided():
