@@ -223,9 +223,20 @@ def sync_meta_metrics_window(
         if not adset:
             continue
         country = (adset.country or "Unknown").strip()
-        # Skip catch-all 'ALL' adsets — they don't represent a single country
-        # and including them double-counts revenue across countries.
-        if country in ("Unknown", "ALL", ""):
+        # Keep "ALL" (catch-all / broad adsets). Skipping it dropped every
+        # `ALL_*` adset from the country breakdown, and since the Booking-from-
+        # Ads matcher reads ONLY this table, whole campaigns went invisible
+        # there — every Meta `[MOF] ... Remarketing All` campaign matched zero
+        # bookings despite real revenue. Same class of bug as the Osaka country
+        # drop, and Google already fixed its side the same way (see
+        # google_sync_engine: "Keep ALL"). There is no double-count risk: each
+        # ad belongs to exactly one adset, so it contributes exactly one row
+        # with one country label — "ALL" is just another bucket, which the one
+        # country-grouped reader (/export/spend/daily-country) already receives
+        # from Google. The matcher treats "ALL" as a non-country preference
+        # (booking_match_service._normalize_ads_iso -> None) and falls back to
+        # date+branch matching. Only truly unparseable names stay skipped.
+        if country in ("Unknown", ""):
             continue
 
         insight_date = (
