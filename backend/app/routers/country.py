@@ -1378,19 +1378,65 @@ def breakdown_by_branch(
         for key, cur in curr.items():
             p = prev.get(key)
             p_for_change = None
+            prev_snapshot = None
             if p:
                 p_for_change = {
                     "spend": p["spend_vnd"], "revenue": p["revenue_vnd"],
                     "roas": p["roas"], "conversions": p["conversions"],
                 }
+                # Previous-period snapshot in the same shape as the row itself,
+                # so the UI can diff ANY metric it renders (incl. CPL, which is
+                # derived client-side from spend/leads) without a second call.
+                prev_snapshot = {
+                    "spend_vnd": p["spend_vnd"], "revenue_vnd": p["revenue_vnd"],
+                    "impressions": p["impressions"], "clicks": p["clicks"],
+                    "conversions": p["conversions"], "leads": p["leads"],
+                    "roas": p["roas"], "ctr": p["ctr"], "cpc": p["cpc"],
+                    "cpa": p["cpa"], "cr": p["cr"], "aov": p["aov"],
+                }
             cur_for_change = {
                 "spend": cur["spend_vnd"], "revenue": cur["revenue_vnd"],
                 "roas": cur["roas"], "conversions": cur["conversions"],
             }
-            items.append({**cur, **_breakdown_changes(cur_for_change, p_for_change)})
+            items.append({
+                **cur,
+                **_breakdown_changes(cur_for_change, p_for_change),
+                "prev": prev_snapshot,
+            })
         items.sort(key=lambda r: r["spend_vnd"], reverse=True)
 
-        return _api_response(data={"items": items})
+        # A branch that spent last period but nothing this one never reaches the
+        # loop above — surface it as a zeroed row so "gone quiet" reads as a
+        # collapse, not as a branch that silently vanished from the chart.
+        for key, p in prev.items():
+            if key in curr:
+                continue
+            items.append({
+                "branch": key,
+                "currency": BRANCH_CURRENCY.get(key, "VND"),
+                "spend_vnd": 0.0, "revenue_vnd": 0.0,
+                "spend": 0.0, "revenue": 0.0,
+                "impressions": 0, "clicks": 0, "conversions": 0, "leads": 0,
+                **_breakdown_derive(0.0, 0.0, 0, 0, 0),
+                **_breakdown_changes(
+                    {"spend": 0.0, "revenue": 0.0, "roas": 0, "conversions": 0},
+                    {"spend": p["spend_vnd"], "revenue": p["revenue_vnd"],
+                     "roas": p["roas"], "conversions": p["conversions"]},
+                ),
+                "prev": {
+                    "spend_vnd": p["spend_vnd"], "revenue_vnd": p["revenue_vnd"],
+                    "impressions": p["impressions"], "clicks": p["clicks"],
+                    "conversions": p["conversions"], "leads": p["leads"],
+                    "roas": p["roas"], "ctr": p["ctr"], "cpc": p["cpc"],
+                    "cpa": p["cpa"], "cr": p["cr"], "aov": p["aov"],
+                },
+            })
+
+        return _api_response(data={
+            "items": items,
+            "period": {"from": date_from, "to": date_to},
+            "prev_period": {"from": prev_from.isoformat(), "to": prev_to.isoformat()},
+        })
     except Exception as e:
         return _api_response(error=str(e))
 
