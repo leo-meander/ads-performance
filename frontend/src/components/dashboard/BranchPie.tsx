@@ -2,6 +2,19 @@
 
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 
+// Same-shaped snapshot of the previous period, emitted by
+// /dashboard/breakdown/branch so any rendered metric can be diffed
+// client-side. Null when the branch had no activity in that window.
+export type BranchPrevSnapshot = {
+  spend_vnd: number
+  revenue_vnd: number
+  conversions: number
+  leads: number
+  roas: number
+  cpa: number
+  ctr: number
+}
+
 export type BranchBreakdownRow = {
   branch: string
   currency: string
@@ -9,6 +22,7 @@ export type BranchBreakdownRow = {
   conversions: number
   leads: number
   revenue_vnd: number
+  prev?: BranchPrevSnapshot | null
 }
 
 const PIE_COLORS = ['#a68a64', '#b8a7d9', '#a3c982', '#7dc4c2', '#eb7373', '#f4b971']

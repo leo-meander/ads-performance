@@ -1067,7 +1067,11 @@ function DashboardInner() {
       {/* Branch comparison */}
       {byBranch.length > 0 && (
         <div className="mb-6">
-          <BranchComparisonChart rows={byBranch as (BranchBreakdownRow & { roas: number; cpa: number; ctr: number })[]} campaignType={campaignType} />
+          <BranchComparisonChart
+            rows={byBranch as (BranchBreakdownRow & { roas: number; cpa: number; ctr: number })[]}
+            campaignType={campaignType}
+            prevPeriodLabel={periodInfo ? `${periodInfo.prev_from} → ${periodInfo.prev_to}` : undefined}
+          />
         </div>
       )}
 
