@@ -39,6 +39,19 @@ _TERMINAL_OK = {"SUCCEEDED"}
 _TERMINAL_BAD = {"FAILED", "ABORTED", "TIMED-OUT", "TIMING-OUT"}
 
 
+# The actor's own `activeStatus` input accepts ONLY "", "active" or
+# "inactive" -- it answers anything else with HTTP 400 and spends nothing.
+# Our UI's "ALL" means "don't filter by delivery state", and the empty string
+# is how the actor spells that. Note this is NARROWER than the Ad Library web
+# URL, where `active_status=all` is a value Meta itself understands, so only
+# the actor input gets squeezed through here.
+_ACTOR_ACTIVE_STATUS = {"active": "active", "inactive": "inactive"}
+
+
+def actor_active_status(active_status: str) -> str:
+    return _ACTOR_ACTIVE_STATUS.get((active_status or "").strip().lower(), "")
+
+
 # -- URL building -------------------------------------------------------
 
 
@@ -377,7 +390,7 @@ def search(
         {
             "startUrls": [{"url": url}],
             "resultsLimit": max(1, min(limit, settings.APIFY_MAX_RESULTS)),
-            "activeStatus": (active_status or "ACTIVE").lower(),
+            "activeStatus": actor_active_status(active_status),
         }
     )
 
