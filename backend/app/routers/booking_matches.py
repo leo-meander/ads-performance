@@ -207,6 +207,30 @@ def _load_reservations(db: Session, numbers: set[str]) -> dict:
     return out
 
 
+def _load_stay_dates(db: Session, numbers: set[str]) -> dict:
+    """Fetch (check_in_date, check_out_date) per reservation number.
+
+    Deliberately narrower than ``_load_reservations``: the list endpoint only
+    needs the stay window, and it runs over a full API page of matches.
+    """
+    out: dict = {}
+    nums = list(numbers)
+    for i in range(0, len(nums), _IN_CHUNK):
+        rows = (
+            db.query(
+                Reservation.reservation_number,
+                Reservation.check_in_date,
+                Reservation.check_out_date,
+            )
+            .filter(Reservation.reservation_number.in_(nums[i:i + _IN_CHUNK]))
+            .all()
+        )
+        for r in rows:
+            if r.reservation_number:
+                out[r.reservation_number] = (r.check_in_date, r.check_out_date)
+    return out
+
+
 def _empty_stats() -> dict:
     return {"count": 0, "avg": 0, "median": 0, "min": 0, "max": 0}
 
@@ -312,11 +336,32 @@ def list_booking_matches(
         total = q.count()
         rows = q.order_by(BookingMatch.match_date.desc()).offset(offset).limit(limit).all()
 
+        # Check-in / check-out live on the reservation, not on the match row.
+        # Joining them here rather than denormalising them into booking_matches
+        # means every match ever made already has them — no migration, and no
+        # re-run of the matcher to backfill history. The work is bounded: `rows`
+        # is one API page (<= 1000), so this is a single extra indexed lookup.
+        stay_numbers: set[str] = set()
+        for m in rows:
+            stay_numbers.update(_split_res_numbers(m.reservation_numbers))
+        stay = _load_stay_dates(db, stay_numbers) if stay_numbers else {}
+
         items = []
         for m in rows:
             payload = _serialize_match(m)
             payload["ads_revenue"] = _convert_revenue(m.branch, payload["ads_revenue"], convert)
             payload["matched_revenue"] = _convert_revenue(m.branch, payload["matched_revenue"], convert)
+            # Same order as reservation_numbers / guest_names / room_types, so a
+            # multi-reservation row stays readable column-by-column.
+            nums = _split_res_numbers(m.reservation_numbers)
+            payload["check_in_dates"] = ", ".join(
+                (stay.get(n, (None, None))[0].isoformat() if stay.get(n, (None, None))[0] else "")
+                for n in nums
+            )
+            payload["check_out_dates"] = ", ".join(
+                (stay.get(n, (None, None))[1].isoformat() if stay.get(n, (None, None))[1] else "")
+                for n in nums
+            )
             items.append(payload)
 
         return _api_response(data={

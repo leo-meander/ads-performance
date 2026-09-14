@@ -25,6 +25,10 @@ type BookingMatch = {
   guest_names: string | null
   guest_emails: string | null
   reservation_statuses: string | null
+  // Joined from the reservations behind this match, in the same order as
+  // reservation_numbers. Empty string for a reservation with no date on file.
+  check_in_dates: string | null
+  check_out_dates: string | null
   room_types: string | null
   rate_plans: string | null
   reservation_sources: string | null
@@ -147,6 +151,8 @@ function bookingCsvColumns(currency: string): CsvColumn<BookingMatch>[] {
     { header: 'Guest', value: m => m.guest_names },
     { header: 'Guest Email', value: m => m.guest_emails },
     { header: 'Status', value: m => m.reservation_statuses },
+    { header: 'Check-in', value: m => m.check_in_dates },
+    { header: 'Check-out', value: m => m.check_out_dates },
     { header: 'Room', value: m => m.room_types },
     { header: 'Rate Plan', value: m => m.rate_plans },
     { header: 'Source', value: m => m.reservation_sources },
@@ -1143,6 +1149,8 @@ export default function BookingMatchesDashboard() {
                 <th className="text-left px-3 py-2">Reservation #</th>
                 <th className="text-left px-3 py-2">Guest</th>
                 <th className="text-left px-3 py-2">Status</th>
+                <th className="text-left px-3 py-2">Check-in</th>
+                <th className="text-left px-3 py-2">Check-out</th>
                 <th className="text-left px-3 py-2">Room</th>
                 <th className="text-left px-3 py-2">Rate Plan</th>
                 <th className="text-left px-3 py-2">Source</th>
@@ -1152,10 +1160,10 @@ export default function BookingMatchesDashboard() {
             </thead>
             <tbody>
               {rowsLoading && (
-                <tr><td colSpan={18} className="text-center py-8 text-gray-400">Loading...</td></tr>
+                <tr><td colSpan={20} className="text-center py-8 text-gray-400">Loading...</td></tr>
               )}
               {!rowsLoading && matches.length === 0 && (
-                <tr><td colSpan={18} className="text-center py-8 text-gray-400">No matches found</td></tr>
+                <tr><td colSpan={20} className="text-center py-8 text-gray-400">No matches found</td></tr>
               )}
               {matches.map(m => (
                 <tr key={m.id} className={`border-t border-gray-100 ${rowBgColor(m.match_result)}`}>
@@ -1179,6 +1187,8 @@ export default function BookingMatchesDashboard() {
                   <td className="px-3 py-2 max-w-[140px] truncate" title={m.reservation_numbers || ''}>{m.reservation_numbers}</td>
                   <td className="px-3 py-2 max-w-[160px] truncate" title={m.guest_names || ''}>{m.guest_names}</td>
                   <td className="px-3 py-2">{m.reservation_statuses}</td>
+                  <td className="px-3 py-2 whitespace-nowrap max-w-[120px] truncate" title={m.check_in_dates || ''}>{m.check_in_dates}</td>
+                  <td className="px-3 py-2 whitespace-nowrap max-w-[120px] truncate" title={m.check_out_dates || ''}>{m.check_out_dates}</td>
                   <td className="px-3 py-2 max-w-[140px] truncate" title={m.room_types || ''}>{m.room_types}</td>
                   <td className="px-3 py-2 max-w-[160px] truncate" title={m.rate_plans || ''}>{m.rate_plans}</td>
                   <td className="px-3 py-2">{m.reservation_sources}</td>
