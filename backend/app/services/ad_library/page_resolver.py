@@ -28,6 +28,7 @@ human should confirm.
 
 from __future__ import annotations
 
+import html as html_lib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -256,15 +257,21 @@ def _fetch_html(url: str) -> str:
     return resp.text or ""
 
 
-def _fetch_page_html(handle: str) -> str:
-    return _fetch_html(f"https://www.facebook.com/{handle}")
+# Two public surfaces for the same Page. www is tried first because its
+# markup carries the id in more shapes; mbasic is the fallback for when www
+# answers a datacenter IP with a login wall that has no id in it at all --
+# mbasic is the stripped-down surface Facebook still serves in that case.
+_PAGE_HTML_SURFACES = ("https://www.facebook.com/{h}", "https://mbasic.facebook.com/{h}")
 
 
 def _title_of(html: str) -> str:
     match = _HTML_OG_TITLE_RE.search(html) or _HTML_TITLE_RE.search(html)
     if not match:
         return ""
-    title = re.sub(r"\s+", " ", match.group(1)).strip()
+    # Facebook escapes the title, so a Vietnamese page name arrives as
+    # "Kh&#xe1;ch S&#x1ea1;n ..." -- unescape before it is stored and before
+    # it is used as an Ad Library search query, where entities match nothing.
+    title = re.sub(r"\s+", " ", html_lib.unescape(match.group(1))).strip()
     for suffix in (" | Facebook", " - Facebook", " | Instagram"):
         if title.lower().endswith(suffix.lower()):
             title = title[: -len(suffix)].strip()
@@ -285,14 +292,16 @@ def probe_facebook_page(handle: str) -> tuple[str, str]:
     wall still renders the Page title often enough, and a real name searches
     the Ad Library far better than a run-together handle does.
     """
-    html = _fetch_page_html(handle)
-    if not html:
-        return "", ""
-    name = _title_of(html)
-    for pattern in _HTML_ID_PATTERNS:
-        match = pattern.search(html)
-        if match and match.group(1) != "0":
-            return match.group(1), name
+    name = ""
+    for surface in _PAGE_HTML_SURFACES:
+        markup = _fetch_html(surface.format(h=handle))
+        if not markup:
+            continue
+        name = name or _title_of(markup)
+        for pattern in _HTML_ID_PATTERNS:
+            match = pattern.search(markup)
+            if match and match.group(1) != "0":
+                return match.group(1), name
     return "", name
 
 

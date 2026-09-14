@@ -111,6 +111,37 @@ def test_facebook_handle_uses_the_free_page_html_when_it_answers():
     search.assert_not_called()
 
 
+def test_page_name_arrives_unescaped():
+    """Facebook escapes the title, so a Vietnamese page name comes back as
+    "Kh&#xe1;ch S&#x1ea1;n ...". Stored raw it is unreadable in the UI, and as
+    an Ad Library query it matches nothing."""
+    html = (
+        '<title>Cupid Love Hotel - Kh&#xe1;ch S&#x1ea1;n T&#xec;nh Y&#xea;u | Facebook</title>'
+        'fb://profile/100083089736912'
+    )
+    with patch("app.services.ad_library.page_resolver._fetch_html", return_value=html):
+        result = resolve_page("https://www.facebook.com/Cupidlovehotel.01/")
+
+    assert result.page_id == "100083089736912"
+    assert result.page_name == "Cupid Love Hotel - Khách Sạn Tình Yêu"
+
+
+def test_mbasic_is_tried_before_paying_for_a_search():
+    """www can answer a datacenter IP with a login wall that carries no id.
+    mbasic is the same Page stripped down, still free — so it must be tried
+    before the provider is billed for a keyword search."""
+    walled = '<title>Facebook</title><script>{"userID":"0"}</script>'
+    mbasic = '<title>Cupid Love Hotel | Facebook</title>fb://profile/100083089736912'
+    with patch("app.services.ad_library.page_resolver._fetch_html",
+               side_effect=[walled, mbasic]) as fetch,          patch("app.services.ad_library.page_resolver._search_candidates") as search:
+        result = resolve_page("https://www.facebook.com/Cupidlovehotel.01/")
+
+    assert result.page_id == "100083089736912"
+    assert result.method == "page_html"
+    assert "mbasic.facebook.com" in fetch.call_args_list[1].args[0]
+    search.assert_not_called()
+
+
 def test_logged_out_zero_id_is_not_mistaken_for_a_page():
     html = '<title>Facebook</title><script>{"userID":"0"}</script>'
     page = AdLibraryPage(ads=[ad("102938475610293", "Icon Lifestyle Hotel")], source="apify")
