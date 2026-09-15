@@ -208,10 +208,17 @@ def _load_reservations(db: Session, numbers: set[str]) -> dict:
 
 
 def _load_stay_dates(db: Session, numbers: set[str]) -> dict:
-    """Fetch (check_in_date, check_out_date) per reservation number.
+    """Fetch (check_in_date, check_out_date, rate_plan) per reservation number.
 
     Deliberately narrower than ``_load_reservations``: the list endpoint only
-    needs the stay window, and it runs over a full API page of matches.
+    needs the stay window and the rate plan, and it runs over a full API page
+    of matches.
+
+    The rate plan prefers the stored ``rate_plan_name`` — which migration 073
+    backfills from the PMS payload's own field — and falls back to parsing
+    ``room_type`` for the rows that only ever carried a hand-typed tag. Doing
+    it here rather than trusting ``booking_matches.rate_plans`` means the table
+    is correct for all history the moment this deploys, with no matcher re-run.
     """
     out: dict = {}
     nums = list(numbers)
@@ -221,13 +228,16 @@ def _load_stay_dates(db: Session, numbers: set[str]) -> dict:
                 Reservation.reservation_number,
                 Reservation.check_in_date,
                 Reservation.check_out_date,
+                Reservation.room_type,
+                Reservation.rate_plan_name,
             )
             .filter(Reservation.reservation_number.in_(nums[i:i + _IN_CHUNK]))
             .all()
         )
         for r in rows:
             if r.reservation_number:
-                out[r.reservation_number] = (r.check_in_date, r.check_out_date)
+                plan = r.rate_plan_name or extract_rate_plan_from_room_type(r.room_type)
+                out[r.reservation_number] = (r.check_in_date, r.check_out_date, plan)
     return out
 
 
@@ -354,14 +364,18 @@ def list_booking_matches(
             # Same order as reservation_numbers / guest_names / room_types, so a
             # multi-reservation row stays readable column-by-column.
             nums = _split_res_numbers(m.reservation_numbers)
+            cells = [stay.get(n) or (None, None, None) for n in nums]
             payload["check_in_dates"] = ", ".join(
-                (stay.get(n, (None, None))[0].isoformat() if stay.get(n, (None, None))[0] else "")
-                for n in nums
+                c[0].isoformat() if c[0] else "" for c in cells
             )
             payload["check_out_dates"] = ", ".join(
-                (stay.get(n, (None, None))[1].isoformat() if stay.get(n, (None, None))[1] else "")
-                for n in nums
+                c[1].isoformat() if c[1] else "" for c in cells
             )
+            # Only override the stored value when we actually resolved the
+            # reservations — a match whose reservations are gone keeps whatever
+            # the matcher wrote rather than blanking the column.
+            if any(c[2] for c in cells):
+                payload["rate_plans"] = ", ".join(c[2] or "" for c in cells)
             items.append(payload)
 
         return _api_response(data={

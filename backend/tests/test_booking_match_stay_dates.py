@@ -41,21 +41,22 @@ def _admin_headers() -> dict:
     return {"Authorization": f"Bearer {create_access_token(uid, roles)}"}
 
 
-def _res(db, num, check_in, check_out):
+def _res(db, num, check_in, check_out, *, rate_plan=None, room_type=None):
     db.add(Reservation(
         id=str(uuid.uuid4()), reservation_number=num, reservation_date=D,
         check_in_date=check_in, check_out_date=check_out,
         grand_total=1000, branch="Meander Saigon", status="confirmed",
+        rate_plan_name=rate_plan, room_type=room_type,
     ))
 
 
-def _match(db, numbers, names):
+def _match(db, numbers, names, *, rate_plans=None):
     db.add(BookingMatch(
         id=str(uuid.uuid4()), match_date=D,
         ads_revenue=1000, matched_revenue=1000, ads_bookings=len(numbers.split(", ")),
         ads_channel="google", branch="Saigon", match_result="Matched",
         confidence="confirmed", reservation_numbers=numbers, guest_names=names,
-        matched_at=datetime.now(timezone.utc),
+        rate_plans=rate_plans, matched_at=datetime.now(timezone.utc),
     ))
 
 
@@ -118,3 +119,41 @@ def test_match_with_no_reservations_still_listed():
     assert len(items) == 1
     assert items[0]["check_in_dates"] == ""
     assert items[0]["check_out_dates"] == ""
+
+
+# --- rate plan, re-resolved at read time ------------------------------------
+# booking_matches.rate_plans was written by the matcher at match time, back
+# when the plan was mis-derived from room_type. The list endpoint re-resolves
+# it from the reservations so history reads correctly without a matcher re-run.
+
+def test_rate_plans_are_refreshed_from_the_reservations():
+    db = TestSession()
+    _res(db, "R1", D, D, rate_plan="EARLY26 2 NIGHTS")
+    _res(db, "R2", D, D, rate_plan="EARLY26 3+ NIGHTS")
+    _match(db, "R1, R2", "Ann, Bob", rate_plans="FLEX, FLEX")  # what the matcher stored
+    db.commit()
+    db.close()
+
+    items = _fetch(_admin_headers())
+    assert items[0]["rate_plans"] == "EARLY26 2 NIGHTS, EARLY26 3+ NIGHTS"
+
+
+def test_rate_plan_falls_back_to_room_type_tag():
+    """No stored plan, but the room_type carries a hand-typed KOL tag."""
+    db = TestSession()
+    _res(db, "R1", D, D, room_type="Standard Twin (KOL_whatweieats)")
+    _match(db, "R1", "Ann")
+    db.commit()
+    db.close()
+
+    assert _fetch(_admin_headers())[0]["rate_plans"] == "KOL_whatweieats"
+
+
+def test_unresolvable_reservations_keep_the_stored_rate_plans():
+    """Nothing to re-resolve from — don't blank a column that had content."""
+    db = TestSession()
+    _match(db, "GONE", "Ann", rate_plans="FLEX")
+    db.commit()
+    db.close()
+
+    assert _fetch(_admin_headers())[0]["rate_plans"] == "FLEX"
