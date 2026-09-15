@@ -67,25 +67,76 @@ def _parse_int(val) -> int | None:
         return None
 
 
-import re
-
-# Rate plan lives inside the room_type field — "Standard Twin (KOL_whatweieats)"
-# → "KOL_whatweieats". We take the last parenthesised group so room types with
-# nested descriptors still resolve correctly.
-_RATE_PLAN_PAREN_RE = re.compile(r"\(([^()]+)\)\s*$")
+# Rate plan lives inside the room_type field, wrapped in brackets:
+#   "8 Beds Mixed Dorm Shared Bathroom (Extension Promotion (>2 night))"
+#                                       ^--------- rate plan ---------^
+#   "Standard Twin (KOL_whatweieats)"   -> "KOL_whatweieats"
+#
+# Note the nested parentheses in the first one — that is the common production
+# shape, not an edge case, because the plan names themselves carry a qualifier
+# like "(>2 night)" or "(3+ nights)". A regex cannot do this: any pattern that
+# forbids brackets in the body (so it can find the closer) stops at the inner
+# group, and one that allows them swallows the rest of the line. The previous
+# end-anchored `\(([^()]+)\)\s*$` returned None here, and a naive "every
+# bracketed group" pattern returns just ">2 night" — the qualifier without the
+# plan it qualifies, which reads like real data and is worse than blank.
+#
+# So: scan, tracking depth, and take the OUTERMOST group. The opener decides
+# the closer, so nested brackets of another kind are left alone as content.
+_BRACKET_PAIRS = {"(": ")", "（": "）", "[": "]"}
 
 
 def extract_rate_plan_from_room_type(room_type: str | None) -> str | None:
+    """Pull the rate plan(s) out of a PMS room_type string.
+
+    Returns every top-level bracketed group joined by ", " (deduped, in the
+    order they appear), or None when there is no complete group. A group that
+    is never closed is dropped rather than raising — room_type is free text
+    typed by staff and this runs inside the sync loop.
+
+    Multiple groups matter: a multi-room reservation carries one per room, and
+    taking only the last reported *another room's* plan, which is wrong data
+    rather than missing data.
+    """
     if not room_type:
         return None
-    match = _RATE_PLAN_PAREN_RE.search(room_type)
-    if not match:
-        return None
-    val = match.group(1).strip()
-    return val or None
+
+    groups: list[str] = []
+    depth = 0
+    start = -1
+    opener = closer = ""
+
+    for i, ch in enumerate(room_type):
+        if depth == 0:
+            if ch in _BRACKET_PAIRS:
+                depth = 1
+                start = i + 1
+                opener, closer = ch, _BRACKET_PAIRS[ch]
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                val = room_type[start:i].strip()
+                if val and val not in groups:
+                    groups.append(val)
+
+    return ", ".join(groups) or None
 
 
 def _extract_rate_plan(raw: dict) -> str | None:
+    """Rate plan for one PMS reservation.
+
+    The PMS sends ``rate_plan_name`` as its own field and always has — this
+    code ignored it and re-derived the plan from a bracketed group inside
+    ``room_type`` instead, which resolved for under 8% of reservations on every
+    branch. The authoritative field wins; the room_type parse stays as the
+    fallback, because it is still the only place a hand-typed KOL tag
+    ("Standard Twin (KOL_whatweieats)") ever appears.
+    """
+    direct = (raw.get("rate_plan_name") or "").strip()
+    if direct:
+        return direct
     return extract_rate_plan_from_room_type(raw.get("room_type"))
 
 

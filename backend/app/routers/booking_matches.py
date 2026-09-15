@@ -208,10 +208,29 @@ def _load_reservations(db: Session, numbers: set[str]) -> dict:
 
 
 def _load_stay_dates(db: Session, numbers: set[str]) -> dict:
-    """Fetch (check_in_date, check_out_date) per reservation number.
+    """Fetch (check_in_date, check_out_date, rate_plan) per reservation number.
 
     Deliberately narrower than ``_load_reservations``: the list endpoint only
-    needs the stay window, and it runs over a full API page of matches.
+    needs the stay window and the rate plan, and it runs over a full API page
+    of matches.
+
+    The rate plan is re-derived from ``room_type`` and only falls back to the
+    stored ``rate_plan_name``. That order looks backwards — stored ought to be
+    authoritative — but the stored column was written by the old extractor,
+    which returned None for the nested-bracket shape that dominates this data
+    ("... (Extension Promotion (>2 night))") and, for a multi-room booking,
+    returned a *different room's* plan. Trusting it would keep serving those
+    wrong values. room_type is the raw field and is parsed correctly now, so it
+    wins; the stored column still covers rows whose plan came from the PMS's
+    own field rather than from room_type.
+
+    The divergence is temporary: the nightly sync re-reads the last 30 days
+    with the fixed extractor, so recent rows self-heal and the fallback only
+    ever matters for older history.
+
+    Doing this here rather than trusting ``booking_matches.rate_plans`` means
+    the table is correct for all history the moment this deploys, with no
+    matcher re-run.
     """
     out: dict = {}
     nums = list(numbers)
@@ -221,13 +240,16 @@ def _load_stay_dates(db: Session, numbers: set[str]) -> dict:
                 Reservation.reservation_number,
                 Reservation.check_in_date,
                 Reservation.check_out_date,
+                Reservation.room_type,
+                Reservation.rate_plan_name,
             )
             .filter(Reservation.reservation_number.in_(nums[i:i + _IN_CHUNK]))
             .all()
         )
         for r in rows:
             if r.reservation_number:
-                out[r.reservation_number] = (r.check_in_date, r.check_out_date)
+                plan = extract_rate_plan_from_room_type(r.room_type) or r.rate_plan_name
+                out[r.reservation_number] = (r.check_in_date, r.check_out_date, plan)
     return out
 
 
@@ -354,14 +376,18 @@ def list_booking_matches(
             # Same order as reservation_numbers / guest_names / room_types, so a
             # multi-reservation row stays readable column-by-column.
             nums = _split_res_numbers(m.reservation_numbers)
+            cells = [stay.get(n) or (None, None, None) for n in nums]
             payload["check_in_dates"] = ", ".join(
-                (stay.get(n, (None, None))[0].isoformat() if stay.get(n, (None, None))[0] else "")
-                for n in nums
+                c[0].isoformat() if c[0] else "" for c in cells
             )
             payload["check_out_dates"] = ", ".join(
-                (stay.get(n, (None, None))[1].isoformat() if stay.get(n, (None, None))[1] else "")
-                for n in nums
+                c[1].isoformat() if c[1] else "" for c in cells
             )
+            # Only override the stored value when we actually resolved the
+            # reservations — a match whose reservations are gone keeps whatever
+            # the matcher wrote rather than blanking the column.
+            if any(c[2] for c in cells):
+                payload["rate_plans"] = ", ".join(c[2] or "" for c in cells)
             items.append(payload)
 
         return _api_response(data={
