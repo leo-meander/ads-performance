@@ -67,42 +67,61 @@ def _parse_int(val) -> int | None:
         return None
 
 
-import re
-
-# Rate plan lives inside the room_type field — "Standard Twin (KOL_whatweieats)"
-# → "KOL_whatweieats", "Standard Double (EARLY26 2 NIGHTS)" → "EARLY26 2 NIGHTS".
+# Rate plan lives inside the room_type field, wrapped in brackets:
+#   "8 Beds Mixed Dorm Shared Bathroom (Extension Promotion (>2 night))"
+#                                       ^--------- rate plan ---------^
+#   "Standard Twin (KOL_whatweieats)"   -> "KOL_whatweieats"
 #
-# This used to be anchored to the end of the string and returned a single group,
-# which silently lost every real rate plan that wasn't the last thing in the
-# field. Three shapes were dropping on the floor:
+# Note the nested parentheses in the first one — that is the common production
+# shape, not an edge case, because the plan names themselves carry a qualifier
+# like "(>2 night)" or "(3+ nights)". A regex cannot do this: any pattern that
+# forbids brackets in the body (so it can find the closer) stops at the inner
+# group, and one that allows them swallows the rest of the line. The previous
+# end-anchored `\(([^()]+)\)\s*$` returned None here, and a naive "every
+# bracketed group" pattern returns just ">2 night" — the qualifier without the
+# plan it qualifies, which reads like real data and is worse than blank.
 #
-#   "Standard Double (EARLY26 2 NIGHTS) x1"              -> None  (trailing text)
-#   "Standard Double (EARLY26 2 NIGHTS), Family (FLEX)"  -> "FLEX" (first plan lost)
-#   "Standard Double（EARLY26 2 NIGHTS）"                 -> None  (full-width)
-#
-# The middle one is the worst: a multi-room reservation kept only the last
-# room's plan, so a booking that *did* use the early-bird rate reported someone
-# else's. We now collect every bracketed group anywhere in the string, in the
-# order they appear, and accept full-width parentheses and square brackets —
-# the PMS gets these from staff typing on CJK keyboards.
-_RATE_PLAN_BRACKET_RE = re.compile(r"[(（\[]([^()（）\[\]]+)[)）\]]")
+# So: scan, tracking depth, and take the OUTERMOST group. The opener decides
+# the closer, so nested brackets of another kind are left alone as content.
+_BRACKET_PAIRS = {"(": ")", "（": "）", "[": "]"}
 
 
 def extract_rate_plan_from_room_type(room_type: str | None) -> str | None:
     """Pull the rate plan(s) out of a PMS room_type string.
 
-    Returns every bracketed group joined by ", " (deduped, original order), or
-    None when the field carries no bracketed group at all. Single-plan room
-    types — the common case, and every KOL tag — are unaffected.
+    Returns every top-level bracketed group joined by ", " (deduped, in the
+    order they appear), or None when there is no complete group. A group that
+    is never closed is dropped rather than raising — room_type is free text
+    typed by staff and this runs inside the sync loop.
+
+    Multiple groups matter: a multi-room reservation carries one per room, and
+    taking only the last reported *another room's* plan, which is wrong data
+    rather than missing data.
     """
     if not room_type:
         return None
-    seen: list[str] = []
-    for match in _RATE_PLAN_BRACKET_RE.finditer(room_type):
-        val = match.group(1).strip()
-        if val and val not in seen:
-            seen.append(val)
-    return ", ".join(seen) or None
+
+    groups: list[str] = []
+    depth = 0
+    start = -1
+    opener = closer = ""
+
+    for i, ch in enumerate(room_type):
+        if depth == 0:
+            if ch in _BRACKET_PAIRS:
+                depth = 1
+                start = i + 1
+                opener, closer = ch, _BRACKET_PAIRS[ch]
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                val = room_type[start:i].strip()
+                if val and val not in groups:
+                    groups.append(val)
+
+    return ", ".join(groups) or None
 
 
 def _extract_rate_plan(raw: dict) -> str | None:

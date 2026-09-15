@@ -214,11 +214,23 @@ def _load_stay_dates(db: Session, numbers: set[str]) -> dict:
     needs the stay window and the rate plan, and it runs over a full API page
     of matches.
 
-    The rate plan prefers the stored ``rate_plan_name`` — which migration 073
-    backfills from the PMS payload's own field — and falls back to parsing
-    ``room_type`` for the rows that only ever carried a hand-typed tag. Doing
-    it here rather than trusting ``booking_matches.rate_plans`` means the table
-    is correct for all history the moment this deploys, with no matcher re-run.
+    The rate plan is re-derived from ``room_type`` and only falls back to the
+    stored ``rate_plan_name``. That order looks backwards — stored ought to be
+    authoritative — but the stored column was written by the old extractor,
+    which returned None for the nested-bracket shape that dominates this data
+    ("... (Extension Promotion (>2 night))") and, for a multi-room booking,
+    returned a *different room's* plan. Trusting it would keep serving those
+    wrong values. room_type is the raw field and is parsed correctly now, so it
+    wins; the stored column still covers rows whose plan came from the PMS's
+    own field rather than from room_type.
+
+    The divergence is temporary: the nightly sync re-reads the last 30 days
+    with the fixed extractor, so recent rows self-heal and the fallback only
+    ever matters for older history.
+
+    Doing this here rather than trusting ``booking_matches.rate_plans`` means
+    the table is correct for all history the moment this deploys, with no
+    matcher re-run.
     """
     out: dict = {}
     nums = list(numbers)
@@ -236,7 +248,7 @@ def _load_stay_dates(db: Session, numbers: set[str]) -> dict:
         )
         for r in rows:
             if r.reservation_number:
-                plan = r.rate_plan_name or extract_rate_plan_from_room_type(r.room_type)
+                plan = extract_rate_plan_from_room_type(r.room_type) or r.rate_plan_name
                 out[r.reservation_number] = (r.check_in_date, r.check_out_date, plan)
     return out
 

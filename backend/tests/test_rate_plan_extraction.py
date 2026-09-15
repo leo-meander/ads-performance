@@ -48,6 +48,36 @@ def test_pms_field_is_trimmed():
 
 # --- the room_type fallback -------------------------------------------------
 
+def test_nested_parentheses_take_the_outer_group():
+    """The dominant production shape. Plan names carry their own qualifier, so
+    the group is nested — and both previous implementations got it wrong:
+    the end-anchored regex returned None, and an "every bracketed group"
+    regex returned ">2 night", the qualifier stripped of the plan it
+    qualifies, which reads like real data."""
+    assert extract_rate_plan_from_room_type(
+        "8 Beds Mixed Dorm Shared Bathroom (Extension Promotion (>2 night))"
+    ) == "Extension Promotion (>2 night)"
+
+
+def test_nested_group_with_trailing_text():
+    assert extract_rate_plan_from_room_type(
+        "Double Room (Early Bird (3+ nights)) x1"
+    ) == "Early Bird (3+ nights)"
+
+
+def test_unclosed_group_is_dropped_not_raised():
+    """room_type is free text typed by staff and this runs inside the sync
+    loop — a stray bracket must never break a sync."""
+    assert extract_rate_plan_from_room_type("Double Room (Extension Promotion") is None
+    assert extract_rate_plan_from_room_type("Double Room )oops(") is None
+
+
+def test_inner_bracket_of_another_kind_stays_content():
+    assert extract_rate_plan_from_room_type(
+        "Double Room (Promo [winter])"
+    ) == "Promo [winter]"
+
+
 def test_plain_trailing_group_still_works():
     """The shape that already worked must keep working."""
     assert extract_rate_plan_from_room_type("Standard Double (EARLY26 2 NIGHTS)") == "EARLY26 2 NIGHTS"
@@ -61,11 +91,17 @@ def test_group_followed_by_trailing_text():
 
 
 def test_multi_room_keeps_every_plan_in_order():
-    """The nastiest case: the old regex returned only 'FLEX' and silently lost
-    the early-bird plan the guest actually booked."""
+    """The old regex returned only 'FLEX' and silently lost the plan on the
+    first room — reporting another room's plan rather than showing blank."""
     assert extract_rate_plan_from_room_type(
         "Standard Double (EARLY26 2 NIGHTS), Family Quadruple (FLEX)"
     ) == "EARLY26 2 NIGHTS, FLEX"
+
+
+def test_multi_room_with_nested_groups():
+    assert extract_rate_plan_from_room_type(
+        "Dorm (Extension Promotion (>2 night)), Double (Flexible)"
+    ) == "Extension Promotion (>2 night), Flexible"
 
 
 def test_repeated_plan_is_deduped():

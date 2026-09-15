@@ -157,3 +157,21 @@ def test_unresolvable_reservations_keep_the_stored_rate_plans():
     db.close()
 
     assert _fetch(_admin_headers())[0]["rate_plans"] == "FLEX"
+
+
+def test_room_type_beats_a_stale_stored_plan():
+    """The stored column was written by the old extractor, which returned the
+    inner qualifier (or nothing) for the nested shape that dominates this
+    data. room_type is the raw field and is parsed correctly now, so it wins.
+    """
+    db = TestSession()
+    _res(
+        db, "R1", D, D,
+        rate_plan=">2 night",  # what the old parser wrote
+        room_type="8 Beds Mixed Dorm Shared Bathroom (Extension Promotion (>2 night))",
+    )
+    _match(db, "R1", "Ann", rate_plans=">2 night")
+    db.commit()
+    db.close()
+
+    assert _fetch(_admin_headers())[0]["rate_plans"] == "Extension Promotion (>2 night)"
