@@ -25,6 +25,10 @@ type BookingMatch = {
   guest_names: string | null
   guest_emails: string | null
   reservation_statuses: string | null
+  // Joined from the reservations behind this match, in the same order as
+  // reservation_numbers. Empty string for a reservation with no date on file.
+  check_in_dates: string | null
+  check_out_dates: string | null
   room_types: string | null
   rate_plans: string | null
   reservation_sources: string | null
@@ -147,6 +151,8 @@ function bookingCsvColumns(currency: string): CsvColumn<BookingMatch>[] {
     { header: 'Guest', value: m => m.guest_names },
     { header: 'Guest Email', value: m => m.guest_emails },
     { header: 'Status', value: m => m.reservation_statuses },
+    { header: 'Check-in', value: m => m.check_in_dates },
+    { header: 'Check-out', value: m => m.check_out_dates },
     { header: 'Room', value: m => m.room_types },
     { header: 'Rate Plan', value: m => m.rate_plans },
     { header: 'Source', value: m => m.reservation_sources },
@@ -365,7 +371,9 @@ function FlowStack({ exact, cross, nul, max, leakage }: { exact: number; cross: 
 }
 
 export default function BookingMatchesDashboard() {
-  const [datePreset, setDatePreset] = useState('30d')
+  // 7 days by default: the window drives how much this page has to scan,
+  // and the last week is what the daily read actually asks for.
+  const [datePreset, setDatePreset] = useState('7d')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
   const [branches, setBranches] = useState<Branch[]>([])
@@ -388,7 +396,12 @@ export default function BookingMatchesDashboard() {
   const [showRawTable, setShowRawTable] = useState(false)
   const [matches, setMatches] = useState<BookingMatch[]>([])
   const [listCurrency, setListCurrency] = useState<string>('VND')
-  const [loading, setLoading] = useState(false)
+  // Two flags, not one: the KPI/chart summary is a single grouped aggregate and
+  // lands well before campaign-insights, which walks every matched reservation.
+  // Sharing one flag made the cheap half wait for the expensive half.
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [insightsLoading, setInsightsLoading] = useState(false)
+  const loading = summaryLoading || insightsLoading
   const [rowsLoading, setRowsLoading] = useState(false)
   const [running, setRunning] = useState(false)
   const [runMessage, setRunMessage] = useState<string | null>(null)
@@ -431,43 +444,70 @@ export default function BookingMatchesDashboard() {
 
   // Charts + KPIs. campaign-insights carries the window-wide reservation stats
   // in `overall`, so there's no separate /insights round trip.
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     const params = buildParams()
     if (!params) return
-    setLoading(true)
-    try {
-      const [summaryRes, campaignRes] = await Promise.all([
-        fetch(`${API_BASE}/api/booking-matches/summary?${params}`, { credentials: 'include' }).then(r => r.json()),
-        fetch(`${API_BASE}/api/booking-matches/campaign-insights?${params}`, { credentials: 'include' }).then(r => r.json()),
-      ])
-      if (summaryRes.success) setSummary(summaryRes.data)
-      if (campaignRes.success) setCampaignInsights(campaignRes.data)
-    } finally {
-      setLoading(false)
+    setSummaryLoading(true)
+    setInsightsLoading(true)
+
+    // Both requests are in flight together, but each commits its own state the
+    // moment it resolves instead of being held behind Promise.all — the KPI
+    // cards and charts appear while campaign-insights is still coming back.
+    const load = async (
+      path: string,
+      apply: (data: any) => void,
+      done: (v: boolean) => void,
+    ) => {
+      try {
+        const res = await fetch(`${API_BASE}/api/${path}?${params}`, {
+          credentials: 'include', signal,
+        }).then(r => r.json())
+        if (res.success) apply(res.data)
+      } catch (e: any) {
+        if (e?.name === 'AbortError') return  // superseded; leave the flag set
+      }
+      done(false)
     }
+
+    await Promise.all([
+      load('booking-matches/summary', setSummary, setSummaryLoading),
+      load('booking-matches/campaign-insights', setCampaignInsights, setInsightsLoading),
+    ])
   }, [buildParams])
 
   // The raw row dump is collapsed by default and nothing above it depends on
   // the rows, so it's only fetched once the user actually opens it.
-  const fetchRows = useCallback(async () => {
+  const fetchRows = useCallback(async (signal?: AbortSignal) => {
     const params = buildParams()
     if (!params) return
     setRowsLoading(true)
     try {
       const res = await fetch(
-        `${API_BASE}/api/booking-matches?${params}`, { credentials: 'include' },
+        `${API_BASE}/api/booking-matches?${params}`, { credentials: 'include', signal },
       ).then(r => r.json())
       if (res.success) {
         setMatches(res.data.items)
         setListCurrency(res.data.currency || 'VND')
       }
-    } finally {
-      setRowsLoading(false)
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return
     }
+    setRowsLoading(false)
   }, [buildParams])
 
-  useEffect(() => { fetchData() }, [fetchData])
-  useEffect(() => { if (showRawTable) fetchRows() }, [showRawTable, fetchRows])
+  // Aborting on cleanup means a fast filter change cancels the in-flight
+  // request instead of racing it — no stale payload overwriting a newer one.
+  useEffect(() => {
+    const ctrl = new AbortController()
+    fetchData(ctrl.signal)
+    return () => ctrl.abort()
+  }, [fetchData])
+  useEffect(() => {
+    if (!showRawTable) return
+    const ctrl = new AbortController()
+    fetchRows(ctrl.signal)
+    return () => ctrl.abort()
+  }, [showRawTable, fetchRows])
 
   // Close branch dropdown on outside click.
   const branchDropdownRef = useRef<HTMLDivElement>(null)
@@ -1109,6 +1149,8 @@ export default function BookingMatchesDashboard() {
                 <th className="text-left px-3 py-2">Reservation #</th>
                 <th className="text-left px-3 py-2">Guest</th>
                 <th className="text-left px-3 py-2">Status</th>
+                <th className="text-left px-3 py-2">Check-in</th>
+                <th className="text-left px-3 py-2">Check-out</th>
                 <th className="text-left px-3 py-2">Room</th>
                 <th className="text-left px-3 py-2">Rate Plan</th>
                 <th className="text-left px-3 py-2">Source</th>
@@ -1118,10 +1160,10 @@ export default function BookingMatchesDashboard() {
             </thead>
             <tbody>
               {rowsLoading && (
-                <tr><td colSpan={18} className="text-center py-8 text-gray-400">Loading...</td></tr>
+                <tr><td colSpan={20} className="text-center py-8 text-gray-400">Loading...</td></tr>
               )}
               {!rowsLoading && matches.length === 0 && (
-                <tr><td colSpan={18} className="text-center py-8 text-gray-400">No matches found</td></tr>
+                <tr><td colSpan={20} className="text-center py-8 text-gray-400">No matches found</td></tr>
               )}
               {matches.map(m => (
                 <tr key={m.id} className={`border-t border-gray-100 ${rowBgColor(m.match_result)}`}>
@@ -1145,6 +1187,8 @@ export default function BookingMatchesDashboard() {
                   <td className="px-3 py-2 max-w-[140px] truncate" title={m.reservation_numbers || ''}>{m.reservation_numbers}</td>
                   <td className="px-3 py-2 max-w-[160px] truncate" title={m.guest_names || ''}>{m.guest_names}</td>
                   <td className="px-3 py-2">{m.reservation_statuses}</td>
+                  <td className="px-3 py-2 whitespace-nowrap max-w-[120px] truncate" title={m.check_in_dates || ''}>{m.check_in_dates}</td>
+                  <td className="px-3 py-2 whitespace-nowrap max-w-[120px] truncate" title={m.check_out_dates || ''}>{m.check_out_dates}</td>
                   <td className="px-3 py-2 max-w-[140px] truncate" title={m.room_types || ''}>{m.room_types}</td>
                   <td className="px-3 py-2 max-w-[160px] truncate" title={m.rate_plans || ''}>{m.rate_plans}</td>
                   <td className="px-3 py-2">{m.reservation_sources}</td>
