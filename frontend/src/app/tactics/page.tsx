@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import {
   Plus, Trash2, X, ChevronDown, ChevronRight, AlertCircle, CheckCircle2,
@@ -12,6 +12,11 @@ import {
 } from 'recharts'
 import { useAuth } from '@/components/AuthContext'
 import SurfRunsPanel from '@/components/tactics/SurfRunsPanel'
+import {
+  STATUS_STYLES, ago, describeAction, describeRule, describeTactic, entityWord,
+  humanizeFailExample, metricLabel, tacticStatus,
+  type LastError, type LastEvaluation, type RuleSummary,
+} from '@/lib/tacticExplain'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
@@ -45,6 +50,11 @@ type Tactic = {
   last_run_at: string | null
   rule_count: number
   created_at: string | null
+  // Health fields (GET /api/tactics) — drive the "what it does" / "status"
+  // columns so the table explains itself without expanding a row.
+  rules_summary?: RuleSummary[]
+  last_evaluation?: LastEvaluation | null
+  last_error?: LastError | null
 }
 
 type TacticDetail = Tactic & {
@@ -176,6 +186,45 @@ function actionsForLevel(level: string) {
   return CAMPAIGN_ACTIONS
 }
 
+/**
+ * Every fetch on this page goes through here. The old code swallowed failures
+ * (`.catch(() => {})`), so a 403 or a dead API looked exactly like "you have no
+ * tactics" — which is the one thing the page must never do.
+ */
+async function loadJson(url: string): Promise<{ data?: any; error?: string }> {
+  let res: Response
+  try {
+    res = await fetch(url, { credentials: 'include' })
+  } catch (e: any) {
+    return { error: `Cannot reach the API at ${API_BASE} (${e?.message || 'network error'}).` }
+  }
+  let body: any = null
+  try {
+    body = await res.json()
+  } catch {
+    /* non-JSON error page */
+  }
+  if (!res.ok) {
+    const detail = body?.detail || body?.error
+    if (res.status === 401) return { error: 'You are not signed in (401). Log in again, then reload.' }
+    if (res.status === 403) {
+      return { error: `Your account has no access to the Automation section (403).${detail ? ` ${detail}` : ''}` }
+    }
+    return { error: `Request failed: HTTP ${res.status}${detail ? ` — ${detail}` : ''}` }
+  }
+  if (body && body.success === false) {
+    return { error: body.error || 'The server returned an error with no message.' }
+  }
+  return { data: body?.data }
+}
+
+/** "3 ads" / "1 ad set" / "2 items" — whatever this tactic actually touches. */
+function targetNoun(t: Tactic, count: number): string {
+  const levels = new Set((t.rules_summary || []).map(r => r.entity_level))
+  if (levels.size === 1) return entityWord(Array.from(levels)[0], count !== 1)
+  return count === 1 ? 'item' : 'items'
+}
+
 function formatConfigValue(v: unknown): string {
   if (typeof v === 'number') return v.toLocaleString()
   if (typeof v === 'boolean') return v ? 'true' : 'false'
@@ -191,6 +240,8 @@ export default function TacticsPage() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<Record<string, { detail?: TacticDetail; diagnostics?: Diagnostics } | 'loading'>>({})
+  // Keyed by what failed, so a dead endpoint says so instead of rendering "0".
+  const [errors, setErrors] = useState<Record<string, string>>({})
 
   // Account filter (table + overview both read this).
   const [filterAccountId, setFilterAccountId] = useState<string>('')
@@ -223,36 +274,43 @@ export default function TacticsPage() {
   )
   const isCustom = formPreset === 'custom_rule'
 
-  const fetchTactics = () => {
-    setLoading(true)
-    fetch(`${API_BASE}/api/tactics`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => { if (data.success) setTactics(data.data) })
-      .catch(() => {})
-      .finally(() => setLoading(false))
+  const setError = (key: string, message?: string) => {
+    setErrors(prev => {
+      const next = { ...prev }
+      if (message) next[key] = message
+      else delete next[key]
+      return next
+    })
   }
 
-  const fetchOverview = (days: number, accountId: string) => {
+  const fetchTactics = async () => {
+    setLoading(true)
+    const { data, error } = await loadJson(`${API_BASE}/api/tactics`)
+    setError('tactics', error)
+    if (data) setTactics(data)
+    setLoading(false)
+  }
+
+  const fetchOverview = async (days: number, accountId: string) => {
     setOverviewLoading(true)
     const qs = new URLSearchParams({ days: String(days) })
     if (accountId) qs.set('account_id', accountId)
-    fetch(`${API_BASE}/api/tactics/overview?${qs.toString()}`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => { if (data.success) setOverview(data.data) })
-      .catch(() => {})
-      .finally(() => setOverviewLoading(false))
+    const { data, error } = await loadJson(`${API_BASE}/api/tactics/overview?${qs.toString()}`)
+    setError('overview', error)
+    if (data) setOverview(data)
+    setOverviewLoading(false)
   }
 
   useEffect(() => {
     fetchTactics()
-    fetch(`${API_BASE}/api/tactics/presets`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => { if (data.success) setPresets(data.data) })
-      .catch(() => {})
-    fetch(`${API_BASE}/api/accounts`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => { if (data.success) setAccounts(data.data) })
-      .catch(() => {})
+    loadJson(`${API_BASE}/api/tactics/presets`).then(({ data, error }) => {
+      setError('presets', error)
+      if (data) setPresets(data)
+    })
+    loadJson(`${API_BASE}/api/accounts`).then(({ data, error }) => {
+      setError('accounts', error)
+      if (data) setAccounts(data)
+    })
   }, [])
 
   useEffect(() => {
@@ -348,31 +406,28 @@ export default function TacticsPage() {
           alert(`Create failed: ${data.error}`)
         }
       })
+      .catch(e => alert(`Create failed: ${e?.message || e}`))
   }
 
-  const toggle = (t: Tactic) => {
-    fetch(`${API_BASE}/api/tactics/${t.id}/toggle`, {
+  const toggle = async (t: Tactic) => {
+    const res = await fetch(`${API_BASE}/api/tactics/${t.id}/toggle`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ is_active: !t.is_active }),
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data.success) fetchTactics()
-      })
+    }).then(r => r.json()).catch(e => ({ success: false, error: String(e?.message || e) }))
+    setError('toggle', res.success ? undefined : `Could not switch "${t.name}": ${res.error}`)
+    if (res.success) fetchTactics()
   }
 
-  const remove = (t: Tactic) => {
+  const remove = async (t: Tactic) => {
     if (!confirm(`Delete tactic "${t.name}"? Its ${t.rule_count} linked rule(s) will be removed too.`)) return
-    fetch(`${API_BASE}/api/tactics/${t.id}`, {
+    const res = await fetch(`${API_BASE}/api/tactics/${t.id}`, {
       method: 'DELETE',
       credentials: 'include',
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data.success) fetchTactics()
-      })
+    }).then(r => r.json()).catch(e => ({ success: false, error: String(e?.message || e) }))
+    setError('delete', res.success ? undefined : `Could not delete "${t.name}": ${res.error}`)
+    if (res.success) fetchTactics()
   }
 
   const toggleExpand = async (t: Tactic) => {
@@ -382,15 +437,13 @@ export default function TacticsPage() {
     }
     setExpanded(prev => ({ ...prev, [t.id]: 'loading' }))
     const [detailRes, diagRes] = await Promise.all([
-      fetch(`${API_BASE}/api/tactics/${t.id}`, { credentials: 'include' }).then(r => r.json()),
-      fetch(`${API_BASE}/api/tactics/${t.id}/diagnostics`, { credentials: 'include' }).then(r => r.json()),
+      loadJson(`${API_BASE}/api/tactics/${t.id}`),
+      loadJson(`${API_BASE}/api/tactics/${t.id}/diagnostics`),
     ])
+    setError('detail', detailRes.error || diagRes.error)
     setExpanded(prev => ({
       ...prev,
-      [t.id]: {
-        detail: detailRes.success ? detailRes.data : undefined,
-        diagnostics: diagRes.success ? diagRes.data : undefined,
-      },
+      [t.id]: { detail: detailRes.data, diagnostics: diagRes.data },
     }))
   }
 
@@ -421,8 +474,8 @@ export default function TacticsPage() {
         <div>
           <h1 className="text-2xl font-bold">Tactics</h1>
           <p className="text-sm text-gray-500">
-            Automation strategies (preset bundles + custom rules). Runs once daily at 17:00 UTC
-            so budget mutations don't compound across intraday syncs.
+            Rules that watch your Meta ads and change them for you. They run once a day at
+            17:00 UTC (midnight Vietnam time) — never more often, so budget changes don't stack up.
           </p>
         </div>
         {canEdit && (
@@ -436,10 +489,31 @@ export default function TacticsPage() {
         )}
       </div>
 
+      {/* Anything that failed to load says so here — never a silent zero. */}
+      {Object.keys(errors).length > 0 && (
+        <div className="mb-4 border border-red-200 bg-red-50 rounded-lg p-3">
+          <div className="flex items-center gap-2 text-sm font-medium text-red-800 mb-1">
+            <AlertCircle className="w-4 h-4" />
+            Something on this page failed to load — the numbers below are incomplete.
+          </div>
+          <ul className="text-xs text-red-700 space-y-0.5 ml-6 list-disc">
+            {Object.entries(errors).map(([key, msg]) => (
+              <li key={key}><b>{key}</b>: {msg}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Overview dashboard: what tactics did over the last N days. */}
       <div className="border rounded-lg bg-white p-5 mb-4">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-base font-semibold">What your automations did for you</h2>
+          <div>
+            <h2 className="text-base font-semibold">What your automations did for you</h2>
+            <p className="text-xs text-gray-500">
+              Changes actually pushed to Meta in this window. All zeros means no tactic
+              hit its threshold — check each row's status below for the reason.
+            </p>
+          </div>
           <div className="flex items-center gap-2 text-xs text-gray-600">
             <span>Timeframe:</span>
             <select
@@ -494,7 +568,15 @@ export default function TacticsPage() {
         </div>
 
         <div className="h-56">
-          {overview && (
+          {overview && overview.totals.total === 0 && !overviewLoading ? (
+            <div className="h-full flex flex-col items-center justify-center text-center text-sm text-gray-500 border border-dashed rounded">
+              <span>No automated changes in the last {overviewDays} days.</span>
+              <span className="text-xs mt-1">
+                That is not an error by itself — a tactic only acts when an ad crosses its
+                threshold. The Status column below says what each tactic found on its last run.
+              </span>
+            </div>
+          ) : overview && (
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={overview.daily} margin={{ top: 6, right: 12, left: -10, bottom: 0 }}>
                 <XAxis
@@ -564,10 +646,31 @@ export default function TacticsPage() {
       {loading ? (
         <div className="p-8 text-center text-gray-400">Loading…</div>
       ) : filteredTactics.length === 0 ? (
-        <div className="p-8 text-center text-gray-400 border border-dashed rounded">
-          {tactics.length === 0
-            ? 'No tactics yet. Create one from a preset.'
-            : 'No tactics for this account.'}
+        <div className="p-8 text-center border border-dashed rounded text-sm">
+          {errors.tactics ? (
+            <div className="text-red-700">
+              The tactic list could not be loaded, so this is <b>not</b> proof that you have none.
+              <div className="text-xs mt-1">{errors.tactics}</div>
+            </div>
+          ) : tactics.length === 0 ? (
+            <div className="text-gray-500">
+              You have no tactics at all. Nothing is automated right now — create one with
+              <b> New Tactic</b>.
+            </div>
+          ) : (
+            <div className="text-gray-500">
+              You have {tactics.length} tactic{tactics.length === 1 ? '' : 's'}, but none match
+              the current filter.
+              {activeOnly && (
+                <button
+                  onClick={() => setActiveOnly(false)}
+                  className="ml-1 text-blue-600 hover:underline"
+                >
+                  Show switched-off tactics too
+                </button>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <div className="border rounded overflow-hidden bg-white">
@@ -575,15 +678,11 @@ export default function TacticsPage() {
             <thead className="bg-gray-50 text-gray-600">
               <tr>
                 <th className="text-left px-3 py-2 w-8"></th>
-                <th className="text-left px-3 py-2">Name</th>
-                <th className="text-left px-3 py-2">Preset</th>
-                <th className="text-left px-3 py-2">Account</th>
-                <th className="text-left px-3 py-2">Revert</th>
-                <th className="text-left px-3 py-2">Rules</th>
-                <th className="text-left px-3 py-2">Assets</th>
-                <th className="text-left px-3 py-2">Action Frequency ({overviewDays}d)</th>
-                <th className="text-left px-3 py-2">Last run</th>
-                <th className="text-left px-3 py-2">Active</th>
+                <th className="text-left px-3 py-2">Tactic</th>
+                <th className="text-left px-3 py-2">What it does</th>
+                <th className="text-left px-3 py-2 w-72">Status</th>
+                <th className="text-left px-3 py-2">Changes ({overviewDays}d)</th>
+                <th className="text-left px-3 py-2">On</th>
                 <th className="text-right px-3 py-2"></th>
               </tr>
             </thead>
@@ -594,33 +693,51 @@ export default function TacticsPage() {
                 const isLoading = exp === 'loading'
                 const expData = (exp && exp !== 'loading') ? exp : null
                 return (
-                  <>
-                    <tr key={t.id} className="border-t hover:bg-gray-50">
+                  // Fragment needs the key — the rows inside are siblings.
+                  <Fragment key={t.id}>
+                    <tr className="border-t hover:bg-gray-50">
                       <td className="px-3 py-2">
                         <button onClick={() => toggleExpand(t)} className="text-gray-500 hover:text-gray-900">
                           {exp ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                         </button>
                       </td>
-                      <td className="px-3 py-2 font-medium">{t.name}</td>
-                      <td className="px-3 py-2 text-gray-600">{preset?.name || t.preset_type}</td>
-                      <td className="px-3 py-2 text-gray-600">{accountName(t.account_id)}</td>
-                      <td className="px-3 py-2 text-gray-600">
-                        {REVERT_LABELS[preset?.revert_policy || 'none']}
+                      <td className="px-3 py-2 align-top">
+                        <div className="font-medium">{t.name}</div>
+                        <div className="text-xs text-gray-500">
+                          {/* Most tactics are named after their preset — don't say it twice. */}
+                          {(preset?.name || t.preset_type) !== t.name
+                            ? `${preset?.name || t.preset_type} · ${accountName(t.account_id)}`
+                            : accountName(t.account_id)}
+                        </div>
                       </td>
-                      <td className="px-3 py-2 text-gray-600">{t.rule_count}</td>
-                      <td className="px-3 py-2 text-gray-600">
-                        {perTacticById[t.id]?.automated_assets ?? 0}
+                      <td className="px-3 py-2 align-top text-gray-700 max-w-md">
+                        <ul className="space-y-0.5">
+                          {describeTactic(t.rules_summary || []).map((line, i) => (
+                            <li key={i} className="leading-snug">{line}</li>
+                          ))}
+                        </ul>
+                        {preset?.revert_policy && preset.revert_policy !== 'none' && (
+                          <div className="text-xs text-gray-500 mt-1">
+                            {REVERT_LABELS[preset.revert_policy]}
+                          </div>
+                        )}
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 align-top">
+                        <StatusCell tactic={t} />
+                      </td>
+                      <td className="px-3 py-2 align-top">
                         <SparklineCell
                           daily={perTacticById[t.id]?.daily_actions}
                           total={perTacticById[t.id]?.total_actions ?? 0}
                         />
+                        {(perTacticById[t.id]?.total_actions ?? 0) > 0 && (
+                          <div className="text-xs text-gray-500">
+                            on {perTacticById[t.id]?.automated_assets ?? 0}{' '}
+                            {targetNoun(t, perTacticById[t.id]?.automated_assets ?? 0)}
+                          </div>
+                        )}
                       </td>
-                      <td className="px-3 py-2 text-gray-600 text-xs">
-                        {t.last_run_at ? new Date(t.last_run_at).toLocaleString() : '—'}
-                      </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 align-top">
                         <label className="inline-flex items-center cursor-pointer">
                           <input
                             type="checkbox"
@@ -632,7 +749,7 @@ export default function TacticsPage() {
                           <div className="relative w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600 peer-disabled:opacity-50"></div>
                         </label>
                       </td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="px-3 py-2 text-right align-top">
                         <div className="inline-flex items-center gap-2">
                           <Link
                             href={`/tactics/${t.id}/log`}
@@ -651,16 +768,40 @@ export default function TacticsPage() {
                     </tr>
                     {isLoading && (
                       <tr key={`${t.id}-loading`} className="bg-gray-50 border-t">
-                        <td colSpan={11} className="px-6 py-3 text-xs text-gray-500">Loading…</td>
+                        <td colSpan={7} className="px-6 py-3 text-xs text-gray-500">Loading…</td>
                       </tr>
                     )}
                     {expData && (
                       <tr key={`${t.id}-detail`} className="bg-gray-50 border-t">
-                        <td colSpan={11} className="px-6 py-4 text-xs">
-                          <div className="grid grid-cols-2 gap-6">
-                            <div>
-                              <div className="font-medium text-gray-700 mb-1">Config</div>
-                              <pre className="bg-white border rounded p-2 overflow-x-auto">
+                        <td colSpan={7} className="px-6 py-4 text-xs">
+                          <div>
+                            <div className="font-medium text-gray-700 mb-1">Rules it runs every day</div>
+                            <ul className="space-y-1">
+                              {(expData.detail?.rules || []).map(r => (
+                                <li key={r.id} className="bg-white border rounded p-2">
+                                  <div>
+                                    {describeRule({
+                                      id: r.id,
+                                      name: r.name,
+                                      entity_level: r.entity_level,
+                                      action: r.action,
+                                      conditions: r.conditions,
+                                      action_params: r.action_params,
+                                      is_active: r.is_active,
+                                    })}
+                                  </div>
+                                  <div className="text-gray-500 mt-0.5">
+                                    Looks at every {entityWord(r.entity_level)} in scope
+                                    {!r.is_active && ' · this rule is switched off'}
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                            <details className="mt-2">
+                              <summary className="cursor-pointer text-gray-500 hover:text-gray-700">
+                                Raw settings (for debugging)
+                              </summary>
+                              <pre className="bg-white border rounded p-2 overflow-x-auto mt-1">
 {JSON.stringify(
   Object.fromEntries(
     Object.entries(expData.detail?.config || {}).filter(([k]) => !HIDDEN_CONFIG_KEYS.has(k)),
@@ -668,20 +809,7 @@ export default function TacticsPage() {
   null, 2,
 )}
                               </pre>
-                            </div>
-                            <div>
-                              <div className="font-medium text-gray-700 mb-1">Rules ({expData.detail?.rules?.length || 0})</div>
-                              <ul className="space-y-1">
-                                {(expData.detail?.rules || []).map(r => (
-                                  <li key={r.id} className="bg-white border rounded p-2">
-                                    <div className="font-medium">{r.name}</div>
-                                    <div className="text-gray-500">
-                                      level={r.entity_level} · action={r.action} · active={String(r.is_active)}
-                                    </div>
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
+                            </details>
                           </div>
 
                           {/* SURF Intraday runs panel — only for engine-driven SURF intraday tactics. */}
@@ -693,112 +821,16 @@ export default function TacticsPage() {
 
                           {expData.diagnostics && (
                             <div className="mt-4">
-                              <div className="font-medium text-gray-700 mb-2">Why it did / didn't fire</div>
+                              <div className="font-medium text-gray-700 mb-2">What happened on the last run</div>
                               {expData.diagnostics.rules.map(r => (
-                                <div key={r.rule_id} className="bg-white border rounded p-3 mb-2">
-                                  <div className="font-medium mb-2">{r.rule_name}</div>
-                                  {r.last_evaluation ? (
-                                    <div className="space-y-1">
-                                      <div className="flex items-center gap-2">
-                                        {r.last_evaluation.actions_taken && r.last_evaluation.actions_taken > 0 ? (
-                                          <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
-                                        ) : (
-                                          <AlertCircle className="w-3.5 h-3.5 text-orange-500" />
-                                        )}
-                                        <span>
-                                          Last evaluated{' '}
-                                          {r.last_evaluation.executed_at
-                                            ? new Date(r.last_evaluation.executed_at).toLocaleString()
-                                            : '—'}
-                                          {' · '}
-                                          {r.last_evaluation.funnel_stage && (
-                                            <>
-                                              funnel=<code className="bg-gray-100 px-1 rounded">{r.last_evaluation.funnel_stage}</code>{' · '}
-                                            </>
-                                          )}
-                                          checked <b>{r.last_evaluation.entities_checked ?? 0}</b> entities · acted on{' '}
-                                          <b>{r.last_evaluation.actions_taken ?? 0}</b>
-                                        </span>
-                                      </div>
-                                      {r.last_evaluation.dynamic && Object.keys(r.last_evaluation.dynamic.effective_thresholds || {}).length > 0 && (
-                                        <div className="mt-1 p-2 bg-blue-50 border border-blue-200 rounded">
-                                          <div className="text-blue-700 font-medium mb-1">Dynamic thresholds (today)</div>
-                                          <ul className="space-y-0.5">
-                                            {Object.entries(r.last_evaluation.dynamic.effective_thresholds).map(([metric, info]) => (
-                                              <li key={metric} className="text-gray-700">
-                                                <code className="bg-white px-1 rounded">{metric}</code>{' '}
-                                                threshold = <b>{info.value.toFixed(4)}</b>
-                                                <div className="text-gray-500 text-xs ml-4">{info.source}</div>
-                                              </li>
-                                            ))}
-                                          </ul>
-                                        </div>
-                                      )}
-                                      {r.last_evaluation.top_fail_reason && (
-                                        <div className="text-gray-600">
-                                          Top fail reason: <code className="bg-gray-100 px-1 rounded">{r.last_evaluation.top_fail_reason}</code>
-                                          {r.last_evaluation.fail_breakdown && (
-                                            <span className="ml-2 text-gray-500">
-                                              ({Object.entries(r.last_evaluation.fail_breakdown).map(([k, v]) => `${k}=${v}`).join(', ')})
-                                            </span>
-                                          )}
-                                        </div>
-                                      )}
-                                      {r.last_evaluation.fail_examples && r.last_evaluation.fail_examples.length > 0 && (
-                                        <div className="mt-1">
-                                          <div className="text-gray-600 mb-1">Examples:</div>
-                                          <ul className="ml-3 space-y-0.5">
-                                            {r.last_evaluation.fail_examples.slice(0, 5).map((ex, i) => (
-                                              <li key={i} className="text-gray-700">
-                                                <code className="text-xs">{ex.entity_name || ex.entity_id || '—'}</code>
-                                                {' — '}
-                                                <span className="text-gray-500">{ex.reason || '(no detail)'}</span>
-                                              </li>
-                                            ))}
-                                          </ul>
-                                        </div>
-                                      )}
-                                    </div>
-                                  ) : (
-                                    <div className="text-gray-500">Never evaluated yet. Cron hasn't run or sync isn't producing metrics.</div>
-                                  )}
-
-                                  {r.recent_actions.length > 0 && (
-                                    <div className="mt-3">
-                                      <div className="text-gray-700 font-medium mb-1">Recent actions</div>
-                                      <ul className="space-y-0.5">
-                                        {r.recent_actions.slice(0, 5).map((a, i) => (
-                                          <li key={i} className="flex items-start gap-2">
-                                            {a.success ? (
-                                              <CheckCircle2 className="w-3.5 h-3.5 text-green-600 mt-0.5 flex-shrink-0" />
-                                            ) : (
-                                              <AlertCircle className="w-3.5 h-3.5 text-red-600 mt-0.5 flex-shrink-0" />
-                                            )}
-                                            <div>
-                                              <code className="text-xs">{a.action}</code>{' on '}
-                                              <span>{a.entity_name}</span>
-                                              {a.executed_at && (
-                                                <span className="text-gray-400 text-xs ml-2">
-                                                  {new Date(a.executed_at).toLocaleString()}
-                                                </span>
-                                              )}
-                                              {!a.success && a.error_message && (
-                                                <div className="text-red-700 mt-0.5 break-words">{a.error_message}</div>
-                                              )}
-                                            </div>
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )}
-                                </div>
+                                <RuleRunReport key={r.rule_id} rule={r} />
                               ))}
                             </div>
                           )}
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 )
               })}
             </tbody>
@@ -1011,6 +1043,144 @@ function SummaryCard({
         </span>
         <span className="text-[10px] text-gray-400">Actions triggered</span>
       </div>
+    </div>
+  )
+}
+
+/**
+ * The whole point of the page: one badge + one sentence saying whether this
+ * tactic did anything, and if not, why not.
+ */
+function StatusCell({ tactic }: { tactic: Tactic }) {
+  const status = tacticStatus(tactic)
+  return (
+    <div>
+      <span className={`inline-block px-2 py-0.5 rounded border text-xs font-medium ${STATUS_STYLES[status.tone]}`}>
+        {status.label}
+      </span>
+      <div className="text-xs text-gray-600 mt-1 leading-snug">{status.detail}</div>
+      {status.stale && (
+        <div className="text-xs text-amber-700 mt-1">
+          The daily run has not touched this in over 36h — the cron may not be running.
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Per-rule "what happened last night", in sentences rather than log codes. */
+function RuleRunReport({ rule }: { rule: Diagnostics['rules'][number] }) {
+  const ev = rule.last_evaluation
+  const checked = ev?.entities_checked ?? 0
+  const acted = ev?.actions_taken ?? 0
+
+  return (
+    <div className="bg-white border rounded p-3 mb-2">
+      <div className="font-medium mb-2">{describeAction(rule.action, null)} · {entityWord(rule.entity_level)} level</div>
+
+      {!ev ? (
+        <div className="text-gray-600">
+          Never evaluated. Either the daily cron has not run since this rule was created, or the
+          sync has not produced metrics for it yet.
+        </div>
+      ) : (
+        <div className="space-y-1">
+          <div className="flex items-start gap-2">
+            {acted > 0
+              ? <CheckCircle2 className="w-3.5 h-3.5 text-green-600 mt-0.5 flex-shrink-0" />
+              : <AlertCircle className="w-3.5 h-3.5 text-orange-500 mt-0.5 flex-shrink-0" />}
+            <span>
+              {ago(ev.executed_at)} it looked at <b>{checked}</b> {entityWord(rule.entity_level, checked !== 1)}
+              {' and changed '}<b>{acted}</b>.
+              {ev.funnel_stage && <> Only {ev.funnel_stage} entities are in scope for this tactic.</>}
+            </span>
+          </div>
+
+          {checked === 0 && (
+            <div className="text-gray-600 ml-5">
+              Nothing was in scope. Usual causes: the tactic is pinned to an account with no
+              matching {entityWord(rule.entity_level, true)}, the funnel filter excludes them all, or
+              the sync has not written metrics yet.
+            </div>
+          )}
+
+          {checked > 0 && acted === 0 && ev.top_fail_reason && (
+            <div className="text-gray-700 ml-5">
+              Nothing was changed because the {entityWord(rule.entity_level, true)} did not meet the
+              condition on <b>{metricLabel(ev.top_fail_reason)}</b>
+              {ev.fail_breakdown && Object.keys(ev.fail_breakdown).length > 1 && (
+                <>
+                  {' '}(others stopped at{' '}
+                  {Object.entries(ev.fail_breakdown)
+                    .filter(([k]) => k !== ev.top_fail_reason)
+                    .map(([k, v]) => `${metricLabel(k)}: ${v}`)
+                    .join(', ')})
+                </>
+              )}
+              .
+            </div>
+          )}
+
+          {ev.fail_examples && ev.fail_examples.length > 0 && (
+            <div className="ml-5 mt-1">
+              <div className="text-gray-600 mb-1">For example:</div>
+              <ul className="space-y-0.5">
+                {ev.fail_examples.slice(0, 5).map((ex, i) => (
+                  <li key={i} className="text-gray-700">
+                    <span className="font-medium">{ex.entity_name || ex.entity_id || 'unnamed'}</span>
+                    {' — '}
+                    <span className="text-gray-600">{humanizeFailExample(ex.reason, ex.failed_at)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {ev.dynamic && Object.keys(ev.dynamic.effective_thresholds || {}).length > 0 && (
+            <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded ml-5">
+              <div className="text-blue-800 font-medium mb-1">
+                This rule sets its own bar from your recent results
+              </div>
+              <ul className="space-y-0.5">
+                {Object.entries(ev.dynamic.effective_thresholds).map(([metric, info]) => (
+                  <li key={metric} className="text-gray-700">
+                    {metricLabel(metric)} bar today = <b>{info.value.toFixed(2)}</b>
+                    <div className="text-gray-500 ml-4">{info.source}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {ev.error_message && acted === 0 && checked === 0 && (
+            <div className="text-red-700 ml-5">{ev.error_message}</div>
+          )}
+        </div>
+      )}
+
+      {rule.recent_actions.length > 0 && (
+        <div className="mt-3">
+          <div className="text-gray-700 font-medium mb-1">Changes it has made</div>
+          <ul className="space-y-0.5">
+            {rule.recent_actions.slice(0, 5).map((a, i) => (
+              <li key={i} className="flex items-start gap-2">
+                {a.success
+                  ? <CheckCircle2 className="w-3.5 h-3.5 text-green-600 mt-0.5 flex-shrink-0" />
+                  : <AlertCircle className="w-3.5 h-3.5 text-red-600 mt-0.5 flex-shrink-0" />}
+                <div>
+                  {describeAction(a.action, null)} — <span className="font-medium">{a.entity_name}</span>
+                  {a.executed_at && <span className="text-gray-400 ml-2">{ago(a.executed_at)}</span>}
+                  {!a.success && (
+                    <div className="text-red-700 mt-0.5 break-words">
+                      Failed: {a.error_message || 'Meta returned no error message.'}
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

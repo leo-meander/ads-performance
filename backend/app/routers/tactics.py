@@ -90,6 +90,128 @@ def _tactic_to_dict(db: Session, t: Tactic) -> dict:
     }
 
 
+# ---------- Per-tactic health (drives the plain-language status column) ----------
+
+_EMPTY_HEALTH: dict[str, Any] = {
+    "rules_summary": [],
+    "last_evaluation": None,
+    "last_error": None,
+}
+
+
+def _bulk_tactic_health(db: Session, tactics: list[Tactic]) -> dict[str, dict]:
+    """For each tactic: its rule definitions + the most recent evaluation and
+    the most recent failed action.
+
+    The Tactics table renders "what this does" and "what happened last run"
+    without expanding a row, so this has to come back with the list. Everything
+    is bulk-queried rather than per-tactic.
+    """
+    tactic_ids = [t.id for t in tactics]
+    if not tactic_ids:
+        return {}
+
+    rules = (
+        db.query(AutomationRule)
+        .filter(AutomationRule.tactic_id.in_(tactic_ids))
+        .all()
+    )
+    if not rules:
+        return {}
+
+    rule_to_tactic = {r.id: r.tactic_id for r in rules}
+    rule_ids = list(rule_to_tactic.keys())
+
+    rules_by_tactic: dict[str, list[dict]] = {tid: [] for tid in tactic_ids}
+    for r in rules:
+        rules_by_tactic[r.tactic_id].append({
+            "id": r.id,
+            "name": r.name,
+            "entity_level": r.entity_level,
+            "action": r.action,
+            "conditions": r.conditions,
+            "action_params": r.action_params,
+            "is_active": r.is_active,
+        })
+
+    # Latest evaluation_summary per rule: max(executed_at) grouped by rule,
+    # then fetch those exact rows. Avoids DISTINCT ON so SQLite tests pass.
+    def _latest_logs(extra_filter) -> dict[str, ActionLog]:
+        pairs = (
+            db.query(ActionLog.rule_id, func.max(ActionLog.executed_at))
+            .filter(ActionLog.rule_id.in_(rule_ids), extra_filter)
+            .group_by(ActionLog.rule_id)
+            .all()
+        )
+        wanted = {rid: ts for rid, ts in pairs if ts}
+        if not wanted:
+            return {}
+        rows = (
+            db.query(ActionLog)
+            .filter(
+                ActionLog.rule_id.in_(list(wanted.keys())),
+                ActionLog.executed_at.in_(list(set(wanted.values()))),
+                extra_filter,
+            )
+            .all()
+        )
+        out: dict[str, ActionLog] = {}
+        for row in rows:
+            if wanted.get(row.rule_id) == row.executed_at:
+                out[row.rule_id] = row
+        return out
+
+    latest_eval = _latest_logs(ActionLog.action == "evaluation_summary")
+    latest_fail = _latest_logs(ActionLog.success.is_(False))
+
+    health: dict[str, dict] = {}
+    for t in tactics:
+        evals = [
+            (rid, log) for rid, log in latest_eval.items()
+            if rule_to_tactic.get(rid) == t.id
+        ]
+        # Newest evaluation across the tactic's rules is what the row reports.
+        evals.sort(key=lambda x: x[1].executed_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        evaluation = None
+        if evals:
+            log = evals[0][1]
+            snap = log.metrics_snapshot or {}
+            # A tactic's rules all run in the same cron pass, so sum the pass.
+            same_pass = [
+                (l.metrics_snapshot or {}) for _rid, l in evals
+            ]
+            evaluation = {
+                "executed_at": log.executed_at.isoformat() if log.executed_at else None,
+                "entities_checked": sum(int(s.get("entities_checked") or 0) for s in same_pass),
+                "actions_taken": sum(int(s.get("actions_taken") or 0) for s in same_pass),
+                "top_fail_reason": snap.get("top_fail_reason"),
+                "fail_breakdown": snap.get("fail_breakdown"),
+                "fail_examples": snap.get("fail_examples", []),
+                "error_message": log.error_message,
+            }
+
+        fails = [
+            log for rid, log in latest_fail.items()
+            if rule_to_tactic.get(rid) == t.id
+        ]
+        fails.sort(key=lambda l: l.executed_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        last_error = None
+        if fails:
+            f = fails[0]
+            last_error = {
+                "executed_at": f.executed_at.isoformat() if f.executed_at else None,
+                "action": f.action,
+                "message": f.error_message,
+            }
+
+        health[t.id] = {
+            "rules_summary": rules_by_tactic.get(t.id, []),
+            "last_evaluation": evaluation,
+            "last_error": last_error,
+        }
+    return health
+
+
 # ---------- Preset catalog ----------
 
 @router.get("/tactics/presets")
@@ -301,7 +423,13 @@ def list_tactics_endpoint(
             )
 
         tactics = q.order_by(Tactic.created_at.desc()).all()
-        return _api_response(data=[_tactic_to_dict(db, t) for t in tactics])
+        health = _bulk_tactic_health(db, tactics)
+        payload = []
+        for t in tactics:
+            row = _tactic_to_dict(db, t)
+            row.update(health.get(t.id, _EMPTY_HEALTH))
+            payload.append(row)
+        return _api_response(data=payload)
     except Exception as e:
         return _api_response(error=str(e))
 
