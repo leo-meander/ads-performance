@@ -1239,3 +1239,194 @@ def diagnose_reservation(
         })
     except Exception as e:
         return _api_response(error=str(e))
+
+
+# --- Rate plans --------------------------------------------------------------
+# Deliberately PMS-wide, NOT scoped to BookingMatch: plans like "CRM_September
+# 2026 Events" or "MEANDER'S FRIEND" are direct/CRM bookings no ad ever touched,
+# so joining through matches would hide exactly the plans worth reading.
+# rate_plan_name is NULL on rows synced before the extractor existed, so we fall
+# back to parsing room_type the same way sync does.
+
+_RATE_PLAN_COLS = (
+    Reservation.branch,
+    Reservation.rate_plan_name,
+    Reservation.room_type,
+    Reservation.status,
+    Reservation.source,
+    Reservation.country,
+    Reservation.country_iso,
+    Reservation.grand_total,
+    Reservation.nights,
+    Reservation.adults,
+    Reservation.reservation_date,
+    Reservation.check_in_date,
+)
+
+# How many rows each per-plan breakdown keeps. The whole drill-down ships with
+# the list in one response, so these caps are what keep that payload small.
+_PLAN_TOP_N = 12
+
+
+def _bump(bucket: dict, key: str, label_field: str, revenue: float, **extra) -> dict:
+    row = bucket.get(key)
+    if row is None:
+        row = {label_field: key, "bookings": 0, "revenue": 0.0, **extra}
+        bucket[key] = row
+    row["bookings"] += 1
+    row["revenue"] += revenue
+    return row
+
+
+def _top_rows(bucket: dict, n: int = _PLAN_TOP_N) -> list[dict]:
+    return sorted(bucket.values(), key=lambda x: (-x["bookings"], -x["revenue"]))[:n]
+
+
+@router.get("/booking-matches/rate-plans")
+def booking_matches_rate_plans(
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    branch: str = Query(None, description="Legacy single-branch filter"),
+    branches: str = Query(None, description="Comma-separated branch names"),
+    source: str = Query(None),
+    limit: int = Query(40, le=200, description="Max rate plans returned"),
+    current_user: User = Depends(require_section("analytics")),
+    db: Session = Depends(get_db),
+):
+    """Rate-plan mix for the window, each plan carrying its own breakdown.
+
+    One pass over the window's reservations produces both the ranked plan list
+    and every per-plan drill-down (status, country, branch, source, room, lead
+    time, party size), so the UI can open a plan with no second round trip.
+    """
+    try:
+        if not date_from or not date_to:
+            df, dt = _default_date_range()
+            date_from = date_from or df.isoformat()
+            date_to = date_to or dt.isoformat()
+
+        df = date.fromisoformat(date_from)
+        dt = date.fromisoformat(date_to)
+
+        branches_list = _parse_branches_param(branches, branch)
+        display_currency, convert = _resolve_currency(branches_list)
+
+        q = db.query(*_RATE_PLAN_COLS).filter(
+            Reservation.reservation_date >= df,
+            Reservation.reservation_date <= dt,
+        )
+        ok, q, err = _apply_branch_scope(
+            q, Reservation.branch, current_user, db, branches_list,
+        )
+        if not ok:
+            return _api_response(error=err)
+        if source:
+            q = q.filter(Reservation.source == source)
+
+        rows = q.all()
+
+        plans: dict[str, dict] = {}
+        untagged = 0
+
+        for r in rows:
+            plan = (r.rate_plan_name or extract_rate_plan_from_room_type(r.room_type) or "").strip()
+            if not plan:
+                untagged += 1
+                continue
+
+            p = plans.get(plan)
+            if p is None:
+                p = plans[plan] = {
+                    "rate_plan": plan,
+                    "bookings": 0,
+                    "canceled": 0,
+                    "revenue": 0.0,
+                    "revenue_net": 0.0,
+                    "_status": {}, "_country": {}, "_branch": {}, "_source": {}, "_room": {},
+                    "_lead": {b: 0 for b in LEAD_BUCKETS},
+                    "_nights": [], "_adults": [], "_adr": [], "_lead_days": [],
+                    "first_booking": None,
+                    "last_booking": None,
+                }
+
+            branch_key = normalize_branch(r.branch)
+            gt = float(r.grand_total) if r.grand_total is not None else 0.0
+            revenue = _convert_revenue(branch_key, gt, convert) if gt else 0.0
+            canceled = _is_canceled(r.status)
+
+            p["bookings"] += 1
+            p["revenue"] += revenue
+            if canceled:
+                p["canceled"] += 1
+            else:
+                p["revenue_net"] += revenue
+
+            if r.reservation_date:
+                iso = r.reservation_date.isoformat()
+                if p["first_booking"] is None or iso < p["first_booking"]:
+                    p["first_booking"] = iso
+                if p["last_booking"] is None or iso > p["last_booking"]:
+                    p["last_booking"] = iso
+
+            _bump(p["_status"], (r.status or "Unknown").strip() or "Unknown", "status", revenue)
+
+            country = (r.country or "").strip() or "Unknown"
+            crow = _bump(p["_country"], country, "country", revenue, country_iso=None)
+            if not crow.get("country_iso") and r.country_iso:
+                crow["country_iso"] = r.country_iso
+
+            _bump(p["_branch"], branch_key or (r.branch or "Unknown"), "branch", revenue)
+            _bump(p["_source"], (r.source or "Unknown").strip() or "Unknown", "source", revenue)
+            _bump(p["_room"], (r.room_type or "Unknown").strip() or "Unknown", "room_type", revenue)
+
+            # Party size / stay shape read the live bookings only — a cancelled
+            # row never happened, and averaging it in flatters nothing.
+            if not canceled:
+                if r.adults is not None and r.adults > 0:
+                    p["_adults"].append(int(r.adults))
+                if r.nights is not None and r.nights > 0:
+                    p["_nights"].append(int(r.nights))
+                    if revenue > 0:
+                        p["_adr"].append(revenue / int(r.nights))
+                if r.reservation_date and r.check_in_date:
+                    delta = (r.check_in_date - r.reservation_date).days
+                    if delta >= 0:
+                        p["_lead_days"].append(delta)
+                        p["_lead"][_lead_bucket(delta)] += 1
+
+        out = []
+        ranked = sorted(plans.values(), key=lambda x: (-x["bookings"], -x["revenue_net"]))
+        for p in ranked[:limit]:
+            bookings = p["bookings"]
+            out.append({
+                "rate_plan": p["rate_plan"],
+                "bookings": bookings,
+                "canceled": p["canceled"],
+                "live": bookings - p["canceled"],
+                "cancel_rate": (p["canceled"] / bookings * 100) if bookings else 0.0,
+                "revenue": p["revenue"],
+                "revenue_net": p["revenue_net"],
+                "first_booking": p["first_booking"],
+                "last_booking": p["last_booking"],
+                "by_status": sorted(p["_status"].values(), key=lambda x: -x["bookings"]),
+                "by_country": _top_rows(p["_country"]),
+                "by_branch": _top_rows(p["_branch"]),
+                "by_source": _top_rows(p["_source"]),
+                "by_room": _top_rows(p["_room"]),
+                "lead_buckets": p["_lead"],
+                "nights": _stats(p["_nights"]),
+                "adults": _stats(p["_adults"]),
+                "adr": _stats(p["_adr"]),
+                "lead_time_days": _stats(p["_lead_days"]),
+            })
+
+        return _api_response(data={
+            "plans": out,
+            "total_plans": len(plans),
+            "total_reservations": len(rows),
+            "untagged_reservations": untagged,
+            "currency": display_currency,
+            "period": {"from": date_from, "to": date_to},
+        })
+    except Exception as e:
+        return _api_response(error=str(e))

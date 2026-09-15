@@ -69,6 +69,39 @@ type Insights = {
   period: { from: string; to: string }
 }
 
+// Rate plans are read PMS-wide, not through the match table: a CRM / direct
+// plan never touches an ad, so scoping it to matches would hide it entirely.
+type PlanSlice = { bookings: number; revenue: number }
+type RatePlan = {
+  rate_plan: string
+  bookings: number
+  canceled: number
+  live: number
+  cancel_rate: number
+  revenue: number
+  revenue_net: number
+  first_booking: string | null
+  last_booking: string | null
+  by_status: (PlanSlice & { status: string })[]
+  by_country: (PlanSlice & { country: string; country_iso: string | null })[]
+  by_branch: (PlanSlice & { branch: string })[]
+  by_source: (PlanSlice & { source: string })[]
+  by_room: (PlanSlice & { room_type: string })[]
+  lead_buckets: Record<string, number>
+  nights: Stats
+  adults: Stats
+  adr: Stats
+  lead_time_days: Stats
+}
+type RatePlans = {
+  plans: RatePlan[]
+  total_plans: number
+  total_reservations: number
+  untagged_reservations: number
+  currency: string
+  period: { from: string; to: string }
+}
+
 type RoomMini = { room_type: string; bookings: number; revenue: number }
 type ActualCountry = { country: string; bookings: number }
 type CampaignInsight = {
@@ -370,6 +403,198 @@ function FlowStack({ exact, cross, nul, max, leakage }: { exact: number; cross: 
   )
 }
 
+// PMS statuses are free text per property, so colour by meaning, not by an
+// enum we don't control.
+function statusTone(status: string): string {
+  const s = status.toLowerCase()
+  if (s.includes('cancel') || s.includes('no_show') || s.includes('no-show')) return 'bg-red-100 text-red-800'
+  if (s.includes('check') || s.includes('confirm') || s.includes('stay')) return 'bg-emerald-100 text-emerald-800'
+  if (s.includes('pend') || s.includes('hold') || s.includes('option')) return 'bg-amber-100 text-amber-800'
+  return 'bg-gray-100 text-gray-700'
+}
+
+// One plan's drill-down. Every number here already shipped with the list, so
+// opening a plan costs no request.
+function RatePlanModal({
+  plan, currency, onClose,
+}: { plan: RatePlan; currency: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const countryMax = Math.max(1, ...plan.by_country.map(c => c.bookings))
+  const roomMax = Math.max(1, ...plan.by_room.map(r => r.bookings))
+  const sourceMax = Math.max(1, ...plan.by_source.map(s => s.bookings))
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/40 flex items-start md:items-center justify-center p-4 overflow-y-auto"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl w-full max-w-3xl my-4 max-h-[88vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="sticky top-0 bg-white border-b border-gray-200 px-5 py-3 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-gray-900 truncate" title={plan.rate_plan}>{plan.rate_plan}</h3>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {plan.first_booking && plan.last_booking
+                ? `booked ${plan.first_booking} → ${plan.last_booking}`
+                : 'no booking dates on file'}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-700 text-xl leading-none shrink-0"
+            aria-label="Close"
+          >×</button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          {/* Headline counters */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="border border-gray-200 rounded-lg p-3">
+              <p className="text-xs text-gray-500">Bookings</p>
+              <p className="text-xl font-bold mt-0.5">{plan.bookings}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">{plan.live} live · {plan.canceled} cancelled</p>
+            </div>
+            <div className="border border-gray-200 rounded-lg p-3">
+              <p className="text-xs text-gray-500">Cancel rate</p>
+              <p className={`text-xl font-bold mt-0.5 ${cancelColor(plan.cancel_rate)}`}>{fmtPct(plan.cancel_rate)}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">of all bookings</p>
+            </div>
+            <div className="border border-gray-200 rounded-lg p-3">
+              <p className="text-xs text-gray-500">Revenue ({currency})</p>
+              <p className="text-xl font-bold mt-0.5">{fmtMoney(plan.revenue_net, currency)}</p>
+              <p className="text-[11px] text-gray-400 mt-0.5" title="Including cancelled bookings">
+                gross {fmtMoney(plan.revenue, currency)}
+              </p>
+            </div>
+            <div className="border border-gray-200 rounded-lg p-3">
+              <p className="text-xs text-gray-500">ADR ({currency})</p>
+              <p className="text-xl font-bold mt-0.5">
+                {plan.adr.count > 0 ? fmtMoney(plan.adr.avg, currency) : '--'}
+              </p>
+              <p className="text-[11px] text-gray-400 mt-0.5">
+                {plan.adr.count > 0 ? `med ${fmtMoney(plan.adr.median, currency)}` : 'no priced nights'}
+              </p>
+            </div>
+          </div>
+
+          {/* Status */}
+          <div>
+            <p className="text-xs font-semibold text-gray-600 mb-2">Status</p>
+            <div className="flex flex-wrap gap-1.5">
+              {plan.by_status.map(s => (
+                <span key={s.status} className={`inline-block px-2 py-0.5 rounded text-xs ${statusTone(s.status)}`}>
+                  {s.status} · {s.bookings}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Country */}
+            <div>
+              <p className="text-xs font-semibold text-gray-600 mb-2">Guest country</p>
+              <div className="space-y-1.5">
+                {plan.by_country.map((c, i) => (
+                  <HBar
+                    key={c.country}
+                    label={c.country}
+                    sublabel={c.country_iso || undefined}
+                    value={c.bookings}
+                    max={countryMax}
+                    color={c.country === 'Unknown' ? '#d1d5db' : CHART_COLORS[i % CHART_COLORS.length]}
+                    right={<>
+                      <span className="text-gray-400">{c.bookings} bk</span>
+                      <span className="text-gray-600">{fmtMoney(c.revenue, currency)}</span>
+                    </>}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Party shape — the closest thing PMS gives us to demographics */}
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs font-semibold text-gray-600 mb-2">Party &amp; stay (live bookings)</p>
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  {[
+                    { label: 'Adults', s: plan.adults },
+                    { label: 'Nights', s: plan.nights },
+                    { label: 'Lead (d)', s: plan.lead_time_days },
+                  ].map(({ label, s }) => (
+                    <div key={label} className="border border-gray-200 rounded p-2">
+                      <p className="text-[11px] text-gray-500">{label}</p>
+                      <p className="text-lg font-semibold">{s.count > 0 ? fmtNum(s.avg, 1) : '--'}</p>
+                      <p className="text-[10px] text-gray-400">
+                        {s.count > 0 ? `med ${fmtNum(s.median, 1)} · n=${s.count}` : 'no data'}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-600 mb-2">Lead time to check-in</p>
+                <LeadHistogram buckets={plan.lead_buckets} />
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Rooms */}
+            <div>
+              <p className="text-xs font-semibold text-gray-600 mb-2">Room types</p>
+              <div className="space-y-1.5">
+                {plan.by_room.map((r, i) => (
+                  <HBar
+                    key={r.room_type} label={r.room_type} value={r.bookings} max={roomMax}
+                    color={CHART_COLORS[i % CHART_COLORS.length]}
+                    right={<>
+                      <span className="text-gray-400">{r.bookings} bk</span>
+                      <span className="text-gray-600">{fmtMoney(r.revenue, currency)}</span>
+                    </>}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Source + branch */}
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs font-semibold text-gray-600 mb-2">Booking source</p>
+                <div className="space-y-1.5">
+                  {plan.by_source.map((s, i) => (
+                    <HBar
+                      key={s.source} label={s.source} value={s.bookings} max={sourceMax}
+                      color={CHART_COLORS[i % CHART_COLORS.length]}
+                      right={<span className="text-gray-400">{s.bookings} bk</span>}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-600 mb-2">Branch</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {plan.by_branch.map(b => (
+                    <span key={b.branch} className="inline-block px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700">
+                      {b.branch} · {b.bookings}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function BookingMatchesDashboard() {
   // 7 days by default: the window drives how much this page has to scan,
   // and the last week is what the daily read actually asks for.
@@ -393,6 +618,9 @@ export default function BookingMatchesDashboard() {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [campaignInsights, setCampaignInsights] = useState<CampaignInsights | null>(null)
   const [expandedCampaign, setExpandedCampaign] = useState<string | null>(null)
+  const [ratePlans, setRatePlans] = useState<RatePlans | null>(null)
+  const [ratePlansLoading, setRatePlansLoading] = useState(false)
+  const [openPlan, setOpenPlan] = useState<string | null>(null)
   const [showRawTable, setShowRawTable] = useState(false)
   const [matches, setMatches] = useState<BookingMatch[]>([])
   const [listCurrency, setListCurrency] = useState<string>('VND')
@@ -449,6 +677,7 @@ export default function BookingMatchesDashboard() {
     if (!params) return
     setSummaryLoading(true)
     setInsightsLoading(true)
+    setRatePlansLoading(true)
 
     // Both requests are in flight together, but each commits its own state the
     // moment it resolves instead of being held behind Promise.all — the KPI
@@ -472,6 +701,8 @@ export default function BookingMatchesDashboard() {
     await Promise.all([
       load('booking-matches/summary', setSummary, setSummaryLoading),
       load('booking-matches/campaign-insights', setCampaignInsights, setInsightsLoading),
+      // PMS-wide, so it ignores the ads-side filters the other two honour.
+      load('booking-matches/rate-plans', setRatePlans, setRatePlansLoading),
     ])
   }, [buildParams])
 
@@ -1096,6 +1327,76 @@ export default function BookingMatchesDashboard() {
           </div>
         </div>
       )}
+
+      {/* Rate Plans — PMS-wide, click a plan for its guest breakdown */}
+      <div className="bg-white border border-gray-200 rounded-lg p-4">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-sm font-semibold text-gray-900">Rate Plans</h3>
+          <span className="text-xs text-gray-400">
+            {ratePlansLoading && !ratePlans
+              ? 'loading…'
+              : ratePlans
+                ? <>
+                    {ratePlans.total_plans} plans · {ratePlans.total_reservations} reservations
+                    {ratePlans.untagged_reservations > 0 && (
+                      <span title="No rate plan on the PMS row and none parseable from room_type">
+                        {' '}· {ratePlans.untagged_reservations} untagged
+                      </span>
+                    )}
+                  </>
+                : null}
+          </span>
+        </div>
+        <p className="text-xs text-gray-400 mb-3">
+          Every reservation booked in the window, not just ads-matched ones — this is where CRM and
+          direct plans show up. Click a plan for its status, countries and party size.
+        </p>
+        {ratePlans && ratePlans.plans.length > 0 ? (
+          <div className="space-y-1.5">
+            {(() => {
+              const max = Math.max(1, ...ratePlans.plans.map(p => p.bookings))
+              return ratePlans.plans.map((p, i) => {
+                const topCountry = p.by_country[0]
+                return (
+                  <HBar
+                    key={p.rate_plan}
+                    label={p.rate_plan}
+                    sublabel={topCountry ? `${topCountry.country} ${topCountry.bookings}` : undefined}
+                    value={p.bookings}
+                    max={max}
+                    color={CHART_COLORS[i % CHART_COLORS.length]}
+                    onClick={() => setOpenPlan(p.rate_plan)}
+                    active={openPlan === p.rate_plan}
+                    right={<>
+                      <span className="text-gray-400">{p.bookings} bk</span>
+                      <span className={cancelColor(p.cancel_rate)}>{fmtPct(p.cancel_rate)} canc</span>
+                      <span className="font-medium text-gray-700">
+                        {fmtMoney(p.revenue_net, ratePlans.currency)}
+                      </span>
+                    </>}
+                  />
+                )
+              })
+            })()}
+          </div>
+        ) : (
+          <p className="text-xs text-gray-400 py-4 text-center">
+            {ratePlansLoading ? 'Loading rate plans…' : 'No rate plan on any reservation in this window.'}
+          </p>
+        )}
+      </div>
+
+      {openPlan && ratePlans && (() => {
+        const plan = ratePlans.plans.find(p => p.rate_plan === openPlan)
+        if (!plan) return null
+        return (
+          <RatePlanModal
+            plan={plan}
+            currency={ratePlans.currency}
+            onClose={() => setOpenPlan(null)}
+          />
+        )
+      })()}
 
       {/* Matches Table */}
       <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
