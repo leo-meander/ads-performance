@@ -25,6 +25,9 @@ export type CampaignRow = {
   conversions: number
   roas: number
   ctr: number
+  // CPM and CTR are the two halves of CPC (CPC = CPM / (1000 × CTR)): CPM is
+  // what the auction charges, CTR is how well the creative pulls.
+  cpm: number
   cpc: number
   cpa: number
   cr: number
@@ -33,6 +36,8 @@ export type CampaignRow = {
   roas_change: number | null
   cr_change: number | null
   aov_change: number | null
+  cpm_change: number | null
+  ctr_change: number | null
   cpc_change: number | null
   conversions_change: number | null
 }
@@ -80,7 +85,12 @@ export default function CampaignBreakdownTable({
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="px-6 py-4 border-b flex items-center justify-between">
         <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
-        <span className="text-[11px] text-gray-400">ROAS = CR × AOV / CPC</span>
+        {/* CPC expands to CPM / (1000 × CTR), so the ROAS chain can be read
+            all the way down to the two levers you actually buy: auction price
+            (CPM) and creative pull (CTR). */}
+        <span className="text-[11px] text-gray-400">
+          ROAS = CR × AOV / CPC &nbsp;⇒&nbsp; CR × AOV × CTR × 1000 / CPM
+        </span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -93,6 +103,8 @@ export default function CampaignBreakdownTable({
               <Th col="roas" label="ROAS" />
               <Th col="cr" label="CR" />
               <Th col="aov" label={`AOV (${currency})`} />
+              <Th col="cpm" label={`CPM (${currency})`} />
+              <Th col="ctr" label="CTR" />
               <Th col="cpc" label={`CPC (${currency})`} />
               <Th col="conversions" label="Conv" />
             </tr>
@@ -148,6 +160,14 @@ export default function CampaignBreakdownTable({
                   <td className="py-3 px-4 text-right">
                     <div>{row.aov ? fmtMoney(Math.round(row.aov), currency) : '--'}</div>
                     <ChangeTag change={row.aov_change} />
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <div>{row.cpm ? fmtMoney(Math.round(row.cpm), currency) : '--'}</div>
+                    <ChangeTag change={row.cpm_change} inverseColor />
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    <div>{row.ctr.toFixed(2)}%</div>
+                    <ChangeTag change={row.ctr_change} />
                   </td>
                   <td className="py-3 px-4 text-right">
                     <div>{row.cpc ? fmtMoney(Math.round(row.cpc), currency) : '--'}</div>
