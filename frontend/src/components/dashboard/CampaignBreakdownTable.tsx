@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowUp, ArrowDown, ArrowUpDown, Sparkles } from 'lucide-react'
 import { useSortableRows } from '@/lib/useSortableRows'
 import { ChangeTag, fmtMoney, FUNNEL_STAGE_PILL } from './dashboardUtils'
+import CampaignOptimizeDrawer from './CampaignOptimizeDrawer'
 
 export type CampaignRow = {
   campaign_id: string
@@ -51,6 +52,11 @@ export default function CampaignBreakdownTable({
   title: string
 }) {
   const { sorted, sortBy, sortDir, toggleSort } = useSortableRows<CampaignRow>(rows, 'spend', 'desc')
+  // Campaign whose optimisation drawer is open. Held by id rather than by the
+  // row object so the panel keeps following the same campaign when the rows
+  // refresh underneath it (filter change, poll).
+  const [openId, setOpenId] = useState<string | null>(null)
+  const openRow = openId ? rows.find(r => r.campaign_id === openId) ?? null : null
   const ordered = highlightId
     ? [
       ...sorted.filter(r => r.campaign_id === highlightId),
@@ -84,7 +90,10 @@ export default function CampaignBreakdownTable({
   return (
     <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <div className="px-6 py-4 border-b flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
+        <div>
+          <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
+          <p className="text-[11px] text-gray-400 mt-0.5">Click any row to see which metric to optimise, and what to do about it</p>
+        </div>
         {/* CPC expands to CPM / (1000 × CTR), so the ROAS chain can be read
             all the way down to the two levers you actually buy: auction price
             (CPM) and creative pull (CTR). */}
@@ -116,8 +125,11 @@ export default function CampaignBreakdownTable({
                 <tr
                   key={row.campaign_id}
                   ref={isHighlight ? highlightRef : null}
-                  className={`border-b border-gray-50 ${
-                    isHighlight ? 'bg-blue-50 ring-2 ring-inset ring-blue-300' : 'hover:bg-gray-50'
+                  onClick={() => setOpenId(row.campaign_id)}
+                  className={`border-b border-gray-50 cursor-pointer ${
+                    isHighlight
+                      ? 'bg-blue-50 ring-2 ring-inset ring-blue-300'
+                      : openId === row.campaign_id ? 'bg-blue-50' : 'hover:bg-blue-50/40'
                   }`}
                 >
                   <td className="py-3 px-4">
@@ -183,6 +195,14 @@ export default function CampaignBreakdownTable({
           </tbody>
         </table>
       </div>
+      {openRow && (
+        <CampaignOptimizeDrawer
+          row={openRow}
+          rows={rows}
+          currency={currency}
+          onClose={() => setOpenId(null)}
+        />
+      )}
     </div>
   )
 }
