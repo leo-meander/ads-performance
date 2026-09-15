@@ -906,3 +906,90 @@ def test_enroll_second_campaign_appends_to_same_allowlist():
     t = db.query(Tactic).filter(Tactic.id == res2["tactic_id"]).first()
     assert set(t.config["campaign_ids"]) == {ids["campaign"], camp2.id}
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# List endpoint health payload — drives the plain-language Tactics table
+# ---------------------------------------------------------------------------
+
+def test_list_endpoint_returns_rules_and_last_run_health():
+    """The table must be able to say what a tactic does and what it last did
+    without expanding a row, so GET /tactics carries rule specs + last run."""
+    from types import SimpleNamespace
+
+    from app.routers.tactics import list_tactics_endpoint
+
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="stop_loss_ad", platform="meta", account_id=ids["acc"],
+    )
+    rule = db.query(AutomationRule).filter(AutomationRule.tactic_id == t.id).first()
+    ad = db.query(Ad).filter(Ad.id == ids["ad"]).first()
+    now = datetime.now(timezone.utc)
+
+    # Older evaluation that must lose to the newer one.
+    db.add(ActionLog(
+        rule_id=rule.id, platform="meta", action="evaluation_summary", triggered_by="rule",
+        metrics_snapshot={"entities_checked": 2, "actions_taken": 0},
+        success=True, executed_at=now - timedelta(days=2),
+    ))
+    db.add(ActionLog(
+        rule_id=rule.id, platform="meta", action="evaluation_summary", triggered_by="rule",
+        metrics_snapshot={
+            "entities_checked": 7,
+            "actions_taken": 0,
+            "top_fail_reason": "roas",
+            "fail_breakdown": {"roas": 6, "spend": 1},
+            "fail_examples": [{"entity_id": ad.id, "entity_name": ad.name,
+                               "failed_at": "roas", "reason": "2.1000 < 1.0 is false"}],
+        },
+        success=True, executed_at=now - timedelta(hours=3),
+    ))
+    # A rejected mutation — the page has to be able to show the error text.
+    db.add(ActionLog(
+        rule_id=rule.id, campaign_id=ad.campaign_id, ad_set_id=ad.ad_set_id, ad_id=ad.id,
+        platform="meta", action="pause_ad", triggered_by="rule",
+        success=False, error_message="User does not have permission for this action.",
+        executed_at=now - timedelta(hours=2),
+    ))
+    db.commit()
+
+    user = SimpleNamespace(roles=["admin"])
+    resp = list_tactics_endpoint(current_user=user, db=db)
+    assert resp["success"] is True
+    row = next(r for r in resp["data"] if r["id"] == t.id)
+
+    assert len(row["rules_summary"]) == row["rule_count"] >= 1
+    spec = row["rules_summary"][0]
+    assert spec["entity_level"] == "ad"
+    assert spec["action"] == "pause_ad"
+    assert any(c["metric"] == "roas" for c in spec["conditions"])
+
+    ev = row["last_evaluation"]
+    assert ev["entities_checked"] == 7, "must report the newest evaluation, not the oldest"
+    assert ev["actions_taken"] == 0
+    assert ev["top_fail_reason"] == "roas"
+    assert ev["fail_examples"][0]["entity_name"] == ad.name
+
+    assert row["last_error"]["action"] == "pause_ad"
+    assert "permission" in row["last_error"]["message"]
+    db.close()
+
+
+def test_list_endpoint_health_is_empty_when_nothing_ever_ran():
+    from types import SimpleNamespace
+
+    from app.routers.tactics import list_tactics_endpoint
+
+    ids = _seed_tree()
+    db = TestSession()
+    t = tactic_service.create_tactic_from_preset(
+        db, preset_type="stop_loss_ad", platform="meta", account_id=ids["acc"],
+    )
+    user = SimpleNamespace(roles=["admin"])
+    row = next(r for r in list_tactics_endpoint(current_user=user, db=db)["data"] if r["id"] == t.id)
+    assert row["last_evaluation"] is None
+    assert row["last_error"] is None
+    assert row["rules_summary"], "rules exist even before the first run"
+    db.close()
