@@ -914,6 +914,8 @@ def country_campaign_breakdown(
     Surfaces CR (conversion rate), AOV, CPC alongside ROAS so the user can
     pinpoint which factor is dragging a campaign's ROAS — wired from the
     "Open in Country Dashboard" deep-link on Meta recommendation cards.
+    CPM and CTR come along too: they decompose CPC (CPC = CPM / (1000 × CTR)),
+    so a CPC move separates into auction price vs creative pull.
     Country is optional: when omitted, all countries under the branch scope
     are aggregated per campaign.
     """
@@ -1031,6 +1033,10 @@ def country_campaign_breakdown(
                 "cr": round((conversions / clicks) * 100, 4) if clicks > 0 else 0,
                 # AOV = revenue / conversions. Drives the ROAS = CR × AOV / CPC chain.
                 "aov": round(revenue / conversions, 2) if conversions > 0 else 0,
+                # CPM = cost per 1000 impressions. Together with CTR it is the
+                # decomposition of CPC (CPC = CPM / (1000 × CTR)), so a CPC move
+                # can be traced to auction price (CPM) vs creative pull (CTR).
+                "cpm": round((spend / impressions) * 1000, 2) if impressions > 0 else 0,
             }
 
         items = []
@@ -1051,6 +1057,8 @@ def country_campaign_breakdown(
                 row["cr_change"] = calc_change(d["cr"], p_d["cr"])
                 row["aov_change"] = calc_change(d["aov"], p_d["aov"])
                 row["cpc_change"] = calc_change(d["cpc"], p_d["cpc"])
+                row["cpm_change"] = calc_change(d["cpm"], p_d["cpm"])
+                row["ctr_change"] = calc_change(d["ctr"], p_d["ctr"])
                 row["conversions_change"] = calc_change(cur["conversions"], p["conversions"])
             else:
                 row["spend_change"] = None
@@ -1058,6 +1066,8 @@ def country_campaign_breakdown(
                 row["cr_change"] = None
                 row["aov_change"] = None
                 row["cpc_change"] = None
+                row["cpm_change"] = None
+                row["ctr_change"] = None
                 row["conversions_change"] = None
             items.append(row)
 
