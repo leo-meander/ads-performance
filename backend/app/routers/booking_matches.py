@@ -1453,11 +1453,21 @@ def booking_matches_rate_plans(
 
         plans: dict[str, dict] = {}
         untagged = 0
+        untagged_direct = 0
 
         for r in rows:
             plan = (r.rate_plan_name or extract_rate_plan_from_room_type(r.room_type) or "").strip()
             if not plan:
+                # An OTA booking bought the OTA's own rate, so it has no MEANDER
+                # plan to be missing: every OTA source in the table is 0%
+                # tagged, structurally. Only a direct booking with no plan is a
+                # real gap, and reporting one number for both made that gap look
+                # an order of magnitude worse than it is. The second bucket is
+                # "other", not "OTA" — Walk-In, Phone and Extension live there
+                # too, and those are not OTAs.
                 untagged += 1
+                if _res_is_website(r.source):
+                    untagged_direct += 1
                 continue
 
             p = plans.get(plan)
@@ -1551,6 +1561,8 @@ def booking_matches_rate_plans(
             "total_plans": len(plans),
             "total_reservations": len(rows),
             "untagged_reservations": untagged,
+            "untagged_direct": untagged_direct,
+            "untagged_other": untagged - untagged_direct,
             "campaign": campaign or None,
             "currency": display_currency,
             "period": {"from": date_from, "to": date_to},

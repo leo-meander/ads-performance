@@ -98,6 +98,10 @@ type RatePlans = {
   total_plans: number
   total_reservations: number
   untagged_reservations: number
+  // Untagged splits by source: an OTA row has no MEANDER plan to be missing,
+  // so only the direct half is a real gap.
+  untagged_direct: number
+  untagged_other: number
   // Set when the panel is scoped to one campaign instead of the whole PMS.
   campaign: string | null
   currency: string
@@ -1381,8 +1385,14 @@ export default function BookingMatchesDashboard() {
                 ? <>
                     {ratePlans.total_plans} plans · {ratePlans.total_reservations} reservations
                     {ratePlans.untagged_reservations > 0 && (
-                      <span title="No rate plan on the PMS row and none parseable from room_type">
+                      <span title={
+                        `${ratePlans.untagged_direct} direct booking(s) with no rate plan — the real gap, `
+                        + `since the PMS only carries a plan when the booking engine stamps it into room_type. `
+                        + `${ratePlans.untagged_other} from OTA / walk-in / phone, which bought the channel's `
+                        + `own rate and never had a MEANDER plan to begin with.`
+                      }>
                         {' '}· {ratePlans.untagged_reservations} untagged
+                        {' '}({ratePlans.untagged_direct} direct · {ratePlans.untagged_other} other)
                       </span>
                     )}
                   </>

@@ -114,6 +114,24 @@ def test_groups_plans_from_column_and_room_type_fallback():
     assert welcome["bookings"] == 2  # column row + room_type fallback row
 
 
+def test_untagged_splits_direct_from_other_sources():
+    """An OTA row has no MEANDER plan to be missing, so it is not the same gap."""
+    db = TestSession()
+    _seed(db)
+    # R9 is direct with no plan anywhere — the real gap. R10 came from an OTA,
+    # which sold its own rate and never had a plan to carry.
+    _res(db, "R9")
+    _res(db, "R10", source="Agoda")
+    db.commit()
+    db.close()
+
+    data = _get()
+
+    assert data["untagged_reservations"] == 3  # R6 + R9 direct, R10 from Agoda
+    assert data["untagged_direct"] == 2
+    assert data["untagged_other"] == 1
+
+
 def test_cancelled_counted_but_kept_out_of_net_and_averages():
     db = TestSession()
     _seed(db)
