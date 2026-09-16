@@ -98,6 +98,12 @@ type RatePlans = {
   total_plans: number
   total_reservations: number
   untagged_reservations: number
+  // Untagged splits by source: an OTA row has no MEANDER plan to be missing,
+  // so only the direct half is a real gap.
+  untagged_direct: number
+  untagged_other: number
+  // Set when the panel is scoped to one campaign instead of the whole PMS.
+  campaign: string | null
   currency: string
   period: { from: string; to: string }
 }
@@ -135,9 +141,13 @@ type CountryFlow = {
   cross: number
   null_count: number
 }
+// What the campaign picker sends back as ?campaign= — the id when the match
+// row has one, the name otherwise.
+type CampaignOption = { value: string; campaign_id: string | null; campaign_name: string }
 type CampaignInsights = {
   currency: string
   campaigns: CampaignInsight[]
+  campaign_options: CampaignOption[]
   country_flow: CountryFlow[]
   // Window-wide reservation stats, folded into this response so the page
   // doesn't need a second full scan from /booking-matches/insights.
@@ -608,6 +618,8 @@ export default function BookingMatchesDashboard() {
   const [matchResult, setMatchResult] = useState('')
   const [purchaseKind, setPurchaseKind] = useState('')
   const [confidenceFilter, setConfidenceFilter] = useState('')
+  const [campaignFilter, setCampaignFilter] = useState('')
+  const [campaignOptions, setCampaignOptions] = useState<CampaignOption[]>([])
 
   const resolveRange = useCallback(() => {
     if (datePreset === 'custom' && customFrom && customTo) {
@@ -648,6 +660,20 @@ export default function BookingMatchesDashboard() {
 
   const branchParam = selectedBranches.length > 0 ? selectedBranches.join(',') : ''
 
+  // A campaign picked in one date range may have no matches in the next one.
+  // Keep it in the list so the select shows what is actually being filtered
+  // on — silently falling back to "All campaigns" would hide an empty page.
+  const campaignChoices = useMemo(() => {
+    if (!campaignFilter || campaignOptions.some(c => c.value === campaignFilter)) {
+      return campaignOptions
+    }
+    const label = campaignInsights?.campaigns[0]?.campaign_name || campaignFilter
+    return [
+      { value: campaignFilter, campaign_id: null, campaign_name: `${label} (no matches in range)` },
+      ...campaignOptions,
+    ]
+  }, [campaignOptions, campaignFilter, campaignInsights])
+
   // Branches list for the dropdown.
   useEffect(() => {
     fetch(`${API_BASE}/api/branches`, { credentials: 'include' })
@@ -667,8 +693,9 @@ export default function BookingMatchesDashboard() {
     if (matchResult) params.set('match_result', matchResult)
     if (purchaseKind) params.set('purchase_kind', purchaseKind)
     if (confidenceFilter) params.set('confidence', confidenceFilter)
+    if (campaignFilter) params.set('campaign', campaignFilter)
     return params
-  }, [resolveRange, branchParam, channel, matchResult, purchaseKind, confidenceFilter])
+  }, [resolveRange, branchParam, channel, matchResult, purchaseKind, confidenceFilter, campaignFilter])
 
   // Charts + KPIs. campaign-insights carries the window-wide reservation stats
   // in `overall`, so there's no separate /insights round trip.
@@ -700,8 +727,14 @@ export default function BookingMatchesDashboard() {
 
     await Promise.all([
       load('booking-matches/summary', setSummary, setSummaryLoading),
-      load('booking-matches/campaign-insights', setCampaignInsights, setInsightsLoading),
-      // PMS-wide, so it ignores the ads-side filters the other two honour.
+      load('booking-matches/campaign-insights', (d) => {
+        setCampaignInsights(d)
+        // Options are built server-side before the campaign filter, so picking
+        // one doesn't shrink the list to itself.
+        setCampaignOptions(d.campaign_options || [])
+      }, setInsightsLoading),
+      // PMS-wide unless a campaign is picked, so it ignores the other
+      // ads-side filters the two above honour.
       load('booking-matches/rate-plans', setRatePlans, setRatePlansLoading),
     ])
   }, [buildParams])
@@ -969,6 +1002,18 @@ export default function BookingMatchesDashboard() {
         >
           <option value="">All channels</option>
           {CHANNELS.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+
+        <select
+          value={campaignFilter}
+          onChange={(e) => setCampaignFilter(e.target.value)}
+          className="px-3 py-2 border border-gray-300 rounded-lg text-sm max-w-[18rem] truncate"
+          title={campaignFilter || 'All campaigns'}
+        >
+          <option value="">All campaigns</option>
+          {campaignChoices.map(c => (
+            <option key={c.value} value={c.value}>{c.campaign_name}</option>
+          ))}
         </select>
 
         <select
@@ -1328,7 +1373,8 @@ export default function BookingMatchesDashboard() {
         </div>
       )}
 
-      {/* Rate Plans — PMS-wide, click a plan for its guest breakdown */}
+      {/* Rate Plans — PMS-wide unless a campaign is picked; click a plan for
+          its guest breakdown */}
       <div className="bg-white border border-gray-200 rounded-lg p-4">
         <div className="flex items-center justify-between mb-1">
           <h3 className="text-sm font-semibold text-gray-900">Rate Plans</h3>
@@ -1339,8 +1385,14 @@ export default function BookingMatchesDashboard() {
                 ? <>
                     {ratePlans.total_plans} plans · {ratePlans.total_reservations} reservations
                     {ratePlans.untagged_reservations > 0 && (
-                      <span title="No rate plan on the PMS row and none parseable from room_type">
+                      <span title={
+                        `${ratePlans.untagged_direct} direct booking(s) with no rate plan — the real gap, `
+                        + `since the PMS only carries a plan when the booking engine stamps it into room_type. `
+                        + `${ratePlans.untagged_other} from OTA / walk-in / phone, which bought the channel's `
+                        + `own rate and never had a MEANDER plan to begin with.`
+                      }>
                         {' '}· {ratePlans.untagged_reservations} untagged
+                        {' '}({ratePlans.untagged_direct} direct · {ratePlans.untagged_other} other)
                       </span>
                     )}
                   </>
@@ -1348,8 +1400,12 @@ export default function BookingMatchesDashboard() {
           </span>
         </div>
         <p className="text-xs text-gray-400 mb-3">
-          Every reservation booked in the window, not just ads-matched ones — this is where CRM and
-          direct plans show up. Click a plan for its status, countries and party size.
+          {ratePlans?.campaign
+            ? <>Only the bookings this campaign matched in the window. Clear the campaign filter to
+                see every reservation, including CRM and direct.</>
+            : <>Every reservation booked in the window, not just ads-matched ones — this is where CRM
+                and direct plans show up.</>}
+          {' '}Click a plan for its status, countries and party size.
         </p>
         {ratePlans && ratePlans.plans.length > 0 ? (
           <div className="space-y-1.5">

@@ -147,6 +147,45 @@ def _apply_branch_scope(q, column, user, db, requested_branches: list[str] | Non
     return True, q, None
 
 
+def _apply_campaign_filter(q, campaign: str | None):
+    """Scope a BookingMatch query to one campaign.
+
+    The UI sends the campaign_id when the match row carries one and the
+    campaign name otherwise (the matcher leaves campaign_id NULL for rows it
+    could only resolve by name), so accept either. campaign_id is a String(36)
+    column rather than a native UUID, so both sides are plain string equality.
+    """
+    if not campaign:
+        return q
+    return q.filter(or_(
+        BookingMatch.campaign_id == campaign,
+        BookingMatch.campaign_name == campaign,
+    ))
+
+
+def _campaign_options(q) -> list[dict]:
+    """Distinct campaigns in an already-filtered BookingMatch query.
+
+    Feeds the campaign picker. `value` is what the client sends back as
+    ?campaign= — the id when there is one, the name otherwise, mirroring
+    _apply_campaign_filter.
+    """
+    rows = q.with_entities(
+        BookingMatch.campaign_id, BookingMatch.campaign_name,
+    ).distinct().all()
+    out: dict[str, dict] = {}
+    for cid, name in rows:
+        value = str(cid) if cid else (name or "")
+        if not value:
+            continue
+        out.setdefault(value, {
+            "value": value,
+            "campaign_id": str(cid) if cid else None,
+            "campaign_name": name or "(unknown)",
+        })
+    return sorted(out.values(), key=lambda x: x["campaign_name"].lower())
+
+
 # --- Lightweight column projections -----------------------------------------
 # The analytics endpoints below scan every match/reservation in the window, so
 # they must never load full ORM entities: Reservation.raw_data is a multi-KB
@@ -316,6 +355,7 @@ def list_booking_matches(
     match_result: str = Query(None),
     purchase_kind: str = Query(None, description="website | offline"),
     confidence: str = Query(None, description="confirmed | inferred"),
+    campaign: str = Query(None, description="campaign_id or campaign_name"),
     limit: int = Query(200, le=1000),
     offset: int = Query(0),
     current_user: User = Depends(require_section("analytics")),
@@ -354,6 +394,7 @@ def list_booking_matches(
             q = q.filter(BookingMatch.purchase_kind == purchase_kind)
         if confidence:
             q = q.filter(BookingMatch.confidence == confidence)
+        q = _apply_campaign_filter(q, campaign)
 
         total = q.count()
         rows = q.order_by(BookingMatch.match_date.desc()).offset(offset).limit(limit).all()
@@ -412,6 +453,7 @@ def booking_matches_summary(
     match_result: str = Query(None),
     purchase_kind: str = Query(None, description="website | offline"),
     confidence: str = Query(None, description="confirmed | inferred"),
+    campaign: str = Query(None, description="campaign_id or campaign_name"),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -451,6 +493,7 @@ def booking_matches_summary(
             base = base.filter(BookingMatch.purchase_kind == purchase_kind)
         if confidence:
             base = base.filter(BookingMatch.confidence == confidence)
+        base = _apply_campaign_filter(base, campaign)
 
         # One grouped scan feeds every KPI. Grouping by the full
         # (branch, channel, result, confidence) tuple keeps `branch` on each row
@@ -694,6 +737,7 @@ def booking_matches_campaign_insights(
     match_result: str = Query(None),
     purchase_kind: str = Query(None, description="website | offline"),
     confidence: str = Query(None, description="confirmed | inferred"),
+    campaign: str = Query(None, description="campaign_id or campaign_name"),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
 ):
@@ -738,6 +782,12 @@ def booking_matches_campaign_insights(
         if confidence:
             q = q.filter(BookingMatch.confidence == confidence)
 
+        # The picker's options come from the window BEFORE the campaign filter
+        # is applied — otherwise choosing a campaign would collapse the list to
+        # that one campaign and there would be no way back to the others.
+        campaign_options = _campaign_options(q)
+
+        q = _apply_campaign_filter(q, campaign)
         matches = q.all()
 
         # Map each matched reservation_number -> its owning match (1:1: the
@@ -924,6 +974,7 @@ def booking_matches_campaign_insights(
         return _api_response(data={
             "currency": display_currency,
             "campaigns": out_campaigns,
+            "campaign_options": campaign_options,
             "country_flow": flow_rows,
             # Window-wide reservation stats — identical shape to the /insights
             # payload so the dashboard can render its stat cards from here.
@@ -1308,6 +1359,28 @@ def _top_rows(bucket: dict, n: int = _PLAN_TOP_N) -> list[dict]:
     return sorted(bucket.values(), key=lambda x: (-x["bookings"], -x["revenue"]))[:n]
 
 
+def _campaign_reservation_numbers(db, df, dt, campaign, user, branches_list) -> set[str] | None:
+    """Reservation numbers the given campaign matched inside the window.
+
+    Returns None when the caller lacks access to a requested branch, matching
+    _apply_branch_scope's error contract.
+    """
+    q = db.query(BookingMatch.reservation_numbers).filter(
+        BookingMatch.match_date >= df,
+        BookingMatch.match_date <= dt,
+    )
+    ok, q, _err = _apply_branch_scope(
+        q, BookingMatch.branch, user, db, branches_list, exact_match=True,
+    )
+    if not ok:
+        return None
+    q = _apply_campaign_filter(q, campaign)
+    numbers: set[str] = set()
+    for (joined,) in q.all():
+        numbers.update(_split_res_numbers(joined))
+    return numbers
+
+
 @router.get("/booking-matches/rate-plans")
 def booking_matches_rate_plans(
     date_from: str = Query(None),
@@ -1315,6 +1388,10 @@ def booking_matches_rate_plans(
     branch: str = Query(None, description="Legacy single-branch filter"),
     branches: str = Query(None, description="Comma-separated branch names"),
     source: str = Query(None),
+    campaign: str = Query(
+        None,
+        description="campaign_id or campaign_name — narrows to that campaign's matched bookings",
+    ),
     limit: int = Query(40, le=200, description="Max rate plans returned"),
     current_user: User = Depends(require_section("analytics")),
     db: Session = Depends(get_db),
@@ -1324,6 +1401,10 @@ def booking_matches_rate_plans(
     One pass over the window's reservations produces both the ranked plan list
     and every per-plan drill-down (status, country, branch, source, room, lead
     time, party size), so the UI can open a plan with no second round trip.
+
+    With ?campaign= the panel stops being PMS-wide and reports only the plans
+    that campaign's matched bookings bought — the one case where scoping to
+    BookingMatch is what was asked for.
     """
     try:
         if not date_from or not date_to:
@@ -1337,10 +1418,7 @@ def booking_matches_rate_plans(
         branches_list = _parse_branches_param(branches, branch)
         display_currency, convert = _resolve_currency(branches_list)
 
-        q = db.query(*_RATE_PLAN_COLS).filter(
-            Reservation.reservation_date >= df,
-            Reservation.reservation_date <= dt,
-        )
+        q = db.query(*_RATE_PLAN_COLS)
         ok, q, err = _apply_branch_scope(
             q, Reservation.branch, current_user, db, branches_list,
         )
@@ -1349,15 +1427,47 @@ def booking_matches_rate_plans(
         if source:
             q = q.filter(Reservation.source == source)
 
-        rows = q.all()
+        if campaign:
+            # Selection is by reservation number, NOT by reservation_date: the
+            # matcher pairs a booking with an ads row up to a day apart, so
+            # re-applying the window here would drop the edge bookings that the
+            # campaign's own match rows include.
+            numbers = _campaign_reservation_numbers(
+                db, df, dt, campaign, current_user, branches_list,
+            )
+            if numbers is None:
+                return _api_response(error="No view access to the requested branch")
+            nums = sorted(numbers)
+            rows = []
+            for i in range(0, len(nums), _IN_CHUNK):
+                rows.extend(
+                    q.filter(
+                        Reservation.reservation_number.in_(nums[i:i + _IN_CHUNK]),
+                    ).all()
+                )
+        else:
+            rows = q.filter(
+                Reservation.reservation_date >= df,
+                Reservation.reservation_date <= dt,
+            ).all()
 
         plans: dict[str, dict] = {}
         untagged = 0
+        untagged_direct = 0
 
         for r in rows:
             plan = (r.rate_plan_name or extract_rate_plan_from_room_type(r.room_type) or "").strip()
             if not plan:
+                # An OTA booking bought the OTA's own rate, so it has no MEANDER
+                # plan to be missing: every OTA source in the table is 0%
+                # tagged, structurally. Only a direct booking with no plan is a
+                # real gap, and reporting one number for both made that gap look
+                # an order of magnitude worse than it is. The second bucket is
+                # "other", not "OTA" — Walk-In, Phone and Extension live there
+                # too, and those are not OTAs.
                 untagged += 1
+                if _res_is_website(r.source):
+                    untagged_direct += 1
                 continue
 
             p = plans.get(plan)
@@ -1451,6 +1561,9 @@ def booking_matches_rate_plans(
             "total_plans": len(plans),
             "total_reservations": len(rows),
             "untagged_reservations": untagged,
+            "untagged_direct": untagged_direct,
+            "untagged_other": untagged - untagged_direct,
+            "campaign": campaign or None,
             "currency": display_currency,
             "period": {"from": date_from, "to": date_to},
         })
