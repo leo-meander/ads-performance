@@ -4,15 +4,19 @@ The endpoint reads reservations PMS-wide (never through BookingMatch), so the
 cases that matter are: plans arriving from the explicit column AND from the
 room_type fallback, cancelled rows counted but kept out of the live averages,
 and the per-plan country/status/branch breakdowns shipping with the list.
+
+The one exception is ?campaign=, which deliberately narrows the panel to the
+bookings that campaign matched — covered at the bottom.
 """
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.models.booking_match import BookingMatch
 from app.models.reservation import Reservation
 from app.models.user import User
 from app.services.auth_service import create_access_token, hash_password
@@ -162,3 +166,77 @@ def test_branch_filter_scopes_rows_and_currency():
     assert welcome["bookings"] == 1
     assert welcome["revenue_net"] == 8000  # no VND conversion applied
     assert FRIEND not in {p["rate_plan"] for p in data["plans"]}
+
+
+# --- ?campaign= -------------------------------------------------------------
+
+CAMP_A = str(uuid.uuid4())
+
+
+def _match(db, campaign_name, res_numbers, campaign_id=None, match_date=D):
+    db.add(BookingMatch(
+        id=str(uuid.uuid4()),
+        match_date=match_date,
+        ads_revenue=1_000_000,
+        matched_revenue=1_000_000,
+        ads_bookings=len(res_numbers),
+        ads_channel="meta",
+        campaign_name=campaign_name,
+        campaign_id=campaign_id,
+        branch="Saigon",
+        reservation_numbers=",".join(res_numbers),
+        match_result="matched",
+        confidence="confirmed",
+        matched_at=datetime.now(timezone.utc),
+    ))
+
+
+def _seed_campaign_matches(db):
+    # R8 was booked the day BEFORE the window; its match row still lands inside
+    # it (the matcher pairs a booking with an ads row up to a day apart).
+    _res(db, "R8", reservation_date=D - timedelta(days=1), rate_plan_name=FRIEND)
+    _match(db, "CMP_A", ["R1", "R8"], campaign_id=CAMP_A)
+    _match(db, "CMP_B", ["R4"])
+    db.commit()
+
+
+def test_campaign_filter_scopes_to_that_campaigns_bookings():
+    db = TestSession()
+    _seed(db)
+    _seed_campaign_matches(db)
+    db.close()
+
+    data = _get(f"campaign={CAMP_A}")
+
+    assert data["campaign"] == CAMP_A
+    assert {p["rate_plan"] for p in data["plans"]} == {FRIEND}
+    # R1 plus R8 — the booking one day outside the window is kept, because the
+    # campaign's own match row claims it.
+    assert _plan(data, FRIEND)["bookings"] == 2
+    assert data["total_reservations"] == 2
+
+
+def test_campaign_filter_accepts_the_name_when_there_is_no_id():
+    db = TestSession()
+    _seed(db)
+    _seed_campaign_matches(db)
+    db.close()
+
+    data = _get("campaign=CMP_B")
+
+    # R4 carries its plan in room_type, so the fallback still runs when scoped.
+    assert {p["rate_plan"] for p in data["plans"]} == {WELCOME}
+    assert _plan(data, WELCOME)["bookings"] == 1
+
+
+def test_unscoped_panel_still_ignores_matches():
+    """No campaign = PMS-wide, matches or not — the default must not change."""
+    db = TestSession()
+    _seed(db)
+    _seed_campaign_matches(db)
+    db.close()
+
+    data = _get()
+
+    assert data["campaign"] is None
+    assert data["total_reservations"] == 6  # R8 is out of the window here
